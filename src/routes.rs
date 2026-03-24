@@ -25,6 +25,7 @@ use crate::middleware::body_logger_middleware;
 pub mod control_request;
 pub mod register_request;
 pub mod status;
+pub mod subscribe_input;
 pub mod unregister_request;
 pub mod update_input;
 pub mod update_output;
@@ -34,7 +35,11 @@ pub fn routes(state: Arc<ApiState>) -> Router {
     let inputs = Router::new()
         .route("/:id/register", post(register_request::handle_input))
         .route("/:id/unregister", post(unregister_request::handle_input))
-        .route("/:id/update", post(update_input::handle_input_update));
+        .route("/:id/update", post(update_input::handle_input_update))
+        .route(
+            "/:id/subscribe",
+            post(subscribe_input::handle_subscribe_input),
+        );
 
     let outputs = Router::new()
         .route("/:id/register", post(register_request::handle_output))

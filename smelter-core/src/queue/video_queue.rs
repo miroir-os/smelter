@@ -9,6 +9,7 @@ use std::{
 
 use crate::{
     event::{Event, EventEmitter},
+    pipeline::input_subscriber::InputDataSender,
     queue::{
         QueueVideoOutput, SharedState,
         utils::{EmitOnceGuard, PauseState, QueueState},
@@ -61,6 +62,8 @@ impl VideoQueue {
 
                 state: QueueState::New,
 
+                subscriber: None,
+
                 event_delivered_guard: EmitOnceGuard::new(
                     Event::VideoInputStreamDelivered(input_id.clone()),
                     &self.event_emitter,
@@ -75,6 +78,22 @@ impl VideoQueue {
                 ),
             },
         );
+    }
+
+    /// Returns Ok(true) if subscribed, Ok(false) if input not found, Err(()) if already subscribed.
+    pub fn subscribe_input(
+        &mut self,
+        input_id: &InputId,
+        sender: Arc<dyn InputDataSender>,
+    ) -> Result<bool, ()> {
+        let Some(input) = self.inputs.get_mut(input_id) else {
+            return Ok(false);
+        };
+        if input.subscriber.is_some() {
+            return Err(());
+        }
+        input.subscriber = Some(sender);
+        Ok(true)
     }
 
     pub fn remove_input(&mut self, input_id: &InputId) {
@@ -247,6 +266,8 @@ pub struct VideoQueueInput {
     pause_state: VideoPauseState,
 
     state: QueueState,
+
+    subscriber: Option<Arc<dyn InputDataSender>>,
 
     event_delivered_guard: EmitOnceGuard,
     event_playing_guard: EmitOnceGuard,
@@ -422,6 +443,9 @@ impl VideoQueueInput {
         if self.offset_from_start.is_none() {
             match self.receiver.try_recv()? {
                 PipelineEvent::Data(mut frame) => {
+                    if let Some(subscriber) = &self.subscriber {
+                        subscriber.send_video_frame(frame.clone());
+                    }
                     let _ = self.shared_state.get_or_init_first_pts(frame.pts);
                     frame.pts += self.pause_state.pts_offset();
                     self.queue.push_back(frame);
@@ -436,6 +460,9 @@ impl VideoQueueInput {
             match self.receiver.try_recv()? {
                 // pts start from sync point
                 PipelineEvent::Data(mut frame) => {
+                    if let Some(subscriber) = &self.subscriber {
+                        subscriber.send_video_frame(frame.clone());
+                    }
                     let first_pts = self.shared_state.get_or_init_first_pts(frame.pts);
                     frame.pts = (offset_pts + frame.pts + self.pause_state.pts_offset())
                         .saturating_sub(first_pts);

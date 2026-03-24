@@ -27,6 +27,7 @@ use crate::{
         RtmpPipelineState,
         channel::{EncodedDataOutput, RawDataInput, RawDataOutput},
         input::{PipelineInput, new_external_input, register_pipeline_input},
+        input_subscriber::InputDataSender,
         output::{OutputSender, PipelineOutput, new_external_output, register_pipeline_output},
         rtmp::spawn_rtmp_server,
         webrtc::{
@@ -125,6 +126,22 @@ impl Pipeline {
             input.input.seek(seek)?;
         }
         Ok(())
+    }
+
+    pub fn subscribe_input(&self, input_id: &InputId) -> Result<(), SubscribeInputError> {
+        if !self.inputs.contains_key(input_id) {
+            return Err(SubscribeInputError::NotFound(input_id.clone()));
+        }
+        let sender: Arc<dyn InputDataSender> = todo!("Implement actual sender");
+        self.queue
+            .subscribe_input(input_id, sender)
+            .map_err(|already_subscribed| {
+                if already_subscribed {
+                    SubscribeInputError::AlreadySubscribed(input_id.clone())
+                } else {
+                    SubscribeInputError::NotFound(input_id.clone())
+                }
+            })
     }
 
     pub fn unregister_input(&mut self, input_id: &InputId) -> Result<(), UnregisterInputError> {

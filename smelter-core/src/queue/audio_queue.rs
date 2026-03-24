@@ -6,6 +6,7 @@ use std::{
 
 use crate::{
     event::{Event, EventEmitter},
+    pipeline::input_subscriber::InputDataSender,
     queue::{
         SharedState,
         utils::{EmitOnceGuard, PauseState, QueueState},
@@ -62,6 +63,8 @@ impl AudioQueue {
                 pause_state: PauseState::new(),
                 state: QueueState::New,
 
+                subscriber: None,
+
                 event_delivered_guard: EmitOnceGuard::new(
                     Event::AudioInputStreamDelivered(input_id.clone()),
                     &self.event_emitter,
@@ -76,6 +79,22 @@ impl AudioQueue {
                 ),
             },
         );
+    }
+
+    /// Returns Ok(true) if subscribed, Ok(false) if input not found, Err(()) if already subscribed.
+    pub fn subscribe_input(
+        &mut self,
+        input_id: &InputId,
+        sender: Arc<dyn InputDataSender>,
+    ) -> Result<bool, ()> {
+        let Some(input) = self.inputs.get_mut(input_id) else {
+            return Ok(false);
+        };
+        if input.subscriber.is_some() {
+            return Err(());
+        }
+        input.subscriber = Some(sender);
+        Ok(true)
     }
 
     pub fn remove_input(&mut self, input_id: &InputId) {
@@ -194,6 +213,8 @@ struct AudioQueueInput {
 
     pause_state: PauseState,
     state: QueueState,
+
+    subscriber: Option<Arc<dyn InputDataSender>>,
 
     event_delivered_guard: EmitOnceGuard,
     event_playing_guard: EmitOnceGuard,
@@ -318,6 +339,9 @@ impl AudioQueueInput {
         if self.offset_from_start.is_none() {
             match self.receiver.try_recv()? {
                 PipelineEvent::Data(mut batch) => {
+                    if let Some(subscriber) = &self.subscriber {
+                        subscriber.send_audio_samples(batch.clone());
+                    }
                     let _ = self.shared_state.get_or_init_first_pts(batch.start_pts);
                     batch.start_pts += self.pause_state.pts_offset();
                     self.queue.push_back(batch);
@@ -332,6 +356,9 @@ impl AudioQueueInput {
             match self.receiver.try_recv()? {
                 // pts start from sync point
                 PipelineEvent::Data(mut batch) => {
+                    if let Some(subscriber) = &self.subscriber {
+                        subscriber.send_audio_samples(batch.clone());
+                    }
                     let first_pts = self.shared_state.get_or_init_first_pts(batch.start_pts);
                     batch.start_pts =
                         (offset_pts + batch.start_pts + self.pause_state.pts_offset())

@@ -39,6 +39,7 @@ mod rtp;
 mod webrtc;
 
 mod input;
+pub mod input_subscriber;
 mod instance;
 mod output;
 

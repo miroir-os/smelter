@@ -17,6 +17,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use smelter_render::{Frame, FrameSet, Framerate, InputId};
 
 use crate::audio_mixer::InputSamplesSet;
+use crate::pipeline::input_subscriber::InputDataSender;
 
 use crate::prelude::*;
 
@@ -227,6 +228,34 @@ impl Queue {
                 opts,
                 shared_state.clone(),
             );
+        }
+    }
+
+    /// Subscribe to decoded data for an input. Returns Ok(()) on success,
+    /// Err(true) if already subscribed, Err(false) if input not found.
+    pub fn subscribe_input(
+        &self,
+        input_id: &InputId,
+        sender: Arc<dyn InputDataSender>,
+    ) -> Result<(), bool> {
+        let video_result = self
+            .video_queue
+            .lock()
+            .unwrap()
+            .subscribe_input(input_id, sender.clone());
+        let audio_result = self
+            .audio_queue
+            .lock()
+            .unwrap()
+            .subscribe_input(input_id, sender);
+
+        match (video_result, audio_result) {
+            // At least one already subscribed
+            (Err(()), _) | (_, Err(())) => Err(true),
+            // At least one found and subscribed
+            (Ok(true), _) | (_, Ok(true)) => Ok(()),
+            // Neither found
+            (Ok(false), Ok(false)) => Err(false),
         }
     }
 

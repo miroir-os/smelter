@@ -101,6 +101,15 @@ pub enum UpdateInputError {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub enum SubscribeInputError {
+    #[error("Input \"{0}\" not found.")]
+    NotFound(InputId),
+
+    #[error("Input \"{0}\" already has a subscriber.")]
+    AlreadySubscribed(InputId),
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum UnregisterInputError {
     #[error("Failed to unregister input stream. Stream \"{0}\" does not exist.")]
     NotFound(InputId),
@@ -440,6 +449,22 @@ impl From<&UpdateInputError> for PipelineErrorInfo {
             }
             UpdateInputError::SeekNotSupported(_) => {
                 PipelineErrorInfo::new(UPDATE_INPUT_SEEK_NOT_SUPPORTED, ErrorType::UserError)
+            }
+        }
+    }
+}
+
+const SUBSCRIBE_INPUT_NOT_FOUND: &str = "INPUT_STREAM_NOT_FOUND";
+const SUBSCRIBE_INPUT_ALREADY_SUBSCRIBED: &str = "INPUT_ALREADY_SUBSCRIBED";
+
+impl From<&SubscribeInputError> for PipelineErrorInfo {
+    fn from(err: &SubscribeInputError) -> Self {
+        match err {
+            SubscribeInputError::NotFound(_) => {
+                PipelineErrorInfo::new(SUBSCRIBE_INPUT_NOT_FOUND, ErrorType::EntityNotFound)
+            }
+            SubscribeInputError::AlreadySubscribed(_) => {
+                PipelineErrorInfo::new(SUBSCRIBE_INPUT_ALREADY_SUBSCRIBED, ErrorType::UserError)
             }
         }
     }
