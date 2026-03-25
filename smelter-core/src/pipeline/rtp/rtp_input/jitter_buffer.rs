@@ -19,35 +19,65 @@ use crate::prelude::*;
 struct JitterBufferPacket {
     packet: webrtc::rtp::packet::Packet,
     pts: Duration,
-    received_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum RtpJitterBufferMode {
+    /// If I receive packet for sample `x`, then don't wait
+    /// for missing packets older than `(x-size)`
+    FixedWindow(Duration),
+    /// Packet needs to be returned from buffer before instant.elapsed() gets bigger
+    /// than pts. (with some extra fixed buffer e.g. 80ms)
+    RealTime,
+}
+
+// Value shared between both video and audio track, while actual RtpJitterBuffer
+// should be created per track
 #[derive(Debug, Clone)]
-pub(crate) struct RtpJitterBufferInitOptions {
+pub(crate) struct RtpJitterBufferSharedContext {
     mode: RtpJitterBufferMode,
-    buffer: InputBuffer,
     ntp_sync_point: Arc<RtpNtpSyncPoint>,
+    input_buffer: InputBuffer,
 }
 
-impl RtpJitterBufferInitOptions {
-    pub fn new(ctx: &Arc<PipelineCtx>, opts: RtpJitterBufferOptions) -> Self {
+impl RtpJitterBufferSharedContext {
+    pub fn new(ctx: &Arc<PipelineCtx>, mode: RtpJitterBufferMode, reference_time: Instant) -> Self {
+        let ntp_sync_point = RtpNtpSyncPoint::new(reference_time);
         Self {
-            mode: opts.mode,
-            buffer: InputBuffer::new(ctx, opts.buffer),
-            ntp_sync_point: RtpNtpSyncPoint::new(),
+            mode,
+            ntp_sync_point,
+            input_buffer: match mode {
+                RtpJitterBufferMode::FixedWindow(window_size) => {
+                    // PTS are synced on first packet, so if jitter buffer is the same as an
+                    // input buffer then, at the worst case it would produce PTS at the time
+                    // where queue already needs it, We are adding 80ms (`default_buffer_duration`)
+                    // so packets can reach the queue on time.
+                    //
+                    // If input has an offset then above does not apply, however PTS should be
+                    // normalized to zero, so adding a constant value should not affect anything
+                    let effective_window = window_size + ctx.default_buffer_duration;
+                    InputBuffer::new(
+                        ctx,
+                        InputBufferOptions::Const {
+                            size: effective_window,
+                        },
+                    )
+                }
+                RtpJitterBufferMode::RealTime => {
+                    InputBuffer::new(ctx, InputBufferOptions::LatencyOptimized { reference_time })
+                }
+            },
         }
     }
 }
 
 pub(crate) struct RtpJitterBuffer {
-    mode: RtpJitterBufferMode,
-    input_buffer: InputBuffer,
+    shared_ctx: RtpJitterBufferSharedContext,
     timestamp_sync: RtpTimestampSync,
     seq_num_rollover: SequenceNumberRollover,
     packets: BTreeMap<u64, JitterBufferPacket>,
     /// Last sequence number returned from `pop_packets`
     next_seq_num: Option<u64>,
-    queue_sync_point: Instant,
     on_stats_event: Box<dyn FnMut(RtpJitterBufferStatsEvent) + 'static + Send>,
 }
 
@@ -58,22 +88,18 @@ const MIN_DECODE_TIME: Duration = Duration::from_millis(30);
 
 impl RtpJitterBuffer {
     pub fn new(
-        ctx: &Arc<PipelineCtx>,
-        opts: RtpJitterBufferInitOptions,
+        shared_ctx: RtpJitterBufferSharedContext,
         clock_rate: u32,
         on_stats_event: Box<dyn FnMut(RtpJitterBufferStatsEvent) + 'static + Send>,
     ) -> Self {
-        let timestamp_sync =
-            RtpTimestampSync::new(ctx.queue_sync_point, opts.ntp_sync_point, clock_rate);
+        let timestamp_sync = RtpTimestampSync::new(shared_ctx.ntp_sync_point.clone(), clock_rate);
 
         Self {
-            mode: opts.mode,
-            input_buffer: opts.buffer,
+            shared_ctx,
             timestamp_sync,
             seq_num_rollover: SequenceNumberRollover::default(),
             packets: BTreeMap::new(),
             next_seq_num: None,
-            queue_sync_point: ctx.queue_sync_point,
             on_stats_event,
         }
     }
@@ -100,82 +126,76 @@ impl RtpJitterBuffer {
             packet.payload.len(),
         ));
 
+        // pts relative to reference_time in ntp_sync_point
         let pts = self
             .timestamp_sync
             .pts_from_timestamp(packet.header.timestamp);
 
-        self.input_buffer.recalculate_buffer(pts);
+        self.shared_ctx.input_buffer.recalculate_buffer(pts);
 
         trace!(packet=?packet.header, ?pts, buffer_size=self.packets.len(), "Writing packet to jitter buffer");
-        self.packets.insert(
-            sequence_number,
-            JitterBufferPacket {
-                packet,
-                pts,
-                received_at: Instant::now(),
-            },
-        );
+        self.packets
+            .insert(sequence_number, JitterBufferPacket { packet, pts });
     }
 
-    pub fn pop_packet(&mut self, force: bool) -> Option<RtpInputEvent> {
-        let (first_seq_num, first_packet) = self.packets.first_key_value()?;
+    pub fn pop(&mut self) -> Option<RtpInputEvent> {
+        let (first_seq_num, _first_packet) = self.packets.first_key_value()?;
 
         if self.next_seq_num == Some(*first_seq_num) {
-            return self.pop();
+            return self.force_pop();
         }
 
-        let wait_for_next_packet = match self.mode {
-            RtpJitterBufferMode::Fixed(duration) => {
-                // if input is required or offset is set, we can assume that we can wait
-                // a while, but it should not depend on queue clock
-                first_packet.received_at.elapsed() < duration && !force
+        let wait_for_next_packet = match self.shared_ctx.mode {
+            RtpJitterBufferMode::FixedWindow(window_size) => {
+                let lowest_pts = self.packets.values().map(|packet| packet.pts).min()?;
+                let highest_pts = self.packets.values().map(|packet| packet.pts).max()?;
+                highest_pts.saturating_sub(lowest_pts) < window_size
             }
-            RtpJitterBufferMode::QueueBased => {
+            RtpJitterBufferMode::RealTime => {
                 let lowest_pts = self.packets.values().map(|packet| packet.pts).min()?;
 
                 // TODO: if lowest pts is not first it means that we have B-frames
                 //
                 // It would be safer to use value based on index than constant, in the worst
                 // case scenario this could be 16 frames that needs to decoded in that time
-                let next_pts = lowest_pts + self.input_buffer.size();
-                next_pts > self.queue_sync_point.elapsed() + MIN_DECODE_TIME
-            }
-            RtpJitterBufferMode::Disabled => {
-                return self.pop();
+                let next_pts = lowest_pts + self.shared_ctx.input_buffer.size();
+                let reference_time = self.shared_ctx.ntp_sync_point.reference_time;
+                next_pts > reference_time.elapsed() + MIN_DECODE_TIME
             }
         };
+
         if wait_for_next_packet {
             return None;
         }
 
-        match self.next_seq_num {
-            Some(next) => {
-                (self.on_stats_event)(RtpJitterBufferStatsEvent::RtpPacketLost);
-                self.next_seq_num = Some(next + 1);
-                Some(RtpInputEvent::LostPacket)
-            }
-            None => {
-                // first packet
-                self.pop()
-            }
-        }
+        self.force_pop()
     }
 
-    fn pop(&mut self) -> Option<RtpInputEvent> {
-        let (first_seq_num, first_packet) = self.packets.pop_first()?;
-        let timestamp = first_packet.pts + self.input_buffer.size();
+    pub fn force_pop(&mut self) -> Option<RtpInputEvent> {
+        let (seq_num, packet) = self.packets.pop_first()?;
 
-        // effective buffer relative to queue clock
+        if let Some(next) = self.next_seq_num
+            && seq_num != next
+        {
+            (self.on_stats_event)(RtpJitterBufferStatsEvent::RtpPacketLost);
+            self.next_seq_num = Some(next + 1);
+            return Some(RtpInputEvent::LostPacket);
+        }
+
+        let input_buffer_size = self.shared_ctx.input_buffer.size();
+        let timestamp = packet.pts + input_buffer_size;
+
+        let reference_time = self.shared_ctx.ntp_sync_point.reference_time;
         (self.on_stats_event)(RtpJitterBufferStatsEvent::EffectiveBuffer(
-            timestamp.saturating_sub(self.queue_sync_point.elapsed()),
+            timestamp.saturating_sub(reference_time.elapsed()),
         ));
         (self.on_stats_event)(RtpJitterBufferStatsEvent::InputBufferSize(
-            self.input_buffer.size(),
+            input_buffer_size,
         ));
 
-        self.next_seq_num = Some(first_seq_num + 1);
+        self.next_seq_num = Some(seq_num + 1);
         Some(RtpInputEvent::Packet(RtpPacket {
-            packet: first_packet.packet,
+            packet: packet.packet,
             timestamp,
         }))
     }

@@ -14,15 +14,19 @@ const POW_2_32: f64 = (1i64 << 32) as f64;
 
 #[derive(Debug)]
 /// State that should be shared between different RTP tracks to use for synchronization.
+/// Whenever you create the sync point you should queue new track with
+/// `QueueTrackOffset::Pts(Duration::ZERO)`
 pub(crate) struct RtpNtpSyncPoint {
+    pub reference_time: Instant,
     /// First 32 bits represent seconds, last 32 bits fraction of the second.
-    /// Represents NTP time of sync point
+    /// Represents NTP time of a `reference_time`,
     ntp_time: RwLock<Option<u64>>,
 }
 
 impl RtpNtpSyncPoint {
-    pub fn new() -> Arc<Self> {
+    pub fn new(reference_time: Instant) -> Arc<Self> {
         Self {
+            reference_time,
             ntp_time: RwLock::new(None),
         }
         .into()
@@ -111,17 +115,12 @@ pub(crate) struct RtpTimestampSync {
     clock_rate: u32,
     rollover_state: RolloverState,
 
-    queue_sync_point: Instant,
     ntp_sync_point: Arc<RtpNtpSyncPoint>,
     partial_sync_info: PartialNtpSyncInfo,
 }
 
 impl RtpTimestampSync {
-    pub fn new(
-        queue_sync_point: Instant,
-        ntp_sync_point: Arc<RtpNtpSyncPoint>,
-        clock_rate: u32,
-    ) -> Self {
+    pub fn new(ntp_sync_point: Arc<RtpNtpSyncPoint>, clock_rate: u32) -> Self {
         Self {
             sync_offset_secs: None,
             rtp_timestamp_offset: None,
@@ -129,7 +128,6 @@ impl RtpTimestampSync {
             clock_rate,
             rollover_state: Default::default(),
 
-            queue_sync_point,
             ntp_sync_point,
             partial_sync_info: PartialNtpSyncInfo::None,
         }
@@ -137,7 +135,7 @@ impl RtpTimestampSync {
 
     pub fn pts_from_timestamp(&mut self, rtp_timestamp: u32) -> Duration {
         let sync_offset_secs = *self.sync_offset_secs.get_or_insert_with(|| {
-            let sync_offset = self.queue_sync_point.elapsed();
+            let sync_offset = self.ntp_sync_point.reference_time.elapsed();
             debug!(
                 ?sync_offset,
                 initial_rtp_timestamp = rtp_timestamp,
@@ -147,11 +145,10 @@ impl RtpTimestampSync {
         });
 
         let rolled_timestamp = self.rollover_state.timestamp(rtp_timestamp);
-
         let rtp_timestamp_offset = *self.rtp_timestamp_offset.get_or_insert(rolled_timestamp);
 
         if rtp_timestamp_offset > rolled_timestamp {
-            warn!("Rtp timestamp from before start. Timestamp smaller than the offset.")
+            warn!("RTP timestamp from before reference_time. Timestamp smaller than the offset.")
         }
 
         let timestamp = rolled_timestamp as f64 - rtp_timestamp_offset as f64;

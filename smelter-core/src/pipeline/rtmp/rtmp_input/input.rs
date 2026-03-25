@@ -1,14 +1,11 @@
 use std::sync::Arc;
 
-use crossbeam_channel::bounded;
-
 use crate::{
     pipeline::{
         input::Input,
         rtmp::rtmp_input::state::{RtmpInputStateOptions, RtmpInputsState},
-        utils::input_buffer::InputBuffer,
     },
-    queue::QueueDataReceiver,
+    queue::QueueInput,
 };
 
 use crate::prelude::*;
@@ -23,7 +20,7 @@ impl RtmpServerInput {
         ctx: Arc<PipelineCtx>,
         input_ref: Ref<InputId>,
         options: RtmpServerInputOptions,
-    ) -> Result<(Input, InputInitInfo, QueueDataReceiver), InputInitError> {
+    ) -> Result<(Input, InputInitInfo, QueueInput), InputInitError> {
         let Some(state) = &ctx.rtmp_state else {
             return Err(RtmpServerError::ServerNotRunning.into());
         };
@@ -32,19 +29,16 @@ impl RtmpServerInput {
             input_ref: input_ref.clone(),
             kind: InputProtocolKind::Rtmp,
         });
-        let (frame_sender, frame_receiver) = bounded(5);
-        let (input_samples_sender, input_samples_receiver) = bounded(5);
-        let buffer = InputBuffer::new(&ctx, options.buffer);
+
+        let queue_input = QueueInput::new(&ctx, &input_ref, options.required);
 
         state.inputs.add_input(
             &input_ref,
             RtmpInputStateOptions {
                 app: options.app,
                 stream_key: options.stream_key,
-                frame_sender,
-                input_samples_sender,
+                queue_input: queue_input.downgrade(),
                 decoders: options.decoders,
-                buffer,
             },
         )?;
 
@@ -54,10 +48,7 @@ impl RtmpServerInput {
                 input_ref,
             }),
             InputInitInfo::Other,
-            QueueDataReceiver {
-                video: Some(frame_receiver),
-                audio: Some(input_samples_receiver),
-            },
+            queue_input,
         ))
     }
 }

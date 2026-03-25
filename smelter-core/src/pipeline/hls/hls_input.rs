@@ -8,8 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::queue::{QueueTrackOffset, QueueTrackOptions};
 use bytes::Bytes;
-use crossbeam_channel::{Receiver, bounded};
+use crossbeam_channel::Sender;
 use ffmpeg_next::{
     Dictionary, Packet, Stream,
     ffi::{
@@ -35,11 +36,30 @@ use crate::{
             H264AvcDecoderConfig, H264AvccToAnnexB, InitializableThread, input_buffer::InputBuffer,
         },
     },
-    queue::QueueDataReceiver,
+    queue::QueueInput,
 };
 
 use crate::prelude::*;
 
+/// HLS input - reads from an HLS URL via FFmpeg, demuxes H.264/AAC tracks,
+/// decodes, and feeds frames/samples into the queue.
+///
+/// ## Timestamps
+///
+/// ### On input register
+/// - FFmpeg opens the HLS URL immediately and discovers tracks.
+/// - With offset (`opts.offset = Some(offset)`)
+///   - PTS of first frame should be zero
+///   - Register track with `QueueTrackOffset::FromStart(offset)`
+/// - Without offset (`opts.offset = None`)
+///   - PTS of first frame should be zero
+///   - Register track with `QueueTrackOffset::None`
+/// - Input buffer: configured via `opts.buffer`
+///
+/// ### Unsupported scenarios
+/// - If ahead of time processing is enabled, initial registration will happen on pts already
+///   processed by the queue, but queue will wait and eventually stream will show up, with
+///   the portion at the start cut off.
 pub struct HlsInput {
     should_close: Arc<AtomicBool>,
 }
@@ -55,9 +75,9 @@ impl HlsInput {
         ctx: Arc<PipelineCtx>,
         input_ref: Ref<InputId>,
         opts: HlsInputOptions,
-    ) -> Result<(Input, InputInitInfo, QueueDataReceiver), InputInitError> {
+    ) -> Result<(Input, InputInitInfo, QueueInput), InputInitError> {
         let should_close = Arc::new(AtomicBool::new(false));
-        let buffer = InputBuffer::new(&ctx, opts.buffer);
+        let buffer = InputBuffer::new(&ctx, InputBufferOptions::Adaptive);
 
         ctx.stats_sender.send(StatsEvent::NewInput {
             input_ref: input_ref.clone(),
@@ -65,31 +85,43 @@ impl HlsInput {
         });
 
         let input_ctx = FfmpegInputContext::new(&opts.url, should_close.clone())?;
-        let (audio, samples_receiver) = match input_ctx.audio_stream() {
-            Some(stream) => {
-                let (track, receiver) =
-                    Self::handle_audio_track(&ctx, &input_ref, &stream, buffer.clone())?;
-                (Some(track), Some(receiver))
+        let queue_input = QueueInput::new(&ctx, &input_ref, opts.required);
+
+        let (video_sender, audio_sender) = queue_input.queue_new_track(QueueTrackOptions {
+            video: input_ctx.video_stream().is_some(),
+            audio: input_ctx.audio_stream().is_some(),
+            offset: match opts.offset {
+                Some(offset) => QueueTrackOffset::FromStart(offset),
+                None => QueueTrackOffset::None,
+            },
+        });
+
+        let audio = match (input_ctx.audio_stream(), audio_sender) {
+            (Some(stream), Some(samples_sender)) => {
+                let track = Self::handle_audio_track(
+                    &ctx,
+                    &input_ref,
+                    &stream,
+                    buffer.clone(),
+                    samples_sender,
+                )?;
+                Some(track)
             }
-            None => (None, None),
+            _ => None,
         };
-        let (video, frame_receiver) = match input_ctx.video_stream() {
-            Some(stream) => {
-                let (track, receiver) = Self::handle_video_track(
+        let video = match (input_ctx.video_stream(), video_sender) {
+            (Some(stream), Some(frame_sender)) => {
+                let track = Self::handle_video_track(
                     &ctx,
                     &input_ref,
                     &stream,
                     opts.video_decoders,
                     buffer,
+                    frame_sender,
                 )?;
-                (Some(track), Some(receiver))
+                Some(track)
             }
-            None => (None, None),
-        };
-
-        let receivers = QueueDataReceiver {
-            video: frame_receiver,
-            audio: samples_receiver,
+            _ => None,
         };
 
         Self::spawn_demuxer_thread(input_ref, input_ctx, audio, video, ctx.stats_sender.clone());
@@ -97,7 +129,7 @@ impl HlsInput {
         Ok((
             Input::Hls(Self { should_close }),
             InputInitInfo::Other,
-            receivers,
+            queue_input,
         ))
     }
 
@@ -106,11 +138,11 @@ impl HlsInput {
         input_ref: &Ref<InputId>,
         stream: &Stream<'_>,
         buffer: InputBuffer,
-    ) -> Result<(Track, Receiver<PipelineEvent<InputAudioSamples>>), InputInitError> {
+        samples_sender: Sender<InputAudioSamples>,
+    ) -> Result<Track, InputInitError> {
         // not tested it was always null, but audio is in ADTS, so config is not
         // necessary
         let asc = read_extra_data(stream);
-        let (samples_sender, samples_receiver) = bounded(5);
         let state = StreamState::new(ctx, input_ref, stream.time_base(), buffer, TrackKind::Audio);
         let handle = AudioDecoderThread::<fdk_aac::FdkAacDecoder>::spawn(
             input_ref.clone(),
@@ -122,14 +154,11 @@ impl HlsInput {
             },
         )?;
 
-        Ok((
-            Track {
-                index: stream.index(),
-                handle,
-                state,
-            },
-            samples_receiver,
-        ))
+        Ok(Track {
+            index: stream.index(),
+            handle,
+            state,
+        })
     }
 
     fn handle_video_track(
@@ -138,8 +167,8 @@ impl HlsInput {
         stream: &Stream<'_>,
         video_decoders: HlsInputVideoDecoders,
         buffer: InputBuffer,
-    ) -> Result<(Track, Receiver<PipelineEvent<Frame>>), InputInitError> {
-        let (frame_sender, frame_receiver) = bounded(5);
+        frame_sender: Sender<Frame>,
+    ) -> Result<Track, InputInitError> {
         let state = StreamState::new(ctx, input_ref, stream.time_base(), buffer, TrackKind::Video);
 
         let extra_data = read_extra_data(stream);
@@ -194,14 +223,11 @@ impl HlsInput {
             }
         };
 
-        Ok((
-            Track {
-                index: stream.index(),
-                handle,
-                state,
-            },
-            frame_receiver,
-        ))
+        Ok(Track {
+            index: stream.index(),
+            handle,
+            state,
+        })
     }
 
     fn spawn_demuxer_thread(
@@ -229,6 +255,7 @@ impl HlsInput {
         input_ref: Ref<InputId>,
         stats_sender: StatsSender,
     ) {
+        let mut first_pts = None;
         loop {
             let packet = match input_ctx.read_packet() {
                 Ok(packet) => packet,
@@ -253,7 +280,8 @@ impl HlsInput {
             if let Some(track) = &mut video
                 && packet.stream() == track.index
             {
-                let (pts, dts) = track.state.pts_dts_from_packet(&packet);
+                let (mut pts, dts) = track.state.pts_dts_from_packet(&packet);
+                pts = pts.saturating_sub(*first_pts.get_or_insert(pts));
 
                 track
                     .state
@@ -281,7 +309,8 @@ impl HlsInput {
             if let Some(track) = &mut audio
                 && packet.stream() == track.index
             {
-                let (pts, dts) = track.state.pts_dts_from_packet(&packet);
+                let (mut pts, dts) = track.state.pts_dts_from_packet(&packet);
+                pts = pts.saturating_sub(*first_pts.get_or_insert(pts));
 
                 track
                     .state
@@ -351,7 +380,7 @@ impl StreamState {
     ) -> Self {
         let stats_sender = HlsInputTrackStatsSender::new(input_ref, &ctx.stats_sender, track_kind);
         Self {
-            queue_sync_point: ctx.queue_sync_point,
+            queue_sync_point: ctx.queue_ctx.sync_point,
             time_base,
             buffer,
 

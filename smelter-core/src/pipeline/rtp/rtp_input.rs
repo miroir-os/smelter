@@ -3,8 +3,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, bounded};
-use smelter_render::Frame;
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use tracing::{Level, debug, span, trace, warn};
 use webrtc::{
     rtcp::{self, header::PacketType, sender_report::SenderReport},
@@ -22,9 +21,10 @@ use crate::{
         },
         input::Input,
         rtp::{
-            RtpJitterBuffer, RtpJitterBufferInitOptions,
+            RtpInputEvent, RtpJitterBuffer, RtpJitterBufferSharedContext,
             depayloader::DepayloaderOptions,
             rtp_input::{
+                jitter_buffer::RtpJitterBufferMode,
                 rtp_audio_thread::{
                     RtpAudioThread, RtpAudioThreadOptions, RtpAudioTrackThreadHandle,
                 },
@@ -33,7 +33,7 @@ use crate::{
             util::BindToPortError,
         },
     },
-    queue::QueueDataReceiver,
+    queue::{QueueInput, QueueTrackOffset, QueueTrackOptions},
     utils::InitializableThread,
 };
 
@@ -48,6 +48,39 @@ mod udp;
 pub(super) mod jitter_buffer;
 pub(super) mod rtcp_sync;
 
+/// RTP input - receives RTP/RTCP packets over UDP or TCP, demuxes, and feeds
+/// decoded frames/samples into the queue.
+///
+/// ## Timestamps
+///
+/// ### On first connection
+/// - With offset (`opts.offset = Some(offset)`)
+///   - PTS of first frame should be zero
+///   - Register track with QueueTrackOffset::FromStart(offset)
+///   - No buffer necessary
+///   - Jitter buffer
+///     - TCP: No buffer
+///     - UDP: Fixed duration buffer
+/// - Without offset (`opts.offset = None`)
+///   - PTS of fist frame should be queue_sync_point.elapsed() (at the same
+///     time as `queue_new_track`)
+///   - Register track with QueueTrackOffset::Pts(Duration::ZERO)
+///   - Jitter buffer
+///     - TCP: No buffer
+///     - UDP: Queue based jitter buffer (assume queue is always on time)
+///
+/// ### On reconnect
+/// - Can only be connected once
+///
+/// ### Unsupported scenarios
+/// - If ahead of time processing is enabled, initial registration will happen on pts already
+///   processed by the queue, but queue will wait and eventually stream will show up, with
+///   the portion at the start cut off.
+/// - If other input is required and delays queue by X relative to `queue_sync_point.elapsed()`:
+///   - If X is smaller than channel sizes + socket buffers then, this input latency will
+///     be artificially increased by X.
+///   - If X is larger than channel size + socket buffers then, this input will be intermittently
+///     blank and streaming until the other inputs (and queue processing) catch up.
 pub struct RtpInput {
     should_close: Arc<AtomicBool>,
 }
@@ -57,7 +90,7 @@ impl RtpInput {
         ctx: Arc<PipelineCtx>,
         input_ref: Ref<InputId>,
         opts: RtpInputOptions,
-    ) -> Result<(Input, InputInitInfo, QueueDataReceiver), InputInitError> {
+    ) -> Result<(Input, InputInitInfo, QueueInput), InputInitError> {
         let should_close = Arc::new(AtomicBool::new(false));
 
         ctx.stats_sender.send(StatsEvent::NewInput {
@@ -74,41 +107,59 @@ impl RtpInput {
             }
         };
 
-        let (video_handle, video_frames_receiver) =
-            Self::start_video_thread(&ctx, &input_ref, opts.video)?;
+        let buffer = opts.buffer_duration.unwrap_or(Duration::from_millis(80));
+        let queue_input = QueueInput::new(&ctx, &input_ref, opts.required);
 
-        let (audio_handle, audio_samples_receiver) =
-            Self::start_audio_thread(&ctx, &input_ref, opts.audio)?;
+        // - For TCP + offset we don't need any buffer, but shifting
+        //   by a constant does not change anything when offset is defined
+        // - For TCP + no offset we don't jitter buffer, just shifting PTS
+        //   would be enough, but delay is the same so buffer is fine
+        let jitter_buffer_ctx = RtpJitterBufferSharedContext::new(
+            &ctx,
+            RtpJitterBufferMode::FixedWindow(buffer),
+            // PTS will be relative to this value, they need to normalized
+            // for case where offset is defined
+            ctx.queue_ctx.sync_point,
+        );
 
-        let jitter_buffer_init = RtpJitterBufferInitOptions::new(&ctx, opts.jitter_buffer);
+        let (video_sender, audio_sender) = queue_input.queue_new_track(QueueTrackOptions {
+            video: opts.video.is_some(),
+            audio: opts.audio.is_some(),
+            offset: match opts.offset {
+                Some(offset) => QueueTrackOffset::FromStart(offset),
+                None => QueueTrackOffset::Pts(Duration::ZERO),
+            },
+        });
+
+        let video_handle = Self::start_video_thread(&ctx, &input_ref, opts.video, video_sender)?;
+        let audio_handle = Self::start_audio_thread(&ctx, &input_ref, opts.audio, audio_sender)?;
 
         // TODO: this could ran on the same thread as tcp/udp socket
         Self::start_rtp_demuxer_thread(
             ctx,
             &input_ref,
-            jitter_buffer_init,
+            jitter_buffer_ctx,
             raw_packets_receiver,
             audio_handle,
             video_handle,
+            opts.offset.is_some(),
         );
 
         Ok((
             Input::Rtp(Self { should_close }),
             InputInitInfo::Rtp { port: Some(port) },
-            QueueDataReceiver {
-                video: video_frames_receiver,
-                audio: audio_samples_receiver,
-            },
+            queue_input,
         ))
     }
 
     fn start_rtp_demuxer_thread(
         ctx: Arc<PipelineCtx>,
         input_ref: &Ref<InputId>,
-        jitter_buffer_init: RtpJitterBufferInitOptions,
+        jitter_buffer_ctx: RtpJitterBufferSharedContext,
         receiver: Receiver<bytes::Bytes>,
         audio: Option<RtpAudioTrackThreadHandle>,
         video: Option<RtpVideoTrackThreadHandle>,
+        has_offset: bool,
     ) {
         let input_ref = input_ref.clone();
         std::thread::Builder::new()
@@ -116,40 +167,41 @@ impl RtpInput {
             .spawn(move || {
                 let _span =
                     span!(Level::INFO, "RTP demuxer", input_id = input_ref.to_string()).entered();
-                run_rtp_demuxer_thread(ctx, &input_ref, jitter_buffer_init, receiver, video, audio)
+                run_rtp_demuxer_thread(
+                    ctx,
+                    &input_ref,
+                    jitter_buffer_ctx,
+                    receiver,
+                    video,
+                    audio,
+                    has_offset,
+                );
             })
             .unwrap();
     }
 
-    #[allow(clippy::type_complexity)]
     fn start_video_thread(
         ctx: &Arc<PipelineCtx>,
         input_ref: &Ref<InputId>,
         options: Option<VideoDecoderOptions>,
-    ) -> Result<
-        (
-            Option<RtpVideoTrackThreadHandle>,
-            Option<Receiver<PipelineEvent<Frame>>>,
-        ),
-        DecoderInitError,
-    > {
-        let Some(options) = options else {
-            return Ok((None, None));
+        frame_sender: Option<Sender<Frame>>,
+    ) -> Result<Option<RtpVideoTrackThreadHandle>, DecoderInitError> {
+        let (Some(options), Some(frame_sender)) = (options, frame_sender) else {
+            return Ok(None);
         };
 
-        let (sender, receiver) = bounded(5);
         let handle = match options {
             VideoDecoderOptions::FfmpegH264 => RtpVideoThread::<FfmpegH264Decoder>::spawn(
                 input_ref.clone(),
-                (ctx.clone(), DepayloaderOptions::H264, sender),
+                (ctx.clone(), DepayloaderOptions::H264, frame_sender),
             )?,
             VideoDecoderOptions::FfmpegVp8 => RtpVideoThread::<FfmpegVp8Decoder>::spawn(
                 input_ref.clone(),
-                (ctx.clone(), DepayloaderOptions::Vp8, sender),
+                (ctx.clone(), DepayloaderOptions::Vp8, frame_sender),
             )?,
             VideoDecoderOptions::FfmpegVp9 => RtpVideoThread::<FfmpegVp9Decoder>::spawn(
                 input_ref.clone(),
-                (ctx.clone(), DepayloaderOptions::Vp9, sender),
+                (ctx.clone(), DepayloaderOptions::Vp9, frame_sender),
             )?,
             VideoDecoderOptions::VulkanH264 => {
                 if !ctx.graphics_context.has_vulkan_decoder_support() {
@@ -157,30 +209,23 @@ impl RtpInput {
                 }
                 RtpVideoThread::<VulkanH264Decoder>::spawn(
                     input_ref.clone(),
-                    (ctx.clone(), DepayloaderOptions::H264, sender),
+                    (ctx.clone(), DepayloaderOptions::H264, frame_sender),
                 )?
             }
         };
-        Ok((Some(handle), Some(receiver)))
+        Ok(Some(handle))
     }
 
-    #[allow(clippy::type_complexity)]
     fn start_audio_thread(
         ctx: &Arc<PipelineCtx>,
         input_ref: &Ref<InputId>,
         options: Option<RtpAudioOptions>,
-    ) -> Result<
-        (
-            Option<RtpAudioTrackThreadHandle>,
-            Option<Receiver<PipelineEvent<InputAudioSamples>>>,
-        ),
-        DecoderInitError,
-    > {
-        let Some(options) = options else {
-            return Ok((None, None));
+        samples_sender: Option<Sender<InputAudioSamples>>,
+    ) -> Result<Option<RtpAudioTrackThreadHandle>, DecoderInitError> {
+        let (Some(options), Some(samples_sender)) = (options, samples_sender) else {
+            return Ok(None);
         };
 
-        let (sender, receiver) = bounded(5);
         let handle = match options {
             RtpAudioOptions::Opus => RtpAudioThread::<OpusDecoder>::spawn(
                 input_ref,
@@ -189,7 +234,7 @@ impl RtpInput {
                     sample_rate: 48_000,
                     decoder_options: (),
                     depayloader_options: DepayloaderOptions::Opus,
-                    decoded_samples_sender: sender,
+                    samples_sender,
                 },
             )?,
             RtpAudioOptions::FdkAac {
@@ -203,11 +248,11 @@ impl RtpInput {
                     sample_rate: asc.sample_rate,
                     decoder_options: FdkAacDecoderOptions { asc: Some(raw_asc) },
                     depayloader_options: DepayloaderOptions::Aac(depayloader_mode, asc),
-                    decoded_samples_sender: sender,
+                    samples_sender,
                 },
             )?,
         };
-        Ok((Some(handle), Some(receiver)))
+        Ok(Some(handle))
     }
 }
 
@@ -221,10 +266,11 @@ impl Drop for RtpInput {
 fn run_rtp_demuxer_thread(
     ctx: Arc<PipelineCtx>,
     input_ref: &Ref<InputId>,
-    jitter_buffer_init: RtpJitterBufferInitOptions,
+    jitter_buffer_ctx: RtpJitterBufferSharedContext,
     receiver: Receiver<bytes::Bytes>,
     video_handle: Option<RtpVideoTrackThreadHandle>,
     audio_handle: Option<RtpAudioTrackThreadHandle>,
+    has_offset: bool,
 ) {
     struct TrackState<Handle> {
         jitter_buffer: RtpJitterBuffer,
@@ -232,12 +278,13 @@ fn run_rtp_demuxer_thread(
         eos_received: bool,
     }
 
+    let mut first_pts = None;
+
     let audio_stats_sender = ctx.stats_sender.clone();
     let audio_input_ref = input_ref.clone();
     let mut audio = audio_handle.map(|handle| TrackState {
         jitter_buffer: RtpJitterBuffer::new(
-            &ctx,
-            jitter_buffer_init.clone(),
+            jitter_buffer_ctx.clone(),
             handle.sample_rate,
             Box::new(move |event| {
                 audio_stats_sender
@@ -252,8 +299,7 @@ fn run_rtp_demuxer_thread(
     let video_input_ref = input_ref.clone();
     let mut video = video_handle.map(|handle| TrackState {
         jitter_buffer: RtpJitterBuffer::new(
-            &ctx,
-            jitter_buffer_init,
+            jitter_buffer_ctx,
             90_000,
             Box::new(move |event| {
                 video_stats_sender
@@ -295,7 +341,13 @@ fn run_rtp_demuxer_thread(
             Err(RecvTimeoutError::Timeout) => {
                 if let Some(video) = &mut video {
                     let sender = &video.handle.rtp_packet_sender;
-                    while let Some(packet) = video.jitter_buffer.pop_packet(false) {
+                    while let Some(mut packet) = video.jitter_buffer.pop() {
+                        if let RtpInputEvent::Packet(packet) = &mut packet
+                            && has_offset
+                        {
+                            let first_pts = *first_pts.get_or_insert(packet.timestamp);
+                            packet.timestamp = packet.timestamp.saturating_sub(first_pts);
+                        }
                         trace!(?packet, "Received video RTP packet");
                         if sender.send(PipelineEvent::Data(packet)).is_err() {
                             debug!("Channel closed");
@@ -304,7 +356,13 @@ fn run_rtp_demuxer_thread(
                 };
                 if let Some(audio) = &mut audio {
                     let sender = &audio.handle.rtp_packet_sender;
-                    while let Some(packet) = audio.jitter_buffer.pop_packet(false) {
+                    while let Some(mut packet) = audio.jitter_buffer.pop() {
+                        if let RtpInputEvent::Packet(packet) = &mut packet
+                            && has_offset
+                        {
+                            let first_pts = *first_pts.get_or_insert(packet.timestamp);
+                            packet.timestamp = packet.timestamp.saturating_sub(first_pts);
+                        }
                         trace!(?packet, "Received audio RTP packet");
                         if sender.send(PipelineEvent::Data(packet)).is_err() {
                             debug!("Channel closed");
@@ -332,7 +390,13 @@ fn run_rtp_demuxer_thread(
                     if let Some(video) = &mut video {
                         video.jitter_buffer.write_packet(packet);
                         let sender = &video.handle.rtp_packet_sender;
-                        while let Some(packet) = video.jitter_buffer.pop_packet(false) {
+                        while let Some(mut packet) = video.jitter_buffer.pop() {
+                            if let RtpInputEvent::Packet(packet) = &mut packet
+                                && has_offset
+                            {
+                                let first_pts = *first_pts.get_or_insert(packet.timestamp);
+                                packet.timestamp = packet.timestamp.saturating_sub(first_pts);
+                            }
                             trace!(?packet, "Received video RTP packet");
                             if sender.send(PipelineEvent::Data(packet)).is_err() {
                                 debug!("Channel closed");
@@ -344,7 +408,13 @@ fn run_rtp_demuxer_thread(
                     if let Some(audio) = &mut audio {
                         audio.jitter_buffer.write_packet(packet);
                         let sender = &audio.handle.rtp_packet_sender;
-                        while let Some(packet) = audio.jitter_buffer.pop_packet(false) {
+                        while let Some(mut packet) = audio.jitter_buffer.pop()
+                            && has_offset
+                        {
+                            if let RtpInputEvent::Packet(packet) = &mut packet {
+                                let first_pts = *first_pts.get_or_insert(packet.timestamp);
+                                packet.timestamp = packet.timestamp.saturating_sub(first_pts);
+                            }
                             trace!(?packet, "Received audio RTP packet");
                             if sender.send(PipelineEvent::Data(packet)).is_err() {
                                 debug!("Channel closed");
@@ -358,6 +428,7 @@ fn run_rtp_demuxer_thread(
                     Ok(rtcp_packets) => {
                         for rtcp_packet in rtcp_packets {
                             let header = rtcp_packet.header();
+                            debug!(?header, "Received RTCP packet");
                             match header.packet_type {
                                 PacketType::SenderReport => {
                                     let sender_report = rtcp_packet
@@ -386,9 +457,16 @@ fn run_rtp_demuxer_thread(
                                 PacketType::Goodbye => {
                                     if let Some(video) = &mut video {
                                         let sender = &video.handle.rtp_packet_sender;
-                                        while let Some(packet) =
-                                            video.jitter_buffer.pop_packet(true)
+                                        while let Some(mut packet) = video.jitter_buffer.force_pop()
                                         {
+                                            if let RtpInputEvent::Packet(packet) = &mut packet
+                                                && has_offset
+                                            {
+                                                let first_pts =
+                                                    *first_pts.get_or_insert(packet.timestamp);
+                                                packet.timestamp =
+                                                    packet.timestamp.saturating_sub(first_pts);
+                                            }
                                             trace!(?packet, "(force) Received video RTP packet");
                                             if sender.send(PipelineEvent::Data(packet)).is_err() {
                                                 debug!("Channel closed");
@@ -397,9 +475,16 @@ fn run_rtp_demuxer_thread(
                                     };
                                     if let Some(audio) = &mut audio {
                                         let sender = &audio.handle.rtp_packet_sender;
-                                        while let Some(packet) =
-                                            audio.jitter_buffer.pop_packet(true)
+                                        while let Some(mut packet) = audio.jitter_buffer.force_pop()
                                         {
+                                            if let RtpInputEvent::Packet(packet) = &mut packet
+                                                && has_offset
+                                            {
+                                                let first_pts =
+                                                    *first_pts.get_or_insert(packet.timestamp);
+                                                packet.timestamp =
+                                                    packet.timestamp.saturating_sub(first_pts);
+                                            }
                                             trace!(?packet, "(force) Received audio RTP packet");
                                             if sender.send(PipelineEvent::Data(packet)).is_err() {
                                                 debug!("Channel closed");
@@ -415,9 +500,7 @@ fn run_rtp_demuxer_thread(
                                         }
                                     }
                                 }
-                                _ => {
-                                    debug!(?header, "Received RTCP packet")
-                                }
+                                _ => {}
                             }
                         }
                     }
