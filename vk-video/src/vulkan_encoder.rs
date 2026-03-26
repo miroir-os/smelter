@@ -406,6 +406,15 @@ pub struct FullEncoderParameters<C: EncodeCodec> {
     pub(crate) color_range: ColorRange,
 }
 
+impl<C: EncodeCodec> From<&FullEncoderParameters<C>> for vk::VideoEncodeUsageInfoKHR<'_> {
+    fn from(params: &FullEncoderParameters<C>) -> Self {
+        vk::VideoEncodeUsageInfoKHR::default()
+            .video_usage_hints(params.usage_flags)
+            .tuning_mode(params.tuning_mode)
+            .video_content_hints(params.content_flags)
+    }
+}
+
 impl<'a, C: EncodeCodec + 'a> VulkanEncoder<'a, C> {
     const OUTPUT_BUFFER_LEN: u64 = 4 * MB;
 

@@ -51,10 +51,7 @@ impl EncodeCodec for H264Codec {
 
         let h264_profile = Box::new(h264_profile);
 
-        let usage_info = vk::VideoEncodeUsageInfoKHR::default()
-            .video_usage_hints(params.usage_flags)
-            .tuning_mode(params.tuning_mode)
-            .video_content_hints(params.content_flags);
+        let usage_info: vk::VideoEncodeUsageInfoKHR = params.into();
 
         let usage_info = Box::new(usage_info);
 
@@ -107,10 +104,10 @@ impl EncodeCodec for H264Codec {
             }, // TODO: b-frames
             slice_alpha_c0_offset_div2: 0,
             slice_beta_offset_div2: 0,
-            slice_qp_delta: 0, // TODO: check whether this will be overwritten in the bitstream
+            slice_qp_delta: 0,
             reserved1: 0,
-            cabac_init_idc: vk::native::StdVideoH264CabacInitIdc_STD_VIDEO_H264_CABAC_INIT_IDC_0, // TODO: check whether this will be overwritten in the bitstream
-            disable_deblocking_filter_idc: 0, // TODO: enable for fast decoding?
+            cabac_init_idc: vk::native::StdVideoH264CabacInitIdc_STD_VIDEO_H264_CABAC_INIT_IDC_0,
+            disable_deblocking_filter_idc: 0,
             pWeightTable: std::ptr::null(),
         }
     }
