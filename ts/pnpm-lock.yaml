@@ -220,6 +220,9 @@ importers:
       '@swmansion/smelter-node':
         specifier: workspace:0.4.0-rc.0
         version: link:../../smelter-node
+      '@swmansion/smelter-web-client':
+        specifier: workspace:0.4.0-rc.0
+        version: link:../../smelter-web-client
       fs-extra:
         specifier: ^11.2.0
         version: 11.2.0

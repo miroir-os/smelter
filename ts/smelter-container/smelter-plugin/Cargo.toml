@@ -1,0 +1,15 @@
+[package]
+name = "smelter-plugin"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "smelter_plugin"
+crate-type = ["cdylib"]
+
+[dependencies]
+javy-plugin-api = "6.0.0"
+wit-bindgen = "0.54.0"
+
+[lints]
+workspace = true

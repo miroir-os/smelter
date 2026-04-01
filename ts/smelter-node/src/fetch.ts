@@ -1,17 +1,15 @@
 import fs from 'fs';
-import http from 'http';
-import https from 'https';
+// import http from 'http';
+// import https from 'https';
 import { Stream } from 'stream';
 import { promisify } from 'util';
 import path from 'path';
-
-import fetch from 'node-fetch';
 import type FormData from 'form-data';
 import type { ApiRequest, MultipartRequest } from '@swmansion/smelter-core';
 
 const pipeline = promisify(Stream.pipeline);
-const httpAgent = new http.Agent({ keepAlive: true });
-const httpsAgent = new https.Agent({ keepAlive: true });
+// const httpAgent = new http.Agent({ keepAlive: true });
+// const httpsAgent = new https.Agent({ keepAlive: true });
 
 export async function sendRequest(baseUrl: string | URL, request: ApiRequest): Promise<object> {
   const response = await fetch(joinUrl(baseUrl, request.route), {
@@ -21,7 +19,8 @@ export async function sendRequest(baseUrl: string | URL, request: ApiRequest): P
       ...request.headers,
       'Content-Type': 'application/json',
     },
-    agent: url => (url.protocol === 'http:' ? httpAgent : httpsAgent),
+
+
   });
   if (response.status >= 400) {
     const err: any = new Error(`Request to Smelter server failed.`);
@@ -39,7 +38,7 @@ export async function sendMultipartRequest(
   const response = await fetch(joinUrl(baseUrl, request.route), {
     method: request.method,
     body: request.body as FormData,
-    agent: url => (url.protocol === 'http:' ? httpAgent : httpsAgent),
+    // agent: url => (url.protocol === 'http:' ? httpAgent : httpsAgent),
     headers: request.headers,
   });
   if (response.status >= 400) {

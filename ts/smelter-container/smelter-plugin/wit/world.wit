@@ -1,0 +1,11 @@
+package smelter:smelter-plugin@0.1.0;
+
+world smelter-plugin {
+  export compile-src: func(src: list<u8>) -> result<list<u8>, string>;
+  export initialize-runtime: func();
+  export invoke: func(bytecode: list<u8>, function: option<string>);
+
+  import console-log: func(msg: string);
+  import console-warn: func(msg: string);
+  import console-error: func(msg: string);
+}

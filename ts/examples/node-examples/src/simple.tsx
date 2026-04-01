@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
-import Smelter from '@swmansion/smelter-node';
+import Smelter, { ExistingInstanceManager } from '@swmansion/smelter-node';
 import { View, Text } from '@swmansion/smelter';
-import { ffplayStartRtmpServerAsync } from './utils';
 
 type PartialTextProps = {
   text: string;
@@ -41,10 +40,8 @@ function ExampleApp() {
 }
 
 async function run() {
-  const smelter = new Smelter();
+  const smelter = new Smelter(new ExistingInstanceManager({ url: 'http://localhost:8081' }));
   await smelter.init();
-
-  await ffplayStartRtmpServerAsync(9002);
 
   await smelter.registerOutput('output_1', <ExampleApp />, {
     type: 'rtmp_client',

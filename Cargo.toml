@@ -20,7 +20,7 @@ members = [
 
     # Tools/utils/tests
     "integration-tests",
-    "tools",
+    "tools", "ts/smelter-container/smelter-plugin", "ts/smelter-container/smelter-host",
 ]
 resolver = "2"
 
