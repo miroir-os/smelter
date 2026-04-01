@@ -198,7 +198,7 @@ impl EncodeCodec for H264Codec {
                 _bitfield_1: vk::native::StdVideoEncodeH264PictureInfoFlags::new_bitfield_1(
                     is_idr as u32,
                     1, // TODO
-                    is_idr as u32,
+                    0,
                     0, // long term refs
                     0, // adaptive reference control
                     0,

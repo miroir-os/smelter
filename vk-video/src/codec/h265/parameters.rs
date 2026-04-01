@@ -2,7 +2,10 @@ use std::ptr::NonNull;
 
 use ash::vk;
 
-use crate::{VulkanDecoderError, parameters::H265Profile};
+use crate::{
+    VulkanDecoderError, codec::h265::H265Codec, parameters::H265Profile,
+    vulkan_encoder::FullEncoderParameters,
+};
 
 pub(crate) struct VkH265VideoParameterSet {
     pub(crate) vps: vk::native::StdVideoH265VideoParameterSet,
@@ -12,7 +15,7 @@ pub(crate) struct VkH265VideoParameterSet {
 }
 
 impl VkH265VideoParameterSet {
-    fn new_encode(profile: H265Profile, max_references: u32) -> Self {
+    pub(crate) fn new_encode(params: &FullEncoderParameters<H265Codec>) -> Self {
         let profile_tier_level = vec![vk::native::StdVideoH265ProfileTierLevel {
             flags: vk::native::StdVideoH265ProfileTierLevelFlags {
                 _bitfield_align_1: [],
@@ -21,7 +24,7 @@ impl VkH265VideoParameterSet {
                 ),
                 __bindgen_padding_0: [0; 3],
             },
-            general_profile_idc: profile.to_profile_idc(),
+            general_profile_idc: params.profile.to_profile_idc(),
             general_level_idc: vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_6_1,
         }]
         .into_boxed_slice();
@@ -32,7 +35,7 @@ impl VkH265VideoParameterSet {
             max_dec_pic_buffering_minus1: [0; 7],
             max_latency_increase_plus1: [0; 7],
         });
-        dec_pic_buf_mgr.max_dec_pic_buffering_minus1[0] = max_references as u8;
+        dec_pic_buf_mgr.max_dec_pic_buffering_minus1[0] = params.max_references.get() as u8;
         dec_pic_buf_mgr.max_latency_increase_plus1[0] = 1;
         dec_pic_buf_mgr.max_num_reorder_pics[0] = 0;
 
@@ -82,22 +85,114 @@ pub(crate) struct VkH265SequenceParameterSet {
 }
 
 impl VkH265SequenceParameterSet {
-    pub(crate) fn new_encode() -> Self {
+    pub(crate) fn new_encode(params: &FullEncoderParameters<H265Codec>) -> Self {
         // TODO: VUI
         Self {
             sps: vk::native::StdVideoH265SequenceParameterSet {
                 flags: vk::native::StdVideoH265SpsFlags {
                     _bitfield_align_1: [],
-                    _bitfield_1: vk::native::StdVideoH265SpsFlags::new_bitfield_1(1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0)
+                    _bitfield_1: vk::native::StdVideoH265SpsFlags::new_bitfield_1(
+                        1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, // range extension
+                        0, 0, 0, 0, 0, // scc extension
+                    ),
                 },
-
-            }
+                chroma_format_idc: params.profile.to_profile_idc(),
+                pic_width_in_luma_samples: params.width.get(),
+                pic_height_in_luma_samples: params.height.get(),
+                sps_video_parameter_set_id: 0,
+                sps_max_sub_layers_minus1: 0,
+                sps_seq_parameter_set_id: 0,
+                bit_depth_luma_minus8: 0,
+                bit_depth_chroma_minus8: 0,
+                log2_max_pic_order_cnt_lsb_minus4: 4,
+                log2_min_luma_coding_block_size_minus3: 0, // ffmpeg
+                log2_diff_max_min_luma_coding_block_size: 3, // ffmpeg
+                log2_min_luma_transform_block_size_minus2: 0, // ffmpeg
+                log2_diff_max_min_luma_transform_block_size: 3, // ffmpeg
+                max_transform_hierarchy_depth_inter: 0,
+                max_transform_hierarchy_depth_intra: 0,
+                num_short_term_ref_pic_sets: 0, // I think we will put ref sets in each slice?
+                num_long_term_ref_pics_sps: 0,
+                pcm_sample_bit_depth_luma_minus1: 0,   // disabled
+                pcm_sample_bit_depth_chroma_minus1: 0, // disabled
+                log2_min_pcm_luma_coding_block_size_minus3: 0, // disabled
+                log2_diff_max_min_pcm_luma_coding_block_size: 0, //disabled
+                reserved1: 0,
+                reserved2: 0,
+                palette_max_size: 0,                              //disabled
+                delta_palette_max_predictor_size: 0,              //disabled
+                motion_vector_resolution_control_idc: 0,          //disabled
+                sps_num_palette_predictor_initializers_minus1: 0, //disabled
+                conf_win_left_offset: 0,                          // TODO
+                conf_win_right_offset: 0,                         // TODO
+                conf_win_top_offset: 0,                           // TODO
+                conf_win_bottom_offset: 0,                        // TODO
+                pProfileTierLevel: std::ptr::null(),
+                pDecPicBufMgr: std::ptr::null(),
+                pScalingLists: std::ptr::null(),
+                pShortTermRefPicSet: std::ptr::null(),
+                pLongTermRefPicsSps: std::ptr::null(),
+                pSequenceParameterSetVui: std::ptr::null(), // TODO
+                pPredictorPaletteEntries: std::ptr::null(),
+            },
         }
     }
 }
 
 pub(crate) struct VkH265PictureParameterSet {
     pub(crate) pps: vk::native::StdVideoH265PictureParameterSet,
+}
+
+impl VkH265PictureParameterSet {
+    pub(crate) fn new_encode() -> Self {
+        Self {
+            pps: vk::native::StdVideoH265PictureParameterSet {
+                flags: vk::native::StdVideoH265PpsFlags {
+                    _bitfield_align_1: [],
+                    _bitfield_1: vk::native::StdVideoH265PpsFlags::new_bitfield_1(
+                        0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0,
+                    ),
+                },
+                sps_video_parameter_set_id: 0,
+                pps_seq_parameter_set_id: 0,
+                pps_pic_parameter_set_id: 0,
+                reserved1: 0,
+                reserved2: 0,
+                num_extra_slice_header_bits: 0,
+                num_ref_idx_l0_default_active_minus1: 0,
+                num_ref_idx_l1_default_active_minus1: 0,
+                init_qp_minus26: 0,
+                diff_cu_qp_delta_depth: 1,
+                pps_cb_qp_offset: 0,
+                pps_cr_qp_offset: 0,
+                pps_beta_offset_div2: 0,
+                pps_tc_offset_div2: 0,
+                log2_parallel_merge_level_minus2: 0,
+                log2_max_transform_skip_block_size_minus2: 0,
+                diff_cu_chroma_qp_offset_depth: 0,
+                chroma_qp_offset_list_len_minus1: 0,
+                cb_qp_offset_list: [0; 6],
+                cr_qp_offset_list: [0; 6],
+                log2_sao_offset_scale_luma: 0,
+                log2_sao_offset_scale_chroma: 0,
+                pps_act_y_qp_offset_plus5: 0,
+                pps_act_cb_qp_offset_plus5: 0,
+                pps_act_cr_qp_offset_plus3: 0,
+                pps_num_palette_predictor_initializers: 0,
+                luma_bit_depth_entry_minus8: 0,
+                chroma_bit_depth_entry_minus8: 0,
+                num_tile_columns_minus1: 0,
+                num_tile_rows_minus1: 0,
+                column_width_minus1: [0; 19],
+                row_height_minus1: [0; 21],
+                reserved3: 0,
+                pScalingLists: std::ptr::null(),
+                pPredictorPaletteEntries: std::ptr::null(),
+            },
+        }
+    }
 }
 
 pub(crate) fn vk_to_h265_level_idc(
