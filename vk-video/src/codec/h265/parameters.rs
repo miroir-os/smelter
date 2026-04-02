@@ -2,10 +2,7 @@ use std::ptr::NonNull;
 
 use ash::vk;
 
-use crate::{
-    VulkanDecoderError, codec::h265::H265Codec, parameters::H265Profile,
-    vulkan_encoder::FullEncoderParameters,
-};
+use crate::{VulkanDecoderError, codec::h265::H265Codec, vulkan_encoder::FullEncoderParameters};
 
 pub(crate) struct VkH265VideoParameterSet {
     pub(crate) vps: vk::native::StdVideoH265VideoParameterSet,
@@ -73,7 +70,7 @@ impl Drop for VkH265VideoParameterSet {
                 drop(Box::from_raw(profile_tier_level.as_ptr()));
             }
 
-            if let Some(dec_pic_buf_mgr) = self.profile_tier_level {
+            if let Some(dec_pic_buf_mgr) = self.dec_pic_buf_mgr {
                 drop(Box::from_raw(dec_pic_buf_mgr.as_ptr()));
             }
         }

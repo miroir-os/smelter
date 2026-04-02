@@ -141,6 +141,7 @@ impl EncodeCodec for H264Codec {
     type ReferenceInfo = vk::native::StdVideoEncodeH264ReferenceInfo;
     type ReferenceListInfo = vk::native::StdVideoEncodeH264ReferenceListsInfo;
     fn reference_list_info(
+        _counters: &Self::EncodingCounters,
         active_reference_slots: &VecDeque<(usize, Self::ReferenceInfo)>,
     ) -> Self::ReferenceListInfo {
         let mut ref_list0 = [0xff; 32];

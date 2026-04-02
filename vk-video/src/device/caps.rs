@@ -176,10 +176,17 @@ impl NativeEncodeH265Capabilities {
         Self { main }
     }
 
-    pub(crate) fn profile(&self, profile: H265Profile) -> Option<&NativeEncodeProfileCapabilities<H265Codec>> {
+    pub(crate) fn profile(
+        &self,
+        profile: H265Profile,
+    ) -> Option<&NativeEncodeProfileCapabilities<H265Codec>> {
         match profile {
             H265Profile::Main => self.main.as_ref(),
         }
+    }
+
+    pub(crate) fn max_profile(&self) -> H265Profile {
+        H265Profile::Main
     }
 }
 

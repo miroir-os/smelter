@@ -18,7 +18,7 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct H265EncodingCounters {
-    pic_order_cnt: u8,
+    pic_order_cnt: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,8 +59,8 @@ impl EncodeCodec for H265Codec {
         parameters: &crate::vulkan_encoder::FullEncoderParameters<Self>,
     ) -> Result<Self::OwnedParameters, crate::VulkanEncoderError> {
         Ok(Self::OwnedParameters {
-            vps: vec![VkH265VideoParameterSet::new_encode(&parameters)],
-            sps: vec![VkH265SequenceParameterSet::new_encode(&parameters)],
+            vps: vec![VkH265VideoParameterSet::new_encode(parameters)],
+            sps: vec![VkH265SequenceParameterSet::new_encode(parameters)],
             pps: vec![VkH265PictureParameterSet::new_encode()],
         })
     }
@@ -136,8 +136,9 @@ impl EncodeCodec for H265Codec {
     }
 
     type ReferenceInfo = vk::native::StdVideoEncodeH265ReferenceInfo;
-    type ReferenceListInfo = vk::native::StdVideoEncodeH265ReferenceListsInfo;
+    type ReferenceListInfo = ReferenceListInfoH265;
     fn reference_list_info(
+        counters: &Self::EncodingCounters,
         active_reference_slots: &std::collections::VecDeque<(usize, Self::ReferenceInfo)>,
     ) -> Self::ReferenceListInfo {
         let mut ref_list0 = [0xff; 15];
@@ -145,7 +146,7 @@ impl EncodeCodec for H265Codec {
             ref_list0[i] = *slot as u8;
         }
 
-        vk::native::StdVideoEncodeH265ReferenceListsInfo {
+        let list_info = vk::native::StdVideoEncodeH265ReferenceListsInfo {
             flags: vk::native::StdVideoEncodeH265ReferenceListsInfoFlags {
                 _bitfield_align_1: [],
                 _bitfield_1: vk::native::StdVideoEncodeH265ReferenceListsInfoFlags::new_bitfield_1(
@@ -158,6 +159,48 @@ impl EncodeCodec for H265Codec {
             RefPicList1: [0xff; 15],
             list_entry_l0: [0; 15],
             list_entry_l1: [0; 15],
+        };
+
+        let mut delta_poc_s0_minus1 = [0; 16];
+        let mut previous_poc = counters.pic_order_cnt as i32;
+        let mut used_by_curr_pic_s0_flag = 0;
+
+        for (i, reference) in active_reference_slots.iter().rev().enumerate() {
+            assert!(reference.1.PicOrderCntVal < previous_poc);
+
+            delta_poc_s0_minus1[i] = (previous_poc - reference.1.PicOrderCntVal - 1) as u16;
+            used_by_curr_pic_s0_flag |= 1 << i;
+            previous_poc = reference.1.PicOrderCntVal;
+        }
+
+        let short_term_ref_pic_set = vk::native::StdVideoH265ShortTermRefPicSet {
+            flags: vk::native::StdVideoH265ShortTermRefPicSetFlags {
+                _bitfield_align_1: [],
+                __bindgen_padding_0: [0; 3],
+                _bitfield_1: vk::native::StdVideoH265ShortTermRefPicSetFlags::new_bitfield_1(0, 0),
+            },
+            // for inter-ref set prediction, which is used to base this ref-set on one from sps
+            delta_idx_minus1: 0,
+            use_delta_flag: 0,
+            abs_delta_rps_minus1: 0,
+            used_by_curr_pic_flag: 0,
+
+            num_negative_pics: active_reference_slots.len() as u8,
+            used_by_curr_pic_s0_flag,
+            delta_poc_s0_minus1,
+
+            num_positive_pics: 0,
+            used_by_curr_pic_s1_flag: 0,
+            delta_poc_s1_minus1: [0; 16],
+
+            reserved1: 0,
+            reserved2: 0,
+            reserved3: 0,
+        };
+
+        ReferenceListInfoH265 {
+            list_info,
+            short_term_ref_pic_set,
         }
     }
     fn new_slot_reference_info(
@@ -186,7 +229,18 @@ impl EncodeCodec for H265Codec {
         vk::native::StdVideoEncodeH265PictureInfo {
             flags: vk::native::StdVideoEncodeH265PictureInfoFlags {
                 _bitfield_align_1: [],
-                _bitfield_1: vk::native::StdVideoEncodeH265PictureInfoFlags::new_bitfield_1(1, is_idr as u32, 0, 0, 0, 0, 0, 0, !is_idr as u32, 0),
+                _bitfield_1: vk::native::StdVideoEncodeH265PictureInfoFlags::new_bitfield_1(
+                    1,
+                    is_idr as u32,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    !is_idr as u32,
+                    0,
+                ),
             },
             pic_type: pic_type(is_idr),
             sps_video_parameter_set_id: 0,
@@ -196,6 +250,9 @@ impl EncodeCodec for H265Codec {
             TemporalId: 0,
             reserved1: [0; 7],
             short_term_ref_pic_set_idx: 0,
+            pRefLists: &ref_lists.list_info,
+            pShortTermRefPicSet: &ref_lists.short_term_ref_pic_set,
+            pLongTermRefPics: std::ptr::null(),
         }
     }
 
@@ -215,11 +272,11 @@ impl EncodeCodec for H265Codec {
     }
 
     type EncodingCounters = H265EncodingCounters;
-    fn advance_counters(counters: &mut Self::EncodingCounters, is_idr: bool) {
-        todo!()
+    fn advance_counters(counters: &mut Self::EncodingCounters, _is_idr: bool) {
+        counters.pic_order_cnt = counters.pic_order_cnt.wrapping_add(1);
     }
     fn counters_idr(counters: &mut Self::EncodingCounters) {
-        todo!()
+        counters.pic_order_cnt = 0;
     }
 
     type CodecRateControlLayerInfo<'a> = vk::VideoEncodeH265RateControlLayerInfoKHR<'a>;
@@ -316,6 +373,11 @@ impl EncodeCodec for H265Codec {
     }
 }
 
-fn pic_type(is_idr: bool) -> u32{
+fn pic_type(is_idr: bool) -> u32 {
     if is_idr { 0 } else { 1 }
+}
+
+pub(crate) struct ReferenceListInfoH265 {
+    list_info: vk::native::StdVideoEncodeH265ReferenceListsInfo,
+    short_term_ref_pic_set: vk::native::StdVideoH265ShortTermRefPicSet,
 }
