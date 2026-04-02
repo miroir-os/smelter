@@ -84,7 +84,7 @@ impl EncodeCodec for H265Codec {
                     1, 0, 0, // ffmpeg
                     0, // ffmpeg (they don't have it set at all)
                     0, 0, 1, // 0 only for B-frames
-                    1, 0,
+                    0, 0,
                 ),
             },
             slice_type: if is_idr {
@@ -374,7 +374,11 @@ impl EncodeCodec for H265Codec {
 }
 
 fn pic_type(is_idr: bool) -> u32 {
-    if is_idr { 0 } else { 1 }
+    if is_idr {
+        vk::native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_IDR
+    } else {
+        vk::native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_P
+    }
 }
 
 pub(crate) struct ReferenceListInfoH265 {
