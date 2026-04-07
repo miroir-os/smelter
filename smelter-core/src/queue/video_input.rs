@@ -2,7 +2,7 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 use smelter_render::{Frame, InputId};
-use tracing::warn;
+use tracing::{debug, trace, warn};
 
 use crate::{
     PipelineCtx, PipelineEvent, Ref,
@@ -319,24 +319,24 @@ impl VideoInputReceiver {
         }
     }
 
-    fn try_enqueue(&mut self) -> bool {
-        let mut enqueued = false;
+    fn try_enqueue(&mut self) {
         loop {
-            if self.size() >= self.max_size {
-                return enqueued;
+            if self.size() >= self.max_size && self.disconnected {
+                return;
             }
             match self.receiver.try_recv() {
                 Ok(mut frame) => {
+                    trace!(pts=?frame.pts, "Enqueue frame");
                     frame.pts += self.delay;
                     self.buffer.push_back(frame);
                     self.state = ReceiverState::Running;
-                    enqueued = true;
                 }
-                Err(TryRecvError::Empty) => return enqueued,
+                Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
+                    debug!("Queue video channel disconnected");
                     self.disconnected = true;
                     self.maybe_transition_to_done();
-                    return enqueued;
+                    return;
                 }
             }
         }
@@ -350,6 +350,7 @@ impl VideoInputReceiver {
     fn maybe_transition_to_done(&mut self) {
         if self.disconnected && self.buffer.is_empty() {
             self.state = ReceiverState::Done;
+            debug!("Queue video input done")
         }
     }
 

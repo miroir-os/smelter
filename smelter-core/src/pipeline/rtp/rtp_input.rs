@@ -161,23 +161,15 @@ impl RtpInput {
         video: Option<RtpVideoTrackThreadHandle>,
         has_offset: bool,
     ) {
-        let input_ref = input_ref.clone();
-        std::thread::Builder::new()
-            .name(format!("Depayloading thread for input: {input_ref}"))
-            .spawn(move || {
-                let _span =
-                    span!(Level::INFO, "RTP demuxer", input_id = input_ref.to_string()).entered();
-                run_rtp_demuxer_thread(
-                    ctx,
-                    &input_ref,
-                    jitter_buffer_ctx,
-                    receiver,
-                    video,
-                    audio,
-                    has_offset,
-                );
-            })
-            .unwrap();
+        RtpDemuxerThread::spawn(
+            ctx,
+            input_ref,
+            jitter_buffer_ctx,
+            receiver,
+            video,
+            audio,
+            has_offset,
+        );
     }
 
     fn start_video_thread(
@@ -263,257 +255,255 @@ impl Drop for RtpInput {
     }
 }
 
-fn run_rtp_demuxer_thread(
-    ctx: Arc<PipelineCtx>,
-    input_ref: &Ref<InputId>,
-    jitter_buffer_ctx: RtpJitterBufferSharedContext,
+struct RtpDemuxerThread {
+    tracks: Vec<TrackState>,
     receiver: Receiver<bytes::Bytes>,
-    video_handle: Option<RtpVideoTrackThreadHandle>,
-    audio_handle: Option<RtpAudioTrackThreadHandle>,
+    first_pts: Option<Duration>,
     has_offset: bool,
-) {
-    struct TrackState<Handle> {
-        jitter_buffer: RtpJitterBuffer,
-        handle: Handle,
-        eos_received: bool,
+}
+
+struct TrackState {
+    payload_type: u8,
+    ssrc: Option<u32>,
+    jitter_buffer: RtpJitterBuffer,
+    rtp_packet_sender: Sender<PipelineEvent<RtpInputEvent>>,
+    eos_sent: bool,
+}
+
+impl RtpDemuxerThread {
+    fn spawn(
+        ctx: Arc<PipelineCtx>,
+        input_ref: &Ref<InputId>,
+        jitter_buffer_ctx: RtpJitterBufferSharedContext,
+        receiver: Receiver<bytes::Bytes>,
+        video_handle: Option<RtpVideoTrackThreadHandle>,
+        audio_handle: Option<RtpAudioTrackThreadHandle>,
+        has_offset: bool,
+    ) {
+        let mut tracks: Vec<TrackState> = Vec::new();
+
+        if let Some(handle) = video_handle {
+            let stats_sender = ctx.stats_sender.clone();
+            let ref_clone = input_ref.clone();
+            tracks.push(TrackState {
+                payload_type: 96,
+                ssrc: None,
+                jitter_buffer: RtpJitterBuffer::new(
+                    jitter_buffer_ctx.clone(),
+                    90_000,
+                    Box::new(move |event| {
+                        stats_sender
+                            .send(RtpInputStatsEvent::VideoRtp(event).into_event(&ref_clone));
+                    }),
+                ),
+                rtp_packet_sender: handle.rtp_packet_sender,
+                eos_sent: false,
+            });
+        }
+
+        if let Some(handle) = audio_handle {
+            let stats_sender = ctx.stats_sender.clone();
+            let ref_clone = input_ref.clone();
+            let sample_rate = handle.sample_rate;
+            tracks.push(TrackState {
+                payload_type: 97,
+                ssrc: None,
+                jitter_buffer: RtpJitterBuffer::new(
+                    jitter_buffer_ctx,
+                    sample_rate,
+                    Box::new(move |event| {
+                        stats_sender
+                            .send(RtpInputStatsEvent::AudioRtp(event).into_event(&ref_clone));
+                    }),
+                ),
+                rtp_packet_sender: handle.rtp_packet_sender,
+                eos_sent: false,
+            });
+        }
+
+        let mut thread = Self {
+            tracks,
+            receiver,
+            first_pts: None,
+            has_offset,
+        };
+
+        let input_ref = input_ref.clone();
+        std::thread::Builder::new()
+            .name(format!("Depayloading thread for input: {input_ref}"))
+            .spawn(move || {
+                let _span =
+                    span!(Level::INFO, "RTP demuxer", input_id = input_ref.to_string()).entered();
+                thread.run();
+            })
+            .unwrap();
     }
 
-    let mut first_pts = None;
-
-    let audio_stats_sender = ctx.stats_sender.clone();
-    let audio_input_ref = input_ref.clone();
-    let mut audio = audio_handle.map(|handle| TrackState {
-        jitter_buffer: RtpJitterBuffer::new(
-            jitter_buffer_ctx.clone(),
-            handle.sample_rate,
-            Box::new(move |event| {
-                audio_stats_sender
-                    .send(RtpInputStatsEvent::AudioRtp(event).into_event(&audio_input_ref));
-            }),
-        ),
-        handle,
-        eos_received: false,
-    });
-
-    let video_stats_sender = ctx.stats_sender.clone();
-    let video_input_ref = input_ref.clone();
-    let mut video = video_handle.map(|handle| TrackState {
-        jitter_buffer: RtpJitterBuffer::new(
-            jitter_buffer_ctx,
-            90_000,
-            Box::new(move |event| {
-                video_stats_sender
-                    .send(RtpInputStatsEvent::VideoRtp(event).into_event(&video_input_ref));
-            }),
-        ),
-        handle,
-        eos_received: false,
-    });
-
-    let mut audio_ssrc = None;
-    let mut video_ssrc = None;
-
-    let maybe_send_video_eos = |video: &mut Option<TrackState<RtpVideoTrackThreadHandle>>| {
-        if let Some(video) = video
-            && !video.eos_received
-        {
-            video.eos_received = true;
-            let sender = &video.handle.rtp_packet_sender;
-            if sender.send(PipelineEvent::EOS).is_err() {
-                debug!("Failed to send EOS from RTP video depayloader. Channel closed.");
-            }
-        }
-    };
-    let maybe_send_audio_eos = |audio: &mut Option<TrackState<RtpAudioTrackThreadHandle>>| {
-        if let Some(audio) = audio
-            && !audio.eos_received
-        {
-            audio.eos_received = true;
-            let sender = &audio.handle.rtp_packet_sender;
-            if sender.send(PipelineEvent::EOS).is_err() {
-                debug!("Failed to send EOS from RTP audio depayloader. Channel closed.");
-            }
-        }
-    };
-    loop {
-        let mut buffer = match receiver.recv_timeout(Duration::from_millis(10)) {
-            Ok(buffer) => buffer,
-            Err(RecvTimeoutError::Timeout) => {
-                if let Some(video) = &mut video {
-                    let sender = &video.handle.rtp_packet_sender;
-                    while let Some(mut packet) = video.jitter_buffer.pop() {
-                        if let RtpInputEvent::Packet(packet) = &mut packet
-                            && has_offset
-                        {
-                            let first_pts = *first_pts.get_or_insert(packet.timestamp);
-                            packet.timestamp = packet.timestamp.saturating_sub(first_pts);
-                        }
-                        trace!(?packet, "Received video RTP packet");
-                        if sender.send(PipelineEvent::Data(packet)).is_err() {
-                            debug!("Channel closed");
-                        }
-                    }
-                };
-                if let Some(audio) = &mut audio {
-                    let sender = &audio.handle.rtp_packet_sender;
-                    while let Some(mut packet) = audio.jitter_buffer.pop() {
-                        if let RtpInputEvent::Packet(packet) = &mut packet
-                            && has_offset
-                        {
-                            let first_pts = *first_pts.get_or_insert(packet.timestamp);
-                            packet.timestamp = packet.timestamp.saturating_sub(first_pts);
-                        }
-                        trace!(?packet, "Received audio RTP packet");
-                        if sender.send(PipelineEvent::Data(packet)).is_err() {
-                            debug!("Channel closed");
-                        }
-                    }
-                }
-                continue;
-            }
-            Err(RecvTimeoutError::Disconnected) => {
+    fn run(&mut self) {
+        loop {
+            let read_result = self.receiver.recv_timeout(Duration::from_millis(10));
+            self.process_rtp_from_jitter_buffer();
+            if self.tracks.iter().all(|track| track.eos_sent) {
                 debug!("Closing RTP demuxer thread.");
                 break;
             }
-        };
 
-        match rtp::packet::Packet::unmarshal(&mut buffer.clone()) {
-            // https://datatracker.ietf.org/doc/html/rfc5761#section-4
-            //
-            // Given these constraints, it is RECOMMENDED to follow the guidelines
-            // in the RTP/AVP profile [7] for the choice of RTP payload type values,
-            // with the additional restriction that payload type values in the range
-            // 64-95 MUST NOT be used.
-            Ok(packet) if packet.header.payload_type < 64 || packet.header.payload_type > 95 => {
-                if packet.header.payload_type == 96 {
-                    video_ssrc.get_or_insert(packet.header.ssrc);
-                    if let Some(video) = &mut video {
-                        video.jitter_buffer.write_packet(packet);
-                        let sender = &video.handle.rtp_packet_sender;
-                        while let Some(mut packet) = video.jitter_buffer.pop() {
-                            if let RtpInputEvent::Packet(packet) = &mut packet
-                                && has_offset
-                            {
-                                let first_pts = *first_pts.get_or_insert(packet.timestamp);
-                                packet.timestamp = packet.timestamp.saturating_sub(first_pts);
-                            }
-                            trace!(?packet, "Received video RTP packet");
-                            if sender.send(PipelineEvent::Data(packet)).is_err() {
-                                debug!("Channel closed");
-                            }
-                        }
-                    }
-                } else if packet.header.payload_type == 97 {
-                    audio_ssrc.get_or_insert(packet.header.ssrc);
-                    if let Some(audio) = &mut audio {
-                        audio.jitter_buffer.write_packet(packet);
-                        let sender = &audio.handle.rtp_packet_sender;
-                        while let Some(mut packet) = audio.jitter_buffer.pop()
-                            && has_offset
-                        {
-                            if let RtpInputEvent::Packet(packet) = &mut packet {
-                                let first_pts = *first_pts.get_or_insert(packet.timestamp);
-                                packet.timestamp = packet.timestamp.saturating_sub(first_pts);
-                            }
-                            trace!(?packet, "Received audio RTP packet");
-                            if sender.send(PipelineEvent::Data(packet)).is_err() {
-                                debug!("Channel closed");
-                            }
-                        }
-                    }
+            let mut buffer = match read_result {
+                Ok(buffer) => buffer,
+                Err(RecvTimeoutError::Timeout) => {
+                    continue;
                 }
-            }
-            Ok(_) | Err(_) => {
-                match rtcp::packet::unmarshal(&mut buffer) {
+                Err(RecvTimeoutError::Disconnected) => {
+                    debug!("Closing RTP demuxer thread.");
+                    break;
+                }
+            };
+
+            match rtp::packet::Packet::unmarshal(&mut buffer) {
+                // https://datatracker.ietf.org/doc/html/rfc5761#section-4
+                //
+                // Given these constraints, it is RECOMMENDED to follow the guidelines
+                // in the RTP/AVP profile [7] for the choice of RTP payload type values,
+                // with the additional restriction that payload type values in the range
+                // 64-95 MUST NOT be used.
+                Ok(packet)
+                    if packet.header.payload_type < 64 || packet.header.payload_type > 95 =>
+                {
+                    self.handle_new_rtp_packet(packet);
+                }
+                Ok(_) | Err(_) => match rtcp::packet::unmarshal(&mut buffer) {
                     Ok(rtcp_packets) => {
                         for rtcp_packet in rtcp_packets {
-                            let header = rtcp_packet.header();
-                            debug!(?header, "Received RTCP packet");
-                            match header.packet_type {
-                                PacketType::SenderReport => {
-                                    let sender_report = rtcp_packet
-                                        .as_any()
-                                        .downcast_ref::<SenderReport>()
-                                        .unwrap();
-
-                                    if Some(sender_report.ssrc) == audio_ssrc
-                                        && let Some(audio) = &mut audio
-                                    {
-                                        audio.jitter_buffer.on_sender_report(
-                                            sender_report.ntp_time,
-                                            sender_report.rtp_time,
-                                        );
-                                    }
-
-                                    if Some(sender_report.ssrc) == video_ssrc
-                                        && let Some(video) = &mut video
-                                    {
-                                        video.jitter_buffer.on_sender_report(
-                                            sender_report.ntp_time,
-                                            sender_report.rtp_time,
-                                        );
-                                    }
-                                }
-                                PacketType::Goodbye => {
-                                    if let Some(video) = &mut video {
-                                        let sender = &video.handle.rtp_packet_sender;
-                                        while let Some(mut packet) = video.jitter_buffer.force_pop()
-                                        {
-                                            if let RtpInputEvent::Packet(packet) = &mut packet
-                                                && has_offset
-                                            {
-                                                let first_pts =
-                                                    *first_pts.get_or_insert(packet.timestamp);
-                                                packet.timestamp =
-                                                    packet.timestamp.saturating_sub(first_pts);
-                                            }
-                                            trace!(?packet, "(force) Received video RTP packet");
-                                            if sender.send(PipelineEvent::Data(packet)).is_err() {
-                                                debug!("Channel closed");
-                                            }
-                                        }
-                                    };
-                                    if let Some(audio) = &mut audio {
-                                        let sender = &audio.handle.rtp_packet_sender;
-                                        while let Some(mut packet) = audio.jitter_buffer.force_pop()
-                                        {
-                                            if let RtpInputEvent::Packet(packet) = &mut packet
-                                                && has_offset
-                                            {
-                                                let first_pts =
-                                                    *first_pts.get_or_insert(packet.timestamp);
-                                                packet.timestamp =
-                                                    packet.timestamp.saturating_sub(first_pts);
-                                            }
-                                            trace!(?packet, "(force) Received audio RTP packet");
-                                            if sender.send(PipelineEvent::Data(packet)).is_err() {
-                                                debug!("Channel closed");
-                                            }
-                                        }
-                                    }
-                                    for ssrc in rtcp_packet.destination_ssrc() {
-                                        if Some(ssrc) == audio_ssrc {
-                                            maybe_send_audio_eos(&mut audio)
-                                        }
-                                        if Some(ssrc) == video_ssrc {
-                                            maybe_send_video_eos(&mut video)
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
+                            self.handle_new_rtcp_packet(rtcp_packet);
                         }
                     }
                     Err(err) => {
                         warn!(%err, "Received an unexpected packet, which is not recognized either as RTP or RTCP. Dropping.");
+                        return;
+                    }
+                },
+            };
+            self.process_rtp_from_jitter_buffer();
+        }
+        for track in &mut self.tracks {
+            track.send_eos();
+        }
+    }
+
+    fn handle_new_rtp_packet(&mut self, packet: rtp::packet::Packet) {
+        let pt = packet.header.payload_type;
+        if let Some(track) = self.tracks.iter_mut().find(|t| t.payload_type == pt) {
+            track.ssrc.get_or_insert(packet.header.ssrc);
+            track.jitter_buffer.write_packet(packet);
+        }
+    }
+
+    fn handle_new_rtcp_packet(&mut self, rtcp_packet: Box<dyn rtcp::packet::Packet + Send + Sync>) {
+        let header = rtcp_packet.header();
+        debug!(?header, "Received RTCP packet");
+        match header.packet_type {
+            PacketType::SenderReport => {
+                let sender_report = rtcp_packet.as_any().downcast_ref::<SenderReport>().unwrap();
+                for track in &mut self.tracks {
+                    if track.ssrc == Some(sender_report.ssrc) {
+                        track
+                            .jitter_buffer
+                            .on_sender_report(sender_report.ntp_time, sender_report.rtp_time);
                     }
                 }
-                continue;
             }
-        };
+            PacketType::Goodbye => {
+                self.flush_rtp_from_jitter_buffer();
+                for ssrc in rtcp_packet.destination_ssrc() {
+                    for track in &mut self.tracks {
+                        if track.ssrc == Some(ssrc) {
+                            track.send_eos();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
-    maybe_send_audio_eos(&mut audio);
-    maybe_send_video_eos(&mut video);
+
+    fn process_rtp_from_jitter_buffer(&mut self) {
+        // Pop from the track with the lowest PTS first to interleave audio/video in order.
+        loop {
+            let next_track = self
+                .tracks
+                .iter_mut()
+                .filter_map(|t| t.jitter_buffer.peek_next_pts().map(|pts| (t, pts)))
+                .min_by_key(|(_, pts)| *pts)
+                .map(|(t, _)| t);
+            let Some(track) = next_track else {
+                break;
+            };
+            let Some(packet) = track.jitter_buffer.pop() else {
+                break;
+            };
+            track.send_packet(packet, &mut self.first_pts, self.has_offset);
+        }
+        // If a track's pop returned None (not ready), other tracks might still have
+        // ready packets. Drain them individually.
+        for track in &mut self.tracks {
+            while let Some(packet) = track.jitter_buffer.pop() {
+                track.send_packet(packet, &mut self.first_pts, self.has_offset);
+            }
+        }
+    }
+
+    fn flush_rtp_from_jitter_buffer(&mut self) {
+        // Pop from the track with the lowest PTS first to interleave audio/video in order.
+        loop {
+            let next_track = self
+                .tracks
+                .iter_mut()
+                .filter_map(|t| t.jitter_buffer.peek_next_pts().map(|pts| (t, pts)))
+                .min_by_key(|(_, pts)| *pts)
+                .map(|(t, _)| t);
+            let Some(track) = next_track else {
+                break;
+            };
+            let Some(packet) = track.jitter_buffer.force_pop() else {
+                break;
+            };
+            track.send_packet(packet, &mut self.first_pts, self.has_offset);
+        }
+    }
+}
+
+impl TrackState {
+    fn send_packet(
+        &mut self,
+        mut packet: RtpInputEvent,
+        first_pts: &mut Option<Duration>,
+        has_offset: bool,
+    ) {
+        if let RtpInputEvent::Packet(p) = &mut packet
+            && has_offset
+        {
+            let first = *first_pts.get_or_insert(p.timestamp);
+            p.timestamp = p.timestamp.saturating_sub(first);
+        }
+        trace!(?packet, "Sending RTP packet to decoder");
+        if self
+            .rtp_packet_sender
+            .send(PipelineEvent::Data(packet))
+            .is_err()
+        {
+            debug!("Channel closed");
+            self.eos_sent = true;
+        }
+    }
+
+    fn send_eos(&mut self) {
+        if !self.eos_sent {
+            self.eos_sent = true;
+            if self.rtp_packet_sender.send(PipelineEvent::EOS).is_err() {
+                debug!("Failed to send EOS. Channel closed.");
+            }
+        }
+    }
 }
 
 impl From<BindToPortError> for RtpInputError {

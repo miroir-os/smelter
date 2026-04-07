@@ -84,6 +84,7 @@ impl VideoQueue {
 
         let all_required_inputs_ready = self.inputs.values().all(|weak| {
             weak.video(|input| {
+                tracing::warn!(required=?input.required(), ready=?input.try_enqueue_until_ready_for_pts(next_pts, queue_start_pts));
                 (!input.required())
                     || input.try_enqueue_until_ready_for_pts(next_pts, queue_start_pts)
             })

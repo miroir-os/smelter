@@ -199,6 +199,11 @@ impl RtpJitterBuffer {
             timestamp,
         }))
     }
+
+    pub fn peek_next_pts(&self) -> Option<Duration> {
+        let (_, packet) = self.packets.first_key_value()?;
+        Some(packet.pts + self.shared_ctx.input_buffer.size())
+    }
 }
 
 #[derive(Debug, Default)]

@@ -2,7 +2,7 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 use smelter_render::InputId;
-use tracing::warn;
+use tracing::{debug, trace, warn};
 
 use crate::{
     PipelineCtx, PipelineEvent, Ref,
@@ -283,6 +283,9 @@ impl AudioInputReceiver {
     /// if the buffer doesn't yet cover `needed_pts`.
     fn try_enqueue_until(&mut self, needed_pts: Duration) {
         loop {
+            if self.disconnected {
+                return;
+            }
             let back = self.buffer.back();
             let has_needed = back
                 .map(|batch| batch.end_pts() > needed_pts)
@@ -292,12 +295,14 @@ impl AudioInputReceiver {
             }
             match self.receiver.try_recv() {
                 Ok(mut batch) => {
+                    trace!(pts_range=?batch.pts_range(), "Enqueue samples");
                     batch.start_pts += self.delay;
                     self.buffer.push_back(batch);
                     self.state = ReceiverState::Running;
                 }
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
+                    debug!("Queue audio channel disconnected");
                     self.disconnected = true;
                     self.maybe_transition_to_done();
                     return;
@@ -314,6 +319,7 @@ impl AudioInputReceiver {
     fn maybe_transition_to_done(&mut self) {
         if self.disconnected && self.buffer.is_empty() {
             self.state = ReceiverState::Done;
+            debug!("Queue audio input done")
         }
     }
 

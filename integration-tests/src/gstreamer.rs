@@ -340,6 +340,8 @@ pub fn start_gst_send_from_file_udp(
             );
     }
 
+    info!(?gst_input_command);
+
     let handle = Command::new("bash")
         .arg("-c")
         .arg(gst_input_command)
