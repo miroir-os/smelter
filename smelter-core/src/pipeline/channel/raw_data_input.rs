@@ -56,6 +56,7 @@ fn spawn_video_repacking_thread(
     let (output_sender, output_receiver) = bounded(5);
     let (input_sender, input_receiver) = bounded::<PipelineEvent<Frame>>(1000);
 
+    let input_ref_clone = input_ref.clone();
     thread::Builder::new()
         .name(format!(
             "Raw channel video synchronization thread for input {input_ref}"
@@ -63,13 +64,29 @@ fn spawn_video_repacking_thread(
         .spawn(move || {
             let mut start_pts = None;
             let mut first_frame_pts = None;
+            let mut frame_count = 0u64;
             for event in input_receiver.into_iter() {
                 let event = match event {
                     PipelineEvent::Data(mut frame) => {
+                        let is_first = start_pts.is_none();
                         let start_pts =
                             *start_pts.get_or_insert_with(|| ctx.queue_sync_point.elapsed());
                         let first_frame_pts = *first_frame_pts.get_or_insert(frame.pts);
+                        let original_pts = frame.pts;
                         frame.pts = frame.pts + start_pts + buffer_duration - first_frame_pts;
+                        frame_count += 1;
+                        if is_first || frame_count % 150 == 0 {
+                            tracing::warn!(
+                                "[AV_SYNC] smelter::raw_video_repack input={}: original_pts={:.1}ms start_pts={:.1}ms buffer={:.1}ms first_frame_pts={:.1}ms -> output_pts={:.1}ms (frame #{})",
+                                input_ref_clone,
+                                original_pts.as_secs_f64() * 1000.0,
+                                start_pts.as_secs_f64() * 1000.0,
+                                buffer_duration.as_secs_f64() * 1000.0,
+                                first_frame_pts.as_secs_f64() * 1000.0,
+                                frame.pts.as_secs_f64() * 1000.0,
+                                frame_count,
+                            );
+                        }
                         PipelineEvent::Data(frame)
                     }
                     PipelineEvent::EOS => PipelineEvent::EOS,
@@ -97,6 +114,7 @@ fn spawn_audio_repacking_thread(
     let (output_sender, output_receiver) = bounded(5);
     let (input_sender, input_receiver) = bounded::<PipelineEvent<InputAudioSamples>>(1000);
 
+    let input_ref_clone = input_ref.clone();
     thread::Builder::new()
         .name(format!(
             "Raw channel audio synchronization thread for input {input_ref}"
@@ -104,14 +122,31 @@ fn spawn_audio_repacking_thread(
         .spawn(move || {
             let mut start_pts = None;
             let mut first_frame_pts = None;
+            let mut batch_count = 0u64;
             for event in input_receiver.into_iter() {
                 let event = match event {
                     PipelineEvent::Data(mut batch) => {
+                        let is_first = start_pts.is_none();
                         let start_pts =
                             *start_pts.get_or_insert_with(|| ctx.queue_sync_point.elapsed());
                         let first_frame_pts = *first_frame_pts.get_or_insert(batch.start_pts);
+                        let original_pts = batch.start_pts;
                         batch.start_pts =
                             batch.start_pts + start_pts + buffer_duration - first_frame_pts;
+                        batch_count += 1;
+                        // Log first + every ~5s (250 batches at 20ms)
+                        if is_first || batch_count % 250 == 0 {
+                            tracing::warn!(
+                                "[AV_SYNC] smelter::raw_audio_repack input={}: original_pts={:.1}ms start_pts={:.1}ms buffer={:.1}ms first_frame_pts={:.1}ms -> output_pts={:.1}ms (batch #{})",
+                                input_ref_clone,
+                                original_pts.as_secs_f64() * 1000.0,
+                                start_pts.as_secs_f64() * 1000.0,
+                                buffer_duration.as_secs_f64() * 1000.0,
+                                first_frame_pts.as_secs_f64() * 1000.0,
+                                batch.start_pts.as_secs_f64() * 1000.0,
+                                batch_count,
+                            );
+                        }
                         PipelineEvent::Data(batch)
                     }
                     PipelineEvent::EOS => PipelineEvent::EOS,

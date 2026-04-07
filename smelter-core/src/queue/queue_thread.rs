@@ -98,6 +98,10 @@ struct QueueThreadAfterStart {
 
 impl QueueThreadAfterStart {
     fn new(queue_thread: QueueThread, start_event: QueueStartEvent) -> Self {
+        tracing::warn!(
+            "[AV_SYNC] smelter::queue: started, queue_start_pts={:.1}ms",
+            start_event.start_time_pts.as_secs_f64() * 1000.0,
+        );
         Self {
             queue: queue_thread.queue.clone(),
             queue_start_pts: start_event.start_time_pts,
@@ -242,6 +246,18 @@ impl VideoQueueProcessor {
 
     fn send_output_frames(&mut self, frameset: QueueVideoOutput) {
         let pts = frameset.pts;
+        // Log every ~5s (150 frames at 30fps)
+        if self.sent_batches_counter % 150 == 0 {
+            let elapsed = self.queue.sync_point.elapsed();
+            let deadline_margin_ms = pts.as_secs_f64() * 1000.0 - elapsed.as_secs_f64() * 1000.0;
+            tracing::warn!(
+                "[AV_SYNC] smelter::queue: video output pts={:.1}ms (batch #{}) elapsed={:.1}ms deadline_margin={:.1}ms",
+                pts.as_secs_f64() * 1000.0,
+                self.sent_batches_counter,
+                elapsed.as_secs_f64() * 1000.0,
+                deadline_margin_ms,
+            );
+        }
         debug!(?frameset, "Pushing video frames.");
         if frameset.required {
             if self.sender.send(frameset).is_err() {
@@ -299,6 +315,19 @@ impl AudioQueueProcessor {
 
     fn send_output_batch(&mut self, samples: QueueAudioOutput) {
         let pts_range = (samples.start_pts, samples.end_pts);
+        // Log every ~5s (250 batches at 20ms)
+        if self.chunks_counter % 250 == 0 {
+            let elapsed = self.queue.sync_point.elapsed();
+            let deadline_margin_ms = samples.start_pts.as_secs_f64() * 1000.0 - elapsed.as_secs_f64() * 1000.0;
+            tracing::warn!(
+                "[AV_SYNC] smelter::queue: audio output pts_range=[{:.1}ms, {:.1}ms] (batch #{}) elapsed={:.1}ms deadline_margin={:.1}ms",
+                samples.start_pts.as_secs_f64() * 1000.0,
+                samples.end_pts.as_secs_f64() * 1000.0,
+                self.chunks_counter,
+                elapsed.as_secs_f64() * 1000.0,
+                deadline_margin_ms,
+            );
+        }
         debug!(?samples, "Pushing audio samples.");
         if samples.required {
             if self.sender.send(samples).is_err() {

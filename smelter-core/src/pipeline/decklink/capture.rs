@@ -35,6 +35,7 @@ pub(super) struct ChannelCallbackAdapter {
     audio_offset: Mutex<Option<Duration>>,
     video_offset: Mutex<Option<Duration>>,
     last_format: Mutex<Format>,
+    video_frame_count: std::sync::atomic::AtomicU64,
 }
 
 impl ChannelCallbackAdapter {
@@ -64,6 +65,7 @@ impl ChannelCallbackAdapter {
                 audio_offset: Mutex::new(None),
                 video_offset: Mutex::new(None),
                 last_format: Mutex::new(initial_format),
+                video_frame_count: std::sync::atomic::AtomicU64::new(0),
             },
             DataReceivers {
                 video: Some(video_receiver),
@@ -78,11 +80,24 @@ impl ChannelCallbackAdapter {
         sender: &Sender<PipelineEvent<Frame>>,
     ) -> Result<(), decklink::DeckLinkError> {
         let stream_time = video_frame.stream_time()?;
+        let is_first_offset = self.video_offset.lock().unwrap().is_none();
         let offset = {
             let mut guard = self.video_offset.lock().unwrap();
             *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(stream_time))
         };
         let pts = stream_time + offset;
+        let count = self.video_frame_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if is_first_offset || count % 150 == 0 {
+            tracing::warn!(
+                "[AV_SYNC] decklink::capture: stream_time={:.1}ms offset={:.1}ms sync_point_elapsed={:.1}ms -> pts={:.1}ms (frame #{}{})",
+                stream_time.as_secs_f64() * 1000.0,
+                offset.as_secs_f64() * 1000.0,
+                self.sync_point.elapsed().as_secs_f64() * 1000.0,
+                pts.as_secs_f64() * 1000.0,
+                count,
+                if is_first_offset { " FIRST" } else { "" },
+            );
+        }
 
         let width = video_frame.width();
         let height = video_frame.height();
@@ -202,11 +217,20 @@ impl ChannelCallbackAdapter {
         sender: &Sender<PipelineEvent<InputAudioSamples>>,
     ) -> Result<(), decklink::DeckLinkError> {
         let packet_time = audio_packet.packet_time()?;
+        let is_first = self.audio_offset.lock().unwrap().is_none();
         let offset = {
             let mut guard = self.audio_offset.lock().unwrap();
             *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(packet_time))
         };
         let pts = packet_time + offset;
+        if is_first {
+            tracing::warn!(
+                "[AV_SYNC] decklink::audio_capture: FIRST packet_time={:.1}ms offset={:.1}ms -> pts={:.1}ms",
+                packet_time.as_secs_f64() * 1000.0,
+                offset.as_secs_f64() * 1000.0,
+                pts.as_secs_f64() * 1000.0,
+            );
+        }
 
         let samples = audio_packet.as_32_bit_stereo()?;
         let samples = InputAudioSamples {
