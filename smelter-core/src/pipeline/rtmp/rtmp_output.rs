@@ -1,4 +1,4 @@
-use std::{ops::Deref, ptr, sync::Arc};
+use std::{ops::Deref, ptr, sync::Arc, time::Duration};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ffmpeg_next::{self as ffmpeg, Rational, Rescale};
@@ -43,8 +43,11 @@ impl RtmpClientOutput {
         output_ref: Ref<OutputId>,
         options: RtmpOutputOptions,
     ) -> Result<Self, OutputInitError> {
+        tracing::warn!("[stream-lag] RtmpClientOutput::new: connecting to {}", options.url);
+        let connect_start = std::time::Instant::now();
         let mut output_ctx = ffmpeg::format::output_as(&options.url.deref(), "flv")
             .map_err(OutputInitError::FfmpegError)?;
+        tracing::warn!("[stream-lag] RtmpClientOutput::new: connected in {:.0}ms", connect_start.elapsed().as_secs_f64() * 1000.0);
 
         let (encoded_chunks_sender, encoded_chunks_receiver) = bounded(1000);
 
@@ -70,9 +73,11 @@ impl RtmpClientOutput {
         };
 
         // write header initializes time_base
+        tracing::warn!("[stream-lag] RtmpClientOutput::new: writing FLV header");
         output_ctx
             .write_header()
             .map_err(OutputInitError::FfmpegError)?;
+        tracing::warn!("[stream-lag] RtmpClientOutput::new: header written, total init={:.0}ms", connect_start.elapsed().as_secs_f64() * 1000.0);
 
         let (video_encoder, video_stream) = match video {
             Some((encoder, index)) => (
@@ -264,10 +269,31 @@ fn run_ffmpeg_output_thread(
 ) {
     let mut received_video_eos = video_stream.as_ref().map(|_| false);
     let mut received_audio_eos = audio_stream.as_ref().map(|_| false);
+    let mut packet_count = 0u64;
+    let mut last_video_pts = Duration::ZERO;
+    let mut last_audio_pts = Duration::ZERO;
+    let start = std::time::Instant::now();
 
-    for packet in packets_receiver {
+    tracing::warn!("[stream-lag] RTMP sender thread: started, channel_len={}", packets_receiver.len());
+
+    for packet in packets_receiver.iter() {
         match packet {
             EncodedOutputEvent::Data(chunk) => {
+                match &chunk.kind {
+                    MediaKind::Video(_) => last_video_pts = chunk.pts,
+                    MediaKind::Audio(_) => last_audio_pts = chunk.pts,
+                }
+                packet_count += 1;
+                // Log every 150 packets (~5s at 30fps)
+                if packet_count % 150 == 0 {
+                    let channel_len = packets_receiver.len();
+                    tracing::warn!(
+                        "[stream-lag] RTMP sender: packets={packet_count} channel_pending={channel_len} elapsed={:.1}s video_pts={:.1}ms audio_pts={:.1}ms",
+                        start.elapsed().as_secs_f64(),
+                        last_video_pts.as_secs_f64() * 1000.0,
+                        last_audio_pts.as_secs_f64() * 1000.0,
+                    );
+                }
                 write_chunk(chunk, &video_stream, &audio_stream, &mut output_ctx);
             }
             EncodedOutputEvent::VideoEOS => match received_video_eos {
@@ -349,7 +375,12 @@ fn write_chunk(
         packet.set_flags(ffmpeg_next::packet::Flags::KEY);
     }
 
+    let write_start = std::time::Instant::now();
     if let Err(err) = packet.write_interleaved(output_ctx) {
         error!("Failed to write packet to RTMP stream: {}.", err);
+    }
+    let write_ms = write_start.elapsed().as_secs_f64() * 1000.0;
+    if write_ms > 100.0 {
+        tracing::warn!("[stream-lag] write_chunk: SLOW write took {write_ms:.0}ms pts={:.1}ms", chunk.pts.as_secs_f64() * 1000.0);
     }
 }
