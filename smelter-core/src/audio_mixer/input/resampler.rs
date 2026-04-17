@@ -47,6 +47,9 @@ pub(super) struct InputResampler {
     /// not attempting to stretch audio. `get_samples` should return zeros until
     /// we reach synchronization.
     before_first_resample: bool,
+
+    /// [SMELTER_TRACE] Call counter for periodic logging.
+    get_samples_call_count: u64,
 }
 
 /// Should be on par with FFT resampler, but more CPU intensive.
@@ -128,6 +131,7 @@ impl InputResampler {
             input_buffer_end_pts: first_batch_pts,
 
             before_first_resample: true,
+            get_samples_call_count: 0,
         })
     }
 
@@ -186,7 +190,13 @@ impl InputResampler {
             let gap_duration = start_pts.saturating_sub(self.input_buffer_end_pts);
             let zero_samples =
                 f64::floor(gap_duration.as_secs_f64() * self.input_sample_rate as f64) as usize;
-            trace!(zero_samples, "Detected gap, filling with zero samples");
+            warn!(
+                "[SMELTER_TRACE] RESAMPLER_GAP gap={:.3}ms zero_fill={zero_samples} \
+                 batch_start={:.3}ms buf_end={:.3}ms",
+                gap_duration.as_secs_f64() * 1000.0,
+                start_pts.as_secs_f64() * 1000.0,
+                self.input_buffer_end_pts.as_secs_f64() * 1000.0,
+            );
             let samples = match self.channels {
                 AudioChannels::Mono => AudioSamples::Mono(vec![0.0; zero_samples]),
                 AudioChannels::Stereo => AudioSamples::Stereo(vec![(0.0, 0.0); zero_samples]),
@@ -194,7 +204,11 @@ impl InputResampler {
             self.resampler_input_buffer.push_back(samples)
         }
         if start_pts + CONTINUITY_THRESHOLD < self.input_buffer_end_pts {
-            trace!("Detected overlapping batches, dropping.");
+            warn!(
+                "[SMELTER_TRACE] RESAMPLER_OVERLAP dropped batch_start={:.3}ms buf_end={:.3}ms",
+                start_pts.as_secs_f64() * 1000.0,
+                self.input_buffer_end_pts.as_secs_f64() * 1000.0,
+            );
             return;
         }
         self.input_buffer_end_pts = end_pts;
@@ -211,6 +225,11 @@ impl InputResampler {
             * self.output_sample_rate as f64)
             .round() as usize;
 
+        self.get_samples_call_count += 1;
+        let log_this_call = self.get_samples_call_count <= 5
+            || self.get_samples_call_count % 50 == 0;
+
+        let mut loop_iter = 0u32;
         while self.output_buffer.frames() < batch_size {
             let requested_start_pts = pts_range.0
                 + Duration::from_secs_f64(
@@ -223,6 +242,9 @@ impl InputResampler {
             let input_start_pts = self
                 .input_buffer_start_pts()
                 .saturating_sub(self.original_output_delay);
+
+            let drift_ms = input_start_pts.as_secs_f64() * 1000.0
+                - requested_start_pts.as_secs_f64() * 1000.0;
 
             if input_start_pts > requested_start_pts + STRETCH_THRESHOLD {
                 // write full buffer of zeros (go through resampler)
@@ -237,27 +259,66 @@ impl InputResampler {
                 };
                 self.resampler_input_buffer.push_front(samples);
                 self.set_resample_ratio_relative(1.0);
-                trace!(
-                    zero_samples,
-                    ?gap_duration,
-                    "Input buffer behind, writing zeroes samples"
-                )
+                warn!(
+                    "[SMELTER_TRACE] DRIFT call={} zone=ZERO_FILL drift={drift_ms:.3}ms \
+                     gap={:.3}ms zeros={zero_samples} \
+                     req={:.3}ms inp={:.3}ms ratio=1.0",
+                    self.get_samples_call_count,
+                    gap_duration.as_secs_f64() * 1000.0,
+                    requested_start_pts.as_secs_f64() * 1000.0,
+                    input_start_pts.as_secs_f64() * 1000.0,
+                );
             } else if input_start_pts > requested_start_pts + SHIFT_THRESHOLD {
                 // stretch
                 let drift = input_start_pts.saturating_sub(requested_start_pts);
                 let ratio = drift.as_secs_f64() / STRETCH_THRESHOLD.as_secs_f64();
-                self.set_resample_ratio_relative(1.0 + (0.1 * ratio));
-                trace!(ratio, ?drift, "Input buffer behind, stretching");
+                let rel_ratio = 1.0 + (0.1 * ratio);
+                self.set_resample_ratio_relative(rel_ratio);
+                if log_this_call && loop_iter == 0 {
+                    warn!(
+                        "[SMELTER_TRACE] DRIFT call={} zone=STRETCH drift={drift_ms:.3}ms \
+                         rel_ratio={rel_ratio:.6} actual_ratio={:.6} \
+                         req={:.3}ms inp={:.3}ms buf_frames={} out_delay={:.3}ms",
+                        self.get_samples_call_count,
+                        self.resampler.resample_ratio(),
+                        requested_start_pts.as_secs_f64() * 1000.0,
+                        input_start_pts.as_secs_f64() * 1000.0,
+                        self.resampler_input_buffer.frames(),
+                        self.original_output_delay.as_secs_f64() * 1000.0,
+                    );
+                }
             } else if input_start_pts + SHIFT_THRESHOLD > requested_start_pts {
                 // no squashing/stretching
                 self.set_resample_ratio_relative(1.0);
-                trace!("Input buffer on time");
+                if log_this_call && loop_iter == 0 {
+                    warn!(
+                        "[SMELTER_TRACE] DRIFT call={} zone=ON_TIME drift={drift_ms:.3}ms \
+                         ratio=1.0 req={:.3}ms inp={:.3}ms buf_frames={} out_delay={:.3}ms",
+                        self.get_samples_call_count,
+                        requested_start_pts.as_secs_f64() * 1000.0,
+                        input_start_pts.as_secs_f64() * 1000.0,
+                        self.resampler_input_buffer.frames(),
+                        self.original_output_delay.as_secs_f64() * 1000.0,
+                    );
+                }
             } else if input_start_pts + STRETCH_THRESHOLD > requested_start_pts {
                 // squash
                 let drift = requested_start_pts.saturating_sub(input_start_pts);
                 let ratio = drift.as_secs_f64() / STRETCH_THRESHOLD.as_secs_f64();
-                self.set_resample_ratio_relative(1.0 - (0.1 * ratio));
-                trace!(ratio, ?drift, "Input buffer ahead, squashing");
+                let rel_ratio = 1.0 - (0.1 * ratio);
+                self.set_resample_ratio_relative(rel_ratio);
+                if log_this_call && loop_iter == 0 {
+                    warn!(
+                        "[SMELTER_TRACE] DRIFT call={} zone=SQUASH drift={drift_ms:.3}ms \
+                         rel_ratio={rel_ratio:.6} actual_ratio={:.6} \
+                         req={:.3}ms inp={:.3}ms buf_frames={}",
+                        self.get_samples_call_count,
+                        self.resampler.resample_ratio(),
+                        requested_start_pts.as_secs_f64() * 1000.0,
+                        input_start_pts.as_secs_f64() * 1000.0,
+                        self.resampler_input_buffer.frames(),
+                    );
+                }
             } else {
                 // drop data
                 // TODO: handle discontinuity
@@ -267,14 +328,19 @@ impl InputResampler {
                     (duration_to_drop.as_secs_f64() * self.input_sample_rate as f64) as usize;
                 self.resampler_input_buffer.drain_samples(samples_to_drop);
                 self.set_resample_ratio_relative(1.0);
-                trace!(
-                    samples_to_drop,
-                    ?duration_to_drop,
-                    "Input buffer ahead, dropping samples"
+                warn!(
+                    "[SMELTER_TRACE] DRIFT call={} zone=DROP drift={drift_ms:.3}ms \
+                     drop_samples={samples_to_drop} drop_dur={:.3}ms \
+                     req={:.3}ms inp={:.3}ms",
+                    self.get_samples_call_count,
+                    duration_to_drop.as_secs_f64() * 1000.0,
+                    requested_start_pts.as_secs_f64() * 1000.0,
+                    input_start_pts.as_secs_f64() * 1000.0,
                 );
             }
 
             self.resample();
+            loop_iter += 1;
         }
         self.output_buffer.read_chunk(batch_size)
     }
@@ -293,6 +359,13 @@ impl InputResampler {
         if pts_range.1 < self.input_buffer_start_pts() {
             let duration = pts_range.1.saturating_sub(pts_range.0);
             let zero_samples = (duration.as_secs_f64() * self.output_sample_rate as f64) as usize;
+            warn!(
+                "[SMELTER_TRACE] FIRST_RESAMPLE action=ALL_SILENCE \
+                 range=[{:.3}ms,{:.3}ms] ibuf_start={:.3}ms zeros={zero_samples}",
+                pts_range.0.as_secs_f64() * 1000.0,
+                pts_range.1.as_secs_f64() * 1000.0,
+                input_buffer_start_pts.as_secs_f64() * 1000.0,
+            );
             let samples = match self.channels {
                 AudioChannels::Mono => AudioSamples::Mono(vec![0.0; zero_samples]),
                 AudioChannels::Stereo => AudioSamples::Stereo(vec![(0.0, 0.0); zero_samples]),
@@ -303,17 +376,41 @@ impl InputResampler {
         if pts_range.0 < input_buffer_start_pts && input_buffer_start_pts < pts_range.1 {
             let duration = input_buffer_start_pts.saturating_sub(pts_range.0);
             let samples = (duration.as_secs_f64() * self.input_sample_rate as f64) as usize;
+            warn!(
+                "[SMELTER_TRACE] FIRST_RESAMPLE action=PREPEND_ZEROS \
+                 range=[{:.3}ms,{:.3}ms] ibuf_start={:.3}ms prepend={samples} \
+                 gap={:.3}ms",
+                pts_range.0.as_secs_f64() * 1000.0,
+                pts_range.1.as_secs_f64() * 1000.0,
+                input_buffer_start_pts.as_secs_f64() * 1000.0,
+                duration.as_secs_f64() * 1000.0,
+            );
             let batch = match self.channels {
                 AudioChannels::Mono => AudioSamples::Mono(vec![0.0; samples]),
                 AudioChannels::Stereo => AudioSamples::Stereo(vec![(0.0, 0.0); samples]),
             };
-            trace!(samples, ?duration, "Add zero samples before first resample");
             self.resampler_input_buffer.push_front(batch)
         } else if pts_range.0 > input_buffer_start_pts {
             let duration = pts_range.0.saturating_sub(input_buffer_start_pts);
             let samples = (duration.as_secs_f64() * self.input_sample_rate as f64) as usize;
-            trace!(samples, ?duration, "Drain samples before first resample");
+            warn!(
+                "[SMELTER_TRACE] FIRST_RESAMPLE action=DRAIN \
+                 range=[{:.3}ms,{:.3}ms] ibuf_start={:.3}ms drain={samples} \
+                 excess={:.3}ms",
+                pts_range.0.as_secs_f64() * 1000.0,
+                pts_range.1.as_secs_f64() * 1000.0,
+                input_buffer_start_pts.as_secs_f64() * 1000.0,
+                duration.as_secs_f64() * 1000.0,
+            );
             self.resampler_input_buffer.drain_samples(samples);
+        } else {
+            warn!(
+                "[SMELTER_TRACE] FIRST_RESAMPLE action=ALIGNED \
+                 range=[{:.3}ms,{:.3}ms] ibuf_start={:.3}ms",
+                pts_range.0.as_secs_f64() * 1000.0,
+                pts_range.1.as_secs_f64() * 1000.0,
+                input_buffer_start_pts.as_secs_f64() * 1000.0,
+            );
         }
 
         None
@@ -603,8 +700,19 @@ impl OutputBuffer {
             }
         }
 
-        // fill with zero if channel layouts would mismatch
-        let range = 0..sample_count - samples.len();
+        // fill with zero if not enough produced
+        let produced = samples.len();
+        let missing = sample_count - produced;
+        if missing > 0 {
+            let silence_ms = missing as f64 * 1000.0 / 48000.0;
+            let output_buf_remaining: usize =
+                self.buffer.iter().map(|(b, r)| b.len() - r).sum();
+            warn!(
+                "[SMELTER_TRACE] SILENCE requested={sample_count} produced={produced} \
+                 silence={missing}frames({silence_ms:.3}ms) output_buf_remaining={output_buf_remaining}",
+            );
+        }
+        let range = 0..missing;
         match &mut samples {
             AudioSamples::Mono(samples) => samples.extend(range.map(|_| 0.0)),
             AudioSamples::Stereo(samples) => samples.extend(range.map(|_| (0.0, 0.0))),

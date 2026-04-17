@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::audio_mixer::input::{
     AudioMixerInputEvent, AudioMixerInputResult, resampler::InputResampler,
@@ -18,17 +18,47 @@ pub(super) fn start_input_thread(
         .name("audio mixer input".to_string())
         .spawn(move || {
             let mut processor = InputProcessor::new(mixing_sample_rate);
+            let mut call_count = 0u64;
 
             for event in input_receiver {
-                // Separation to write_batch and get_samples exists here, because
-                // we might need to move this logic to queue and writing batch to buffer
-                // and reading resampled values would be a separate steps
+                call_count += 1;
+                let batch_count = event.batches.len();
+                let batch_total_samples: usize =
+                    event.batches.iter().map(|b| b.len()).sum();
+                let batch_pts_range = if event.batches.is_empty() {
+                    None
+                } else {
+                    Some((
+                        event.batches.first().unwrap().start_pts,
+                        event.batches.last().unwrap().pts_range().1,
+                    ))
+                };
+
                 for batch in event.batches {
                     processor.write_batch(batch);
                 }
 
                 let pts_range = event.pts_range;
                 let samples = processor.get_samples(pts_range);
+
+                if call_count <= 5 || call_count % 50 == 0 {
+                    warn!(
+                        "[SMELTER_TRACE] MIXER_INPUT call={call_count} \
+                         requested=[{:.3}ms,{:.3}ms] batches={batch_count} \
+                         batch_samples={batch_total_samples} \
+                         batch_pts=[{},{}] output_samples={}",
+                        pts_range.0.as_secs_f64() * 1000.0,
+                        pts_range.1.as_secs_f64() * 1000.0,
+                        batch_pts_range
+                            .map(|(s, _)| format!("{:.3}ms", s.as_secs_f64() * 1000.0))
+                            .unwrap_or_else(|| "none".to_string()),
+                        batch_pts_range
+                            .map(|(_, e)| format!("{:.3}ms", e.as_secs_f64() * 1000.0))
+                            .unwrap_or_else(|| "none".to_string()),
+                        samples.len(),
+                    );
+                }
+
                 let result = AudioMixerInputResult { samples, pts_range };
                 if result_sender.send(result).is_err() {
                     trace!("Closing audio mixer input processing thread. Channel closed.");

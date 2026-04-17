@@ -299,6 +299,24 @@ impl AudioQueueProcessor {
 
     fn send_output_batch(&mut self, samples: QueueAudioOutput) {
         let pts_range = (samples.start_pts, samples.end_pts);
+        let chunk_idx = self.chunks_counter;
+        let now_elapsed = std::time::Instant::now()
+            .duration_since(self.queue.sync_point);
+        let wall_clock_lag_ms =
+            now_elapsed.as_secs_f64() * 1000.0 - samples.start_pts.as_secs_f64() * 1000.0;
+
+        if chunk_idx <= 5 || chunk_idx % 50 == 0 {
+            warn!(
+                "[SMELTER_TRACE] QUEUE_PUSH chunk={chunk_idx} \
+                 range=[{:.3}ms,{:.3}ms] wall_lag={wall_clock_lag_ms:.3}ms \
+                 required={} start_pts={:.3}ms",
+                samples.start_pts.as_secs_f64() * 1000.0,
+                samples.end_pts.as_secs_f64() * 1000.0,
+                samples.required,
+                self.queue_start_pts.as_secs_f64() * 1000.0,
+            );
+        }
+
         debug!(?samples, "Pushing audio samples.");
         if samples.required {
             if self.sender.send(samples).is_err() {
@@ -307,7 +325,12 @@ impl AudioQueueProcessor {
         } else {
             let deadline = self.queue.sync_point.add(samples.start_pts);
             if self.sender.send_deadline(samples, deadline).is_err() {
-                warn!(?pts_range, "Dropping audio batch on queue output.")
+                warn!(
+                    "[SMELTER_TRACE] QUEUE_DEADLINE_DROP chunk={chunk_idx} \
+                     range=[{:.3}ms,{:.3}ms] wall_lag={wall_clock_lag_ms:.3}ms",
+                    pts_range.0.as_secs_f64() * 1000.0,
+                    pts_range.1.as_secs_f64() * 1000.0,
+                );
             }
         }
         self.chunks_counter += 1;
