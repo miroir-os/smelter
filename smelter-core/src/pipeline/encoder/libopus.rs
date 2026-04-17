@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
 use tracing::{error, info};
 
 use crate::prelude::*;
@@ -30,6 +31,13 @@ impl AudioEncoder for OpusEncoder {
         encoder.set_inband_fec(options.forward_error_correction)?;
         encoder.set_packet_loss_perc(options.packet_loss)?;
 
+        // OpusHead pre_skip is in 48 kHz samples (RFC 7845 §4.2) but
+        // `get_lookahead` returns input-rate samples; scale or decoders miss
+        // part of the pre-roll on sub-48 kHz streams. Matches ffmpeg's
+        // `libavcodec/libopusenc.c:100`.
+        let pre_skip = (encoder.get_lookahead()? as u32 * 48_000 / options.sample_rate) as u16;
+        let extradata = opus_head(options.channels, options.sample_rate, pre_skip);
+
         let output_buffer = vec![0u8; 1024 * 1024];
 
         Ok((
@@ -37,7 +45,9 @@ impl AudioEncoder for OpusEncoder {
                 encoder,
                 output_buffer,
             },
-            AudioEncoderConfig { extradata: None },
+            AudioEncoderConfig {
+                extradata: Some(extradata),
+            },
         ))
     }
 
@@ -87,4 +97,21 @@ impl From<OpusEncoderPreset> for opus::Application {
             OpusEncoderPreset::LowestLatency => opus::Application::LowDelay,
         }
     }
+}
+
+// RFC 7845 §5.1 OpusHead (mono/stereo, channel mapping family 0).
+fn opus_head(channels: AudioChannels, sample_rate: u32, pre_skip: u16) -> Bytes {
+    let channel_count: u8 = match channels {
+        AudioChannels::Mono => 1,
+        AudioChannels::Stereo => 2,
+    };
+    let mut buf = [0u8; 19];
+    buf[0..8].copy_from_slice(b"OpusHead");
+    buf[8] = 1;
+    buf[9] = channel_count;
+    buf[10..12].copy_from_slice(&pre_skip.to_le_bytes());
+    buf[12..16].copy_from_slice(&sample_rate.to_le_bytes());
+    buf[16..18].copy_from_slice(&0i16.to_le_bytes());
+    buf[18] = 0;
+    Bytes::copy_from_slice(&buf)
 }
