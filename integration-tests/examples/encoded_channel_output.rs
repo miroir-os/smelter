@@ -95,7 +95,7 @@ fn main() {
 
     Pipeline::register_input(&state.pipeline().unwrap(), input_id.clone(), input_options).unwrap();
 
-    let output_receiver = Pipeline::register_encoded_data_output(
+    let output = Pipeline::register_encoded_data_output(
         &state.pipeline().unwrap(),
         output_id.clone(),
         output_options,
@@ -109,7 +109,7 @@ fn main() {
     let mut opus_dump =
         File::create(root_dir.join("examples/encoded_channel_output_dump.opus")).unwrap();
 
-    for (index, chunk) in output_receiver.iter().enumerate() {
+    for (index, chunk) in output.receiver.iter().enumerate() {
         if index > 3000 {
             return;
         }

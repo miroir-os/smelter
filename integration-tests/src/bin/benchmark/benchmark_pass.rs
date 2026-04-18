@@ -209,7 +209,7 @@ impl SingleBenchmarkPass {
                 },
             },
         )?;
-        Ok(Box::new(result))
+        Ok(Box::new(result.receiver))
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -242,7 +242,7 @@ impl SingleBenchmarkPass {
                 },
             },
         )?;
-        Ok(Box::new(result))
+        Ok(Box::new(result.receiver))
     }
 
     fn register_pipeline_raw_output(
