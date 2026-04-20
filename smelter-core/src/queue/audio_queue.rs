@@ -14,7 +14,7 @@ use crate::prelude::*;
 use super::QueueAudioOutput;
 use crossbeam_channel::{Receiver, TryRecvError};
 use smelter_render::InputId;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub struct AudioQueue {
     sync_point: Instant,
@@ -44,6 +44,11 @@ impl AudioQueue {
         opts: QueueInputOptions,
         shared_state: SharedState,
     ) {
+        warn!(
+            "[SMELTER_TRACE] AUDIO_QUEUE add_input input_id={input_id} \
+             required={} offset={:?}",
+            opts.required, opts.offset,
+        );
         self.inputs.insert(
             input_id.clone(),
             AudioQueueInput {
@@ -56,6 +61,9 @@ impl AudioQueue {
                 shared_state,
 
                 offset_from_start: opts.offset,
+                input_id: input_id.clone(),
+                enqueue_call_count: 0,
+                pop_call_count: 0,
 
                 emit_once_delivered_event: EmitEventOnce::new(
                     Event::AudioInputStreamDelivered(input_id.clone()),
@@ -166,6 +174,13 @@ struct AudioQueueInput {
     emit_once_delivered_event: EmitEventOnce,
     emit_once_playing_event: EmitEventOnce,
     emit_once_eos_event: EmitEventOnce,
+
+    /// [SMELTER_TRACE] identifier for logs so we can tell inputs apart.
+    input_id: InputId,
+    /// [SMELTER_TRACE] counter for periodic enqueue logs.
+    enqueue_call_count: u64,
+    /// [SMELTER_TRACE] counter for periodic pop logs.
+    pop_call_count: u64,
 }
 
 impl AudioQueueInput {
@@ -181,13 +196,39 @@ impl AudioQueueInput {
         // ignore result, we only need to ensure samples are enqueued
         self.try_enqueue_until_ready_for_pts(pts_range, queue_start_pts);
 
-        let (_start_pts, end_pts) = pts_range;
+        let (start_pts, end_pts) = pts_range;
+        let queue_len_before = self.queue.len();
+        let queue_front_pts_before = self.queue.front().map(|b| b.start_pts);
+        let queue_back_pts_before = self.queue.back().map(|b| b.start_pts);
 
         let mut popped_samples = vec![];
         while let Some(batch) = self.queue.front()
             && batch.start_pts <= end_pts + Duration::from_millis(40)
         {
             popped_samples.push(self.queue.pop_front().unwrap());
+        }
+
+        self.pop_call_count += 1;
+        if self.pop_call_count <= 5 || self.pop_call_count % 100 == 0 {
+            let popped_first = popped_samples.first().map(|b| b.start_pts);
+            let popped_last = popped_samples.last().map(|b| b.start_pts);
+            warn!(
+                "[SMELTER_TRACE] AUDIO_QUEUE pop_samples input={} call={} \
+                 req=[{:.3}ms,{:.3}ms] offset={:?} \
+                 queue_before: len={} front={:?} back={:?} \
+                 popped: n={} first={:?} last={:?}",
+                self.input_id,
+                self.pop_call_count,
+                start_pts.as_secs_f64() * 1000.0,
+                end_pts.as_secs_f64() * 1000.0,
+                self.offset_from_start,
+                queue_len_before,
+                queue_front_pts_before.map(|p| p.as_secs_f64() * 1000.0),
+                queue_back_pts_before.map(|p| p.as_secs_f64() * 1000.0),
+                popped_samples.len(),
+                popped_first.map(|p| p.as_secs_f64() * 1000.0),
+                popped_last.map(|p| p.as_secs_f64() * 1000.0),
+            );
         }
 
         if self.eos_received
@@ -272,7 +313,22 @@ impl AudioQueueInput {
         if self.offset_from_start.is_none() {
             match self.receiver.try_recv()? {
                 PipelineEvent::Data(batch) => {
+                    let is_first = self.shared_state.first_pts().is_none();
                     let _ = self.shared_state.get_or_init_first_pts(batch.start_pts);
+                    if is_first || self.enqueue_call_count % 200 == 0 {
+                        warn!(
+                            "[SMELTER_TRACE] AUDIO_QUEUE try_enqueue input={} call={} \
+                             path=NO_OFFSET queue_start_pts={:?} first_batch={is_first} \
+                             batch_pts={:.3}ms batch_len={} queue_len_after={}",
+                            self.input_id,
+                            self.enqueue_call_count,
+                            queue_start_pts.map(|p| p.as_secs_f64() * 1000.0),
+                            batch.start_pts.as_secs_f64() * 1000.0,
+                            batch.len(),
+                            self.queue.len() + 1,
+                        );
+                    }
+                    self.enqueue_call_count += 1;
                     self.queue.push_back(batch);
                 }
                 PipelineEvent::EOS => self.eos_received = true,
@@ -285,8 +341,32 @@ impl AudioQueueInput {
             match self.receiver.try_recv()? {
                 // pts start from sync point
                 PipelineEvent::Data(mut batch) => {
+                    let is_first = self.shared_state.first_pts().is_none();
+                    let original_pts = batch.start_pts;
                     let first_pts = self.shared_state.get_or_init_first_pts(batch.start_pts);
                     batch.start_pts = offset_pts + batch.start_pts - first_pts;
+                    if is_first || self.enqueue_call_count % 200 == 0 {
+                        warn!(
+                            "[SMELTER_TRACE] AUDIO_QUEUE try_enqueue input={} call={} \
+                             path=OFFSET offset_from_start={:?} queue_start_pts={:.3}ms \
+                             offset_pts={:.3}ms first_batch={is_first} first_pts={:.3}ms \
+                             original_pts={:.3}ms adjusted_pts={:.3}ms batch_len={} \
+                             queue_len_after={}",
+                            self.input_id,
+                            self.enqueue_call_count,
+                            self.offset_from_start,
+                            queue_start_pts
+                                .map(|p| p.as_secs_f64() * 1000.0)
+                                .unwrap_or(f64::NAN),
+                            offset_pts.as_secs_f64() * 1000.0,
+                            first_pts.as_secs_f64() * 1000.0,
+                            original_pts.as_secs_f64() * 1000.0,
+                            batch.start_pts.as_secs_f64() * 1000.0,
+                            batch.len(),
+                            self.queue.len() + 1,
+                        );
+                    }
+                    self.enqueue_call_count += 1;
                     self.queue.push_back(batch);
                 }
                 PipelineEvent::EOS => self.eos_received = true,

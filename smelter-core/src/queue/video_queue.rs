@@ -1,5 +1,5 @@
 use crossbeam_channel::{Receiver, TryRecvError};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -42,6 +42,11 @@ impl VideoQueue {
         opts: QueueInputOptions,
         shared_state: SharedState,
     ) {
+        warn!(
+            "[SMELTER_TRACE] VIDEO_QUEUE add_input input_id={input_id} \
+             required={} offset={:?}",
+            opts.required, opts.offset,
+        );
         self.inputs.insert(
             input_id.clone(),
             VideoQueueInput {
@@ -54,6 +59,9 @@ impl VideoQueue {
                 shared_state,
 
                 offset_from_start: opts.offset,
+                input_id: input_id.clone(),
+                enqueue_call_count: 0,
+                get_frame_call_count: 0,
 
                 emit_once_delivered_event: EmitEventOnce::new(
                     Event::VideoInputStreamDelivered(input_id.clone()),
@@ -168,6 +176,13 @@ pub struct VideoQueueInput {
     emit_once_delivered_event: EmitEventOnce,
     emit_once_playing_event: EmitEventOnce,
     emit_once_eos_event: EmitEventOnce,
+
+    /// [SMELTER_TRACE] identifier for logs so we can tell inputs apart.
+    input_id: InputId,
+    /// [SMELTER_TRACE] counter for periodic enqueue logs.
+    enqueue_call_count: u64,
+    /// [SMELTER_TRACE] counter for periodic get_frame logs.
+    get_frame_call_count: u64,
 }
 
 impl VideoQueueInput {
@@ -177,6 +192,9 @@ impl VideoQueueInput {
         // ignore result, we only need to ensure frames are enqueued
         self.try_enqueue_until_ready_for_pts(buffer_pts, queue_start_pts);
         self.drop_old_frames(buffer_pts, queue_start_pts);
+
+        let queue_len_after_drop = self.queue.len();
+        let queue_front_pts = self.queue.front().map(|f| f.pts);
 
         let frame = match self.offset_pts(queue_start_pts) {
             Some(offset_pts) => {
@@ -198,6 +216,25 @@ impl VideoQueueInput {
                 }
             }
         };
+
+        self.get_frame_call_count += 1;
+        if self.get_frame_call_count <= 5 || self.get_frame_call_count % 150 == 0 {
+            warn!(
+                "[SMELTER_TRACE] VIDEO_QUEUE get_frame input={} call={} \
+                 buffer_pts={:.3}ms queue_start_pts={:.3}ms offset={:?} \
+                 queue_len_after_drop={} queue_front_pts={:?} returning_frame={} \
+                 returned_pts={:?}",
+                self.input_id,
+                self.get_frame_call_count,
+                buffer_pts.as_secs_f64() * 1000.0,
+                queue_start_pts.as_secs_f64() * 1000.0,
+                self.offset_from_start,
+                queue_len_after_drop,
+                queue_front_pts.map(|p| p.as_secs_f64() * 1000.0),
+                frame.is_some(),
+                frame.as_ref().map(|f| f.pts.as_secs_f64() * 1000.0),
+            );
+        }
 
         // Handle a case where we have last frame and received EOS.
         // "drop_old_frames" is ensuring that there will only be one frame at
@@ -322,7 +359,21 @@ impl VideoQueueInput {
         if self.offset_from_start.is_none() {
             match self.receiver.try_recv()? {
                 PipelineEvent::Data(frame) => {
+                    let is_first = self.shared_state.first_pts().is_none();
                     let _ = self.shared_state.get_or_init_first_pts(frame.pts);
+                    if is_first || self.enqueue_call_count % 300 == 0 {
+                        warn!(
+                            "[SMELTER_TRACE] VIDEO_QUEUE try_enqueue input={} call={} \
+                             path=NO_OFFSET queue_start_pts={:?} first_frame={is_first} \
+                             frame_pts={:.3}ms queue_len_after={}",
+                            self.input_id,
+                            self.enqueue_call_count,
+                            queue_start_pts.map(|p| p.as_secs_f64() * 1000.0),
+                            frame.pts.as_secs_f64() * 1000.0,
+                            self.queue.len() + 1,
+                        );
+                    }
+                    self.enqueue_call_count += 1;
                     self.queue.push_back(frame);
                 }
                 PipelineEvent::EOS => self.eos_received = true,
@@ -335,8 +386,30 @@ impl VideoQueueInput {
             match self.receiver.try_recv()? {
                 // pts start from sync point
                 PipelineEvent::Data(mut frame) => {
+                    let is_first = self.shared_state.first_pts().is_none();
+                    let original_pts = frame.pts;
                     let first_pts = self.shared_state.get_or_init_first_pts(frame.pts);
                     frame.pts = offset_pts + frame.pts - first_pts;
+                    if is_first || self.enqueue_call_count % 300 == 0 {
+                        warn!(
+                            "[SMELTER_TRACE] VIDEO_QUEUE try_enqueue input={} call={} \
+                             path=OFFSET offset_from_start={:?} queue_start_pts={:.3}ms \
+                             offset_pts={:.3}ms first_frame={is_first} first_pts={:.3}ms \
+                             original_pts={:.3}ms adjusted_pts={:.3}ms queue_len_after={}",
+                            self.input_id,
+                            self.enqueue_call_count,
+                            self.offset_from_start,
+                            queue_start_pts
+                                .map(|p| p.as_secs_f64() * 1000.0)
+                                .unwrap_or(f64::NAN),
+                            offset_pts.as_secs_f64() * 1000.0,
+                            first_pts.as_secs_f64() * 1000.0,
+                            original_pts.as_secs_f64() * 1000.0,
+                            frame.pts.as_secs_f64() * 1000.0,
+                            self.queue.len() + 1,
+                        );
+                    }
+                    self.enqueue_call_count += 1;
                     self.queue.push_back(frame);
                 }
                 PipelineEvent::EOS => self.eos_received = true,
