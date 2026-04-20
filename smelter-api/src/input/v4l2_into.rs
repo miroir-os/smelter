@@ -20,6 +20,7 @@ impl TryFrom<V4l2Input> for core::RegisterInputOptions {
                     .framerate
                     .map(smelter_render::Framerate::try_from)
                     .transpose()?,
+                buffer: core::InputBufferOptions::Const(None),
             }),
             queue_options,
         })

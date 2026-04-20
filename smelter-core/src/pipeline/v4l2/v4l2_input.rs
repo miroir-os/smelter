@@ -7,7 +7,11 @@ use std::{
 use smelter_render::{Frame, FrameData, Framerate, InputId, NvPlanes, Resolution};
 use tracing::{Level, debug, error, info, span, warn};
 
-use crate::{pipeline::input::Input, prelude::*, queue::QueueDataReceiver};
+use crate::{
+    pipeline::{input::Input, utils::input_buffer::InputBuffer},
+    prelude::*,
+    queue::QueueDataReceiver,
+};
 
 use v4l::{
     Format, FourCC,
@@ -50,6 +54,7 @@ impl V4l2Input {
         input_ref: Ref<InputId>,
         opts: V4l2InputOptions,
     ) -> Result<(Input, InputInitInfo, QueueDataReceiver), InputInitError> {
+        let buffer = InputBuffer::new(&ctx, opts.buffer);
         let device_config = V4l2DeviceConfig::initialize(&opts)?;
 
         let mut stream =
@@ -67,6 +72,7 @@ impl V4l2Input {
             sender: frame_sender,
             should_close: should_close.clone(),
             stream,
+            buffer,
         };
 
         std::thread::Builder::new()
@@ -250,6 +256,7 @@ struct InputState<'a> {
     should_close: Arc<AtomicBool>,
     sender: crossbeam_channel::Sender<PipelineEvent<Frame>>,
     stream: v4l::io::mmap::Stream<'a>,
+    buffer: InputBuffer,
 }
 
 impl InputState<'_> {
@@ -310,8 +317,10 @@ impl InputState<'_> {
                 }
             };
 
+            let base_pts = self.ctx.queue_sync_point.elapsed() + Duration::from_millis(20);
+            self.buffer.recalculate_buffer(base_pts);
             let frame = Frame {
-                pts: self.ctx.queue_sync_point.elapsed() + Duration::from_millis(20),
+                pts: base_pts + self.buffer.size(),
                 data,
                 resolution: self.config.resolution,
             };

@@ -26,6 +26,7 @@ impl TryFrom<DeckLink> for core::RegisterInputOptions {
                 persistent_id,
                 enable_audio: value.enable_audio.unwrap_or(true),
                 pixel_format: Some(core::DeckLinkPixelFormat::Format8BitYUV),
+                buffer: core::InputBufferOptions::Const(None),
             }),
             queue_options: core::QueueInputOptions {
                 required: value.required.unwrap_or(false),

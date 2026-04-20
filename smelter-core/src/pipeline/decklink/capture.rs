@@ -13,6 +13,7 @@ use smelter_render::{Frame, FrameData, Resolution, error::ErrorStack};
 use tracing::{Span, debug, info, trace, warn};
 
 use crate::pipeline::decklink::format::{BitDepth, Colorspace, Format};
+use crate::pipeline::utils::input_buffer::InputBuffer;
 
 use crate::prelude::*;
 
@@ -35,6 +36,7 @@ pub(super) struct ChannelCallbackAdapter {
     audio_offset: Mutex<Option<Duration>>,
     video_offset: Mutex<Option<Duration>>,
     last_format: Mutex<Format>,
+    buffer: InputBuffer,
 }
 
 impl ChannelCallbackAdapter {
@@ -44,6 +46,7 @@ impl ChannelCallbackAdapter {
         enable_audio: bool,
         input: Weak<decklink::Input>,
         initial_format: Format,
+        buffer: InputBuffer,
     ) -> (Self, DataReceivers) {
         let (video_sender, video_receiver) = bounded(1000);
         let (audio_sender, audio_receiver) = match enable_audio {
@@ -64,6 +67,7 @@ impl ChannelCallbackAdapter {
                 audio_offset: Mutex::new(None),
                 video_offset: Mutex::new(None),
                 last_format: Mutex::new(initial_format),
+                buffer,
             },
             DataReceivers {
                 video: Some(video_receiver),
@@ -82,7 +86,9 @@ impl ChannelCallbackAdapter {
             let mut guard = self.video_offset.lock().unwrap();
             *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(stream_time))
         };
-        let pts = stream_time + offset;
+        let base_pts = stream_time + offset;
+        self.buffer.recalculate_buffer(base_pts);
+        let pts = base_pts + self.buffer.size();
 
         let width = video_frame.width();
         let height = video_frame.height();
@@ -206,7 +212,9 @@ impl ChannelCallbackAdapter {
             let mut guard = self.audio_offset.lock().unwrap();
             *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(packet_time))
         };
-        let pts = packet_time + offset;
+        let base_pts = packet_time + offset;
+        self.buffer.recalculate_buffer(base_pts);
+        let pts = base_pts + self.buffer.size();
 
         let samples = audio_packet.as_32_bit_stereo()?;
         let samples = InputAudioSamples {

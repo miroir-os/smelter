@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tracing::{Level, error, span};
 
 use crate::pipeline::decklink::format::Format;
+use crate::pipeline::utils::input_buffer::InputBuffer;
 use crate::{pipeline::input::Input, queue::QueueDataReceiver};
 
 use crate::prelude::*;
@@ -58,12 +59,14 @@ impl DeckLink {
             .enable_audio(AUDIO_SAMPLE_RATE, decklink::AudioSampleType::Sample32bit, 2)
             .map_err(DeckLinkInputError::DecklinkError)?;
 
+        let buffer = InputBuffer::new(&ctx, opts.buffer);
         let (callback, receivers) = ChannelCallbackAdapter::new(
             &ctx,
             span,
             opts.enable_audio,
             Arc::<decklink::Input>::downgrade(&input),
             Format::new(initial_mode, initial_pixel_format),
+            buffer,
         );
         input
             .set_callback(Box::new(callback))
