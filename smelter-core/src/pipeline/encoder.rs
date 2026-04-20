@@ -121,9 +121,23 @@ where
     type Item = Vec<PipelineEvent<EncodedOutputChunk>>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let t_recv_start = std::time::Instant::now();
         match self.source.next() {
             Some(PipelineEvent::Data(frame)) => {
-                let chunks = self.encoder.encode(frame, self.has_keyframe_request());
+                let recv_us = t_recv_start.elapsed().as_micros();
+                let pts_us = frame.pts.as_micros() as i64;
+                let t_enc_start = std::time::Instant::now();
+                let force_kf = self.has_keyframe_request();
+                let chunks = self.encoder.encode(frame, force_kf);
+                let encode_us = t_enc_start.elapsed().as_micros();
+                let now_us = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_micros() as i64)
+                    .unwrap_or(0);
+                tracing::warn!(
+                    "[ENC_STEP] pts_us={pts_us} now_us={now_us} recv_us={recv_us} encode_us={encode_us} force_kf={force_kf} chunks={}",
+                    chunks.len(),
+                );
                 Some(chunks.into_iter().map(PipelineEvent::Data).collect())
             }
             Some(PipelineEvent::EOS) | None => match self.eos_sent {
