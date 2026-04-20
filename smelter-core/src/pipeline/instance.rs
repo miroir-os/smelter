@@ -424,9 +424,19 @@ fn run_renderer_thread(
                 continue;
             };
 
+            let pts_us = frame.pts.as_micros() as i64;
+            let now_us = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros() as i64)
+                .unwrap_or(0);
+            let t0 = std::time::Instant::now();
             if frame_sender.send(PipelineEvent::Data(frame)).is_err() {
                 warn!(?output_id, "Failed to send output frames. Channel closed.");
             }
+            warn!(
+                "[RENDER_EMIT] pts_us={pts_us} now_us={now_us} send_us={} output={output_id:?}",
+                t0.elapsed().as_micros(),
+            );
         }
     }
     info!("Stopping renderer thread.")

@@ -119,7 +119,10 @@ impl QueueThreadAfterStart {
     }
 
     fn run(mut self) {
-        let ticker = tick(Duration::from_millis(10));
+        // miroir: was 10ms → 3-frame sawtooth at 30fps output
+        // (deadlines 0/33.37/66.73/100.1... quantized to 0/40/70/110 = 40/30/40 pattern).
+        // 1ms drops quantization to sub-frame jitter.
+        let ticker = tick(Duration::from_millis(1));
 
         while !self.queue.should_close.load(Ordering::Relaxed) {
             select! {
