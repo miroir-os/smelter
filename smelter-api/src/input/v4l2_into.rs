@@ -20,6 +20,7 @@ impl TryFrom<V4l2Input> for core::RegisterInputOptions {
                 video_side_channel: side_channel.video.unwrap_or(false),
                 audio_side_channel: side_channel.audio.unwrap_or(false),
             },
+            buffer_duration: std::time::Duration::ZERO,
         }))
     }
 

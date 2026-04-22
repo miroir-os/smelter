@@ -101,6 +101,7 @@ impl V4l2Input {
             sender: video_sender,
             should_close: should_close.clone(),
             stream,
+            buffer_duration: opts.buffer_duration,
         };
 
         std::thread::Builder::new()
@@ -281,6 +282,7 @@ struct InputState<'a> {
     should_close: Arc<AtomicBool>,
     sender: QueueSender<Frame>,
     stream: v4l::io::mmap::Stream<'a>,
+    buffer_duration: Duration,
 }
 
 impl InputState<'_> {
@@ -339,7 +341,9 @@ impl InputState<'_> {
             };
 
             let frame = Frame {
-                pts: self.ctx.queue_ctx.sync_point.elapsed() + Duration::from_millis(20),
+                pts: self.ctx.queue_ctx.sync_point.elapsed()
+                    + Duration::from_millis(20)
+                    + self.buffer_duration,
                 data,
                 resolution: self.config.resolution,
             };

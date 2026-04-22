@@ -34,6 +34,7 @@ impl TryFrom<DeckLink> for core::RegisterInputOptions {
                         audio_side_channel: side_channel.audio.unwrap_or(false),
                     }
                 },
+                buffer_duration: std::time::Duration::ZERO,
             },
         ))
     }

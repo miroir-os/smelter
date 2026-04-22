@@ -74,6 +74,7 @@ mod main_module {
                 required: false,
                 ..Default::default()
             },
+            buffer_duration: std::time::Duration::ZERO,
         })
     }
 

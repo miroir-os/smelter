@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use smelter_render::{Framerate, Resolution};
 
@@ -11,6 +11,7 @@ pub struct V4l2InputOptions {
     pub format: V4l2Format,
     pub framerate: Option<Framerate>,
     pub queue_options: QueueInputOptions,
+    pub buffer_duration: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
