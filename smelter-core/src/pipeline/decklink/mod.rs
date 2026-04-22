@@ -99,6 +99,7 @@ impl DeckLink {
             audio_sender,
             Arc::<decklink::Input>::downgrade(&input),
             Format::new(initial_mode, initial_pixel_format),
+            opts.buffer_duration,
         );
         input
             .set_callback(Box::new(callback))
