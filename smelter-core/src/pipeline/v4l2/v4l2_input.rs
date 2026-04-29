@@ -1,16 +1,18 @@
 use std::{
     path::Path,
     sync::{Arc, atomic::AtomicBool},
+    thread,
     time::Duration,
 };
 
-use crossbeam_channel::TrySendError;
+use crossbeam_channel::{Sender, bounded};
 use smelter_render::{FrameData, Framerate, InputId, NvPlanes, Resolution};
-use tracing::{Level, debug, error, info, span, trace, warn};
+use tracing::{Level, debug, error, info, span, warn};
 
 use crate::{
     pipeline::input::Input,
     queue::{QueueInput, QueueSender, QueueTrackOffset, QueueTrackOptions},
+    utils::input_buffer::InputDelayBuffer,
 };
 
 use crate::prelude::*;
@@ -49,21 +51,45 @@ impl TryFrom<FourCC> for V4l2Format {
 /// V4L2 input - captures raw video frames from a Video4Linux2 device (e.g. webcam,
 /// capture card, virtual camera) and feeds them into the queue. Video only, no audio.
 ///
+/// ## Pipeline
+///
+/// 1. Reader thread (owns the `MmapStream`) pulls frames from the device, stamps
+///    `pts = sync_point.elapsed() + 20ms`, and **blocking-sends** them into an
+///    inter-thread `crossbeam_channel`.
+/// 2. Repacking thread reads from that channel, accumulates frames in
+///    `InputDelayBuffer<Frame>` until the buffer span exceeds `buffer_duration`,
+///    then drains 1-for-1 (blocking send) into the queue's track sender.
+/// 3. The queue track is registered as `QueueTrackOffset::Pts(buffer_duration)`,
+///    so the closest-PTS picker queries `output_pts - buffer_duration` and finds
+///    frames whose wall-clock-relative PTS land in the buffer's window.
+///
 /// ## Timestamps
 ///
-/// - Register track with `QueueTrackOffset::Pts(Duration::ZERO)` which means
-///   that PTS should be relative to queue `sync_point`.
-/// - PTS of each frame is `sync_point.elapsed() + 20ms` (real-time capture with a
-///   small fixed buffer to account for delivery latency). This effectively syncs
-///   with the queue on every frame.
-/// - Never block on sending.
+/// - PTS of each frame stays `sync_point.elapsed() + 20ms` (real-time capture
+///   with a small fixed buffer to account for delivery latency). The 20 ms keeps
+///   `is_ready_for_pts` true on the first iter step against an `output_pts`
+///   that has just landed in the queue's frame of reference.
+/// - The `buffer_duration` delay is materialized by the `InputDelayBuffer` in
+///   the repacking thread plus the `Pts(buffer_duration)` track offset; it is
+///   not added to `frame.pts` itself. This keeps the queue's bounded(1) channel
+///   from ever seeing frames stamped beyond the receiver's `max_size = 100ms`
+///   window.
+///
+/// ## Backpressure
+///
+/// - Reader thread `send` is blocking. If the repacker is slow, the kernel's
+///   v4l2 mmap ring (4 buffers) is the natural overflow path.
+/// - Repacker `send` into the queue is blocking too. Same shape as
+///   `RawDataInput`'s repackers.
 ///
 /// ### Unsupported scenarios
 /// - If ahead of time processing is enabled, initial registration will happen on pts already
 ///   processed by the queue, but queue will wait and eventually stream will show up, with
 ///   the portion at the start cut off.
-/// - If queue is to slow (e.g. other input required and to slow), media will be delivered to
-///   queue to late and dropped
+/// - With `queue_options.required = true` and `buffer_duration > 0`, the queue
+///   stalls for `buffer_duration` ms on startup (the receiver buffer is empty
+///   until the `InputDelayBuffer` flips ready). Production callers use
+///   `required: false`.
 pub struct V4l2Input {
     should_close: Arc<AtomicBool>,
 }
@@ -86,32 +112,47 @@ impl V4l2Input {
         let (Some(video_sender), _) = queue_input.queue_new_track(QueueTrackOptions {
             video: true,
             audio: false,
-            offset: QueueTrackOffset::Pts(Duration::ZERO),
+            offset: QueueTrackOffset::Pts(opts.buffer_duration),
         }) else {
             return Err(InputInitError::InternalServerError(
                 "Video sender is None in V4L2 input",
             ));
         };
 
+        // Inter-thread channel between the v4l2 reader and the repacking thread.
+        // Sized like RawDataInput's channel; in practice steady-state load is one
+        // frame at a time at 60 fps, the size only matters for absorbing bursts.
+        let (raw_sender, raw_receiver) = bounded::<Frame>(1000);
+
         let should_close = Arc::new(AtomicBool::new(false));
 
         let mut state = InputState {
             config: device_config,
             ctx,
-            sender: video_sender,
+            sender: raw_sender,
             should_close: should_close.clone(),
             stream,
-            buffer_duration: opts.buffer_duration,
         };
 
-        std::thread::Builder::new()
+        thread::Builder::new()
             .name(format!("V4L2 reader thread for input {input_ref}"))
-            .spawn(move || {
-                let _span = span!(Level::INFO, "V4L2", input_id = input_ref.to_string()).entered();
-                state.run();
-                info!("Stopping input.");
+            .spawn({
+                let input_ref = input_ref.clone();
+                move || {
+                    let _span =
+                        span!(Level::INFO, "V4L2", input_id = input_ref.to_string()).entered();
+                    state.run();
+                    info!("Stopping input.");
+                }
             })
             .unwrap();
+
+        spawn_repacking_thread(
+            &input_ref,
+            raw_receiver,
+            InputDelayBuffer::new(opts.buffer_duration),
+            video_sender,
+        );
 
         Ok((
             Input::V4l2(Self { should_close }),
@@ -126,6 +167,37 @@ impl Drop for V4l2Input {
         self.should_close
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// Drains frames from the reader thread, holds them in `InputDelayBuffer` until
+/// it accumulates `buffer_duration` of media, then forwards 1-for-1 (blocking
+/// send) into the queue's track sender. Mirrors
+/// `pipeline::channel::raw_data_input::spawn_video_repacking_thread` minus
+/// `first_pts` normalization (V4L2 frame PTS is already
+/// `sync_point.elapsed()`-relative, and the queue track's `Pts(buffer_duration)`
+/// offset queries against that timeline directly — normalizing would
+/// double-shift) and minus EOS handling (V4L2 has no end event; the repacker
+/// exits naturally when `raw_receiver` is dropped).
+fn spawn_repacking_thread(
+    input_ref: &Ref<InputId>,
+    raw_receiver: crossbeam_channel::Receiver<Frame>,
+    mut buffer: InputDelayBuffer<Frame>,
+    frame_sender: QueueSender<Frame>,
+) {
+    thread::Builder::new()
+        .name(format!("V4L2 repacking thread for input {input_ref}"))
+        .spawn(move || {
+            for frame in raw_receiver.into_iter() {
+                buffer.write(frame);
+                while let Some(frame) = buffer.read() {
+                    if frame_sender.send(frame).is_err() {
+                        debug!("Failed to send frame. Channel closed.");
+                        return;
+                    }
+                }
+            }
+        })
+        .unwrap();
 }
 
 struct V4l2DeviceConfig {
@@ -280,9 +352,8 @@ struct InputState<'a> {
     config: V4l2DeviceConfig,
     ctx: Arc<PipelineCtx>,
     should_close: Arc<AtomicBool>,
-    sender: QueueSender<Frame>,
+    sender: Sender<Frame>,
     stream: v4l::io::mmap::Stream<'a>,
-    buffer_duration: Duration,
 }
 
 impl InputState<'_> {
@@ -341,20 +412,17 @@ impl InputState<'_> {
             };
 
             let frame = Frame {
-                pts: self.ctx.queue_ctx.sync_point.elapsed()
-                    + Duration::from_millis(20)
-                    + self.buffer_duration,
+                pts: self.ctx.queue_ctx.sync_point.elapsed() + Duration::from_millis(20),
                 data,
                 resolution: self.config.resolution,
             };
 
-            match self.sender.try_send(frame) {
-                Ok(()) => (),
-                Err(TrySendError::Full(_)) => trace!("Dropping frame"),
-                Err(TrySendError::Disconnected(_)) => {
-                    debug!("Failed to send video chunk. Channel closed.");
-                    return;
-                }
+            // Blocking send — if the repacker stalls, the v4l2 mmap kernel ring
+            // (4 buffers) is the natural backpressure path. We deliberately do
+            // not silently drop in userspace any more.
+            if self.sender.send(frame).is_err() {
+                debug!("Failed to send video frame. Channel closed.");
+                return;
             }
         }
     }
