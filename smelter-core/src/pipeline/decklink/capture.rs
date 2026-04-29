@@ -31,7 +31,6 @@ pub(super) struct ChannelCallbackAdapter {
     audio_offset: Mutex<Option<Duration>>,
     video_offset: Mutex<Option<Duration>>,
     last_format: Mutex<Format>,
-    buffer_duration: Duration,
 }
 
 impl ChannelCallbackAdapter {
@@ -42,7 +41,6 @@ impl ChannelCallbackAdapter {
         audio_sender: Option<QueueSender<InputAudioSamples>>,
         input: Weak<decklink::Input>,
         initial_format: Format,
-        buffer_duration: Duration,
     ) -> Self {
         Self {
             video_sender,
@@ -53,7 +51,6 @@ impl ChannelCallbackAdapter {
             audio_offset: Mutex::new(None),
             video_offset: Mutex::new(None),
             last_format: Mutex::new(initial_format),
-            buffer_duration,
         }
     }
 
@@ -67,7 +64,7 @@ impl ChannelCallbackAdapter {
             let mut guard = self.video_offset.lock().unwrap();
             *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(stream_time))
         };
-        let pts = stream_time + offset + Duration::from_millis(40) + self.buffer_duration;
+        let pts = stream_time + offset + Duration::from_millis(40);
 
         let width = video_frame.width();
         let height = video_frame.height();
@@ -191,7 +188,7 @@ impl ChannelCallbackAdapter {
             let mut guard = self.audio_offset.lock().unwrap();
             *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(packet_time))
         };
-        let pts = packet_time + offset + Duration::from_millis(40) + self.buffer_duration;
+        let pts = packet_time + offset + Duration::from_millis(40);
 
         let samples = audio_packet.as_32_bit_stereo()?;
         let samples = InputAudioSamples {

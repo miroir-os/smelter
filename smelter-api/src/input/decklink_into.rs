@@ -36,7 +36,6 @@ impl TryFrom<DeckLink> for core::RegisterInputOptions {
                         side_channel_delay,
                     }
                 },
-                buffer_duration: std::time::Duration::ZERO,
             },
         ))
     }
