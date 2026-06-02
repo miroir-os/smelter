@@ -10,7 +10,9 @@ use webrtc::{
     api::{
         APIBuilder,
         interceptor_registry::register_default_interceptors,
-        media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_VP8, MIME_TYPE_VP9, MediaEngine},
+        media_engine::{
+            MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_VP8, MIME_TYPE_VP9, MediaEngine,
+        },
     },
     ice_transport::{
         ice_candidate::RTCIceCandidateInit, ice_gatherer_state::RTCIceGathererState,
@@ -78,19 +80,18 @@ impl PeerConnection {
 
         let peer_connection = Arc::new(api.new_peer_connection(config).await?);
 
-        Ok(Self {
-            pc: peer_connection,
-        })
+        Ok(Self { pc: peer_connection })
     }
 
     pub async fn new_video_track(
         &self,
         encoder: &VideoEncoderOptions,
-    ) -> Result<(Arc<TrackLocalStaticRTP>, Arc<RTCRtpSender>, u32), WhipWhepServerError> {
+    ) -> Result<(Arc<TrackLocalStaticRTP>, Arc<RTCRtpSender>, u32), WhipWhepServerError>
+    {
         let mime_type = match encoder {
-            VideoEncoderOptions::FfmpegH264(_) | VideoEncoderOptions::VulkanH264(_) => {
-                MIME_TYPE_H264
-            }
+            VideoEncoderOptions::FfmpegH264(_)
+            | VideoEncoderOptions::VulkanH264(_)
+            | VideoEncoderOptions::VaapiH264(_) => MIME_TYPE_H264,
             VideoEncoderOptions::FfmpegVp8(_) => MIME_TYPE_VP8,
             VideoEncoderOptions::FfmpegVp9(_) => MIME_TYPE_VP9,
         };
@@ -119,7 +120,8 @@ impl PeerConnection {
     pub async fn new_audio_track(
         &self,
         encoder: &AudioEncoderOptions,
-    ) -> Result<(Arc<TrackLocalStaticRTP>, Arc<RTCRtpSender>, u32), WhipWhepServerError> {
+    ) -> Result<(Arc<TrackLocalStaticRTP>, Arc<RTCRtpSender>, u32), WhipWhepServerError>
+    {
         let track = match encoder {
             AudioEncoderOptions::Opus(opts) => {
                 let channels = match opts.channels {
@@ -132,7 +134,8 @@ impl PeerConnection {
                         mime_type: MIME_TYPE_OPUS.to_owned(),
                         clock_rate: opts.sample_rate,
                         channels,
-                        sdp_fmtp_line: format!("minptime=10;useinbandfec={}", fec as u8).to_owned(),
+                        sdp_fmtp_line: format!("minptime=10;useinbandfec={}", fec as u8)
+                            .to_owned(),
                         rtcp_feedback: vec![],
                     },
                     "audio".to_string(),
@@ -172,11 +175,15 @@ impl PeerConnection {
         Ok(self.pc.set_local_description(offer).await?)
     }
 
-    pub async fn create_answer(&self) -> Result<RTCSessionDescription, WhipWhepServerError> {
+    pub async fn create_answer(
+        &self,
+    ) -> Result<RTCSessionDescription, WhipWhepServerError> {
         Ok(self.pc.create_answer(None).await?)
     }
 
-    pub async fn local_description(&self) -> Result<RTCSessionDescription, WhipWhepServerError> {
+    pub async fn local_description(
+        &self,
+    ) -> Result<RTCSessionDescription, WhipWhepServerError> {
         match self.pc.local_description().await {
             Some(dsc) => Ok(dsc),
             None => Err(WhipWhepServerError::InternalError(
@@ -212,13 +219,12 @@ impl PeerConnection {
     ) -> Result<(), WhipWhepServerError> {
         let (sender, mut receiver) = watch::channel(RTCIceGathererState::Unspecified);
 
-        self.pc
-            .on_ice_gathering_state_change(Box::new(move |gatherer_state| {
-                if let Err(err) = sender.send(gatherer_state) {
-                    debug!("Cannot send gathering state: {err:?}");
-                };
-                Box::pin(async {})
-            }));
+        self.pc.on_ice_gathering_state_change(Box::new(move |gatherer_state| {
+            if let Err(err) = sender.send(gatherer_state) {
+                debug!("Cannot send gathering state: {err:?}");
+            };
+            Box::pin(async {})
+        }));
 
         let gather_candidates = async {
             while receiver.changed().await.is_ok() {
@@ -243,17 +249,16 @@ impl PeerConnection {
 
     pub fn on_connection_state_change(&self, handler: ConnectionStateChangeHdlr) {
         let pc = self.pc.clone();
-        self.pc
-            .on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
+        self.pc.on_peer_connection_state_change(Box::new(
+            move |state: RTCPeerConnectionState| {
                 handler.on_state_change(&pc, state);
                 Box::pin(async {})
-            }));
+            },
+        ));
     }
 
     pub fn downgrade(&self) -> WeakPeerConnection {
-        WeakPeerConnection {
-            pc: Arc::downgrade(&self.pc),
-        }
+        WeakPeerConnection { pc: Arc::downgrade(&self.pc) }
     }
 }
 
@@ -287,7 +292,9 @@ fn register_codecs(
 ) -> Result<(), WhipWhepServerError> {
     if let Some(encoder) = video_encoder {
         match encoder {
-            VideoEncoderOptions::FfmpegH264(_) | VideoEncoderOptions::VulkanH264(_) => {
+            VideoEncoderOptions::FfmpegH264(_)
+            | VideoEncoderOptions::VulkanH264(_)
+            | VideoEncoderOptions::VaapiH264(_) => {
                 let codecs = filter_h264_codecs_by_offer(offer, h264_codec_params());
                 for codec in codecs {
                     media_engine.register_codec(codec, RTPCodecType::Video)?;
@@ -360,12 +367,16 @@ async fn cleanup_unnegotiated_tracks(
 ) -> Result<(), WhipWhepServerError> {
     let mut any_codec_negotiated = false;
     match video_sender {
-        Some(sender) if is_sender_codec_empty(&sender).await => sender.replace_track(None).await?,
+        Some(sender) if is_sender_codec_empty(&sender).await => {
+            sender.replace_track(None).await?
+        }
         Some(_) => any_codec_negotiated = true,
         _ => {}
     }
     match audio_sender {
-        Some(sender) if is_sender_codec_empty(&sender).await => sender.replace_track(None).await?,
+        Some(sender) if is_sender_codec_empty(&sender).await => {
+            sender.replace_track(None).await?
+        }
         Some(_) => any_codec_negotiated = true,
         _ => {}
     }
@@ -379,10 +390,5 @@ async fn cleanup_unnegotiated_tracks(
 }
 
 async fn is_sender_codec_empty(sender: &Arc<RTCRtpSender>) -> bool {
-    sender
-        .get_parameters()
-        .await
-        .rtp_parameters
-        .codecs
-        .is_empty()
+    sender.get_parameters().await.rtp_parameters.codecs.is_empty()
 }

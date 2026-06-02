@@ -41,7 +41,9 @@ impl<Decoder: AudioDecoder + 'static> InitializableThread for RtpAudioThread<Dec
     type SpawnOutput = RtpAudioTrackThreadHandle;
     type SpawnError = DecoderInitError;
 
-    fn init(options: Self::InitOptions) -> Result<(Self, Self::SpawnOutput), Self::SpawnError> {
+    fn init(
+        options: Self::InitOptions,
+    ) -> Result<(Self, Self::SpawnOutput), Self::SpawnError> {
         let RtpAudioThreadOptions {
             ctx,
             decoder_options,
@@ -66,17 +68,16 @@ impl<Decoder: AudioDecoder + 'static> InitializableThread for RtpAudioThread<Dec
             samples_sender: decoded_samples_sender,
             _decoder: PhantomData,
         };
-        let output = RtpAudioTrackThreadHandle {
-            rtp_packet_sender,
-            sample_rate,
-        };
+        let output = RtpAudioTrackThreadHandle { rtp_packet_sender, sample_rate };
         Ok((state, output))
     }
 
     fn run(self) {
         for event in self.stream {
             if self.samples_sender.send(event).is_err() {
-                warn!("Failed to send decoded audio samples from decoder. Channel closed.");
+                warn!(
+                    "Failed to send decoded audio samples from decoder. Channel closed."
+                );
                 return;
             }
         }

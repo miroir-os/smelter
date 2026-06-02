@@ -16,12 +16,12 @@ impl AudioDecoder for FdkAacDecoder {
 
     type Options = FdkAacDecoderOptions;
 
-    fn new(_ctx: &Arc<PipelineCtx>, options: Self::Options) -> Result<Self, DecoderInitError> {
+    fn new(
+        _ctx: &Arc<PipelineCtx>,
+        options: Self::Options,
+    ) -> Result<Self, DecoderInitError> {
         info!("Initializing FDK AAC decoder");
-        Ok(Self {
-            decoder: None,
-            asc: options.asc,
-        })
+        Ok(Self { decoder: None, asc: options.asc })
     }
 
     fn decode(
@@ -78,10 +78,7 @@ impl Decoder {
             }
         }
 
-        Ok(Self {
-            instance,
-            decoded_samples_buffer: vec![0; 100_000],
-        })
+        Ok(Self { instance, decoded_samples_buffer: vec![0; 100_000] })
     }
 
     fn decode(
@@ -136,7 +133,8 @@ impl Decoder {
                 }
 
                 let info = unsafe { *fdk::aacDecoder_GetStreamInfo(self.instance) };
-                let raw_frame_size = (info.aacSamplesPerFrame * info.channelConfig) as usize;
+                let raw_frame_size =
+                    (info.aacSamplesPerFrame * info.channelConfig) as usize;
 
                 let samples = match info.channelConfig {
                     1 => AudioSamples::Mono(
@@ -148,7 +146,12 @@ impl Decoder {
                     2 => AudioSamples::Stereo(
                         self.decoded_samples_buffer[..raw_frame_size]
                             .chunks_exact(2)
-                            .map(|c| (c[0] as f64 / i16::MAX as f64, c[1] as f64 / i16::MAX as f64))
+                            .map(|c| {
+                                (
+                                    c[0] as f64 / i16::MAX as f64,
+                                    c[1] as f64 / i16::MAX as f64,
+                                )
+                            })
                             .collect(),
                     ),
                     _ => return Err(FdkAacDecoderError::UnsupportedChannelConfig),

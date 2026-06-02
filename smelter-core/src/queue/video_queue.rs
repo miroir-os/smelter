@@ -86,8 +86,7 @@ impl VideoQueue {
             return;
         };
         if input.pause_state.pause(pts, input.queue.front().cloned()) {
-            self.event_emitter
-                .emit(Event::VideoInputStreamPaused(input_id.clone()));
+            self.event_emitter.emit(Event::VideoInputStreamPaused(input_id.clone()));
         }
     }
 
@@ -100,8 +99,7 @@ impl VideoQueue {
             // non running state it will be stuck at paused until state does
             // not change
             if input.state == QueueState::Running {
-                self.event_emitter
-                    .emit(Event::VideoInputStreamPlaying(input_id.clone()));
+                self.event_emitter.emit(Event::VideoInputStreamPlaying(input_id.clone()));
             }
             input.queue.clear();
         }
@@ -118,22 +116,18 @@ impl VideoQueue {
         let frames = self
             .inputs
             .iter_mut()
-            .filter_map(
-                |(input_id, input)| match input.get_frame(buffer_pts, queue_start_pts) {
+            .filter_map(|(input_id, input)| {
+                match input.get_frame(buffer_pts, queue_start_pts) {
                     Some(frame_event) => {
                         required = required || frame_event.required;
                         Some((input_id.clone(), frame_event.event))
                     }
                     None => None,
-                },
-            )
+                }
+            })
             .collect();
 
-        QueueVideoOutput {
-            frames,
-            required,
-            pts: buffer_pts,
-        }
+        QueueVideoOutput { frames, required, pts: buffer_pts }
     }
 
     pub(super) fn should_push_next_frameset(
@@ -145,16 +139,16 @@ impl VideoQueue {
             return false;
         }
 
-        let all_inputs_ready = self
-            .inputs
-            .values_mut()
-            .all(|input| input.try_enqueue_until_ready_for_pts(next_pts, queue_start_pts));
+        let all_inputs_ready = self.inputs.values_mut().all(|input| {
+            input.try_enqueue_until_ready_for_pts(next_pts, queue_start_pts)
+        });
         if all_inputs_ready {
             return true;
         }
 
         let all_required_inputs_ready = self.inputs.values_mut().all(|input| {
-            (!input.required) || input.try_enqueue_until_ready_for_pts(next_pts, queue_start_pts)
+            (!input.required)
+                || input.try_enqueue_until_ready_for_pts(next_pts, queue_start_pts)
         });
         if !all_required_inputs_ready {
             return false;
@@ -186,10 +180,7 @@ struct VideoPauseState {
 
 impl VideoPauseState {
     fn new() -> Self {
-        Self {
-            inner: PauseState::new(),
-            paused_frame: None,
-        }
+        Self { inner: PauseState::new(), paused_frame: None }
     }
 
     fn pause(&mut self, pts: Duration, frame: Option<Frame>) -> bool {
@@ -256,15 +247,16 @@ pub struct VideoQueueInput {
 impl VideoQueueInput {
     /// Return frame for PTS and drop all the older frames. This function does not check
     /// whether stream is required or not.
-    fn get_frame(&mut self, buffer_pts: Duration, queue_start_pts: Duration) -> Option<FrameEvent> {
+    fn get_frame(
+        &mut self,
+        buffer_pts: Duration,
+        queue_start_pts: Duration,
+    ) -> Option<FrameEvent> {
         if self.pause_state.is_paused() {
             return self
                 .pause_state
                 .paused_frame(buffer_pts)
-                .map(|event| FrameEvent {
-                    required: self.required,
-                    event,
-                });
+                .map(|event| FrameEvent { required: self.required, event });
         }
 
         // ignore result, we only need to ensure frames are enqueued
@@ -305,10 +297,7 @@ impl VideoQueueInput {
             }
             QueueState::Draining if frame.is_none() => {
                 self.reset_after_eos();
-                return Some(FrameEvent {
-                    required: true,
-                    event: PipelineEvent::EOS,
-                });
+                return Some(FrameEvent { required: true, event: PipelineEvent::EOS });
             }
             _ => (),
         }
@@ -412,7 +401,10 @@ impl VideoQueueInput {
         }
     }
 
-    fn try_enqueue_frame(&mut self, queue_start_pts: Option<Duration>) -> Result<(), TryRecvError> {
+    fn try_enqueue_frame(
+        &mut self,
+        queue_start_pts: Option<Duration>,
+    ) -> Result<(), TryRecvError> {
         if !self.receiver.is_empty() {
             // if offset is defined the events are not dequeued before start
             // so we need to handle it here
@@ -429,7 +421,9 @@ impl VideoQueueInput {
                 PipelineEvent::EOS => self.state = QueueState::Draining,
             };
         } else {
-            let Some(offset_pts) = queue_start_pts.and_then(|start| self.offset_pts(start)) else {
+            let Some(offset_pts) =
+                queue_start_pts.and_then(|start| self.offset_pts(start))
+            else {
                 // if there is offset, do not enqueue before start
                 return Err(TryRecvError::Empty);
             };
@@ -464,7 +458,6 @@ impl VideoQueueInput {
 
     /// Offset value calculated in form of PTS(relative to sync point)
     fn offset_pts(&self, queue_start_pts: Duration) -> Option<Duration> {
-        self.offset_from_start
-            .map(|offset| queue_start_pts + offset)
+        self.offset_from_start.map(|offset| queue_start_pts + offset)
     }
 }

@@ -26,7 +26,9 @@ pub(crate) fn resolve_video_preferences(
     let video_preferences: Vec<VideoDecoderOptions> = video_preferences
         .into_iter()
         .flat_map(|preference| match preference {
-            WebrtcVideoDecoderOptions::FfmpegH264 => vec![VideoDecoderOptions::FfmpegH264],
+            WebrtcVideoDecoderOptions::FfmpegH264 => {
+                vec![VideoDecoderOptions::FfmpegH264]
+            }
             WebrtcVideoDecoderOptions::VulkanH264 => {
                 if vulkan_supported {
                     vec![VideoDecoderOptions::VulkanH264]
@@ -70,10 +72,7 @@ pub(crate) fn resolve_video_preferences(
     let video_codecs_params = video_codecs_params
         .into_iter()
         .unique_by(|c| {
-            (
-                c.capability.mime_type.clone(),
-                c.capability.sdp_fmtp_line.clone(),
-            )
+            (c.capability.mime_type.clone(), c.capability.sdp_fmtp_line.clone())
         })
         .collect();
     Ok((video_preferences, video_codecs_params))

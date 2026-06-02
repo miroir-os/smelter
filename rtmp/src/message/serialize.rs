@@ -4,7 +4,8 @@ use crate::{
     RtmpMessageSerializeError,
     amf0::encode_amf_values,
     message::{
-        CONTROL_MESSAGE_STREAM_ID, MAIN_CHUNK_STREAM_ID, PROTOCOL_CHUNK_STREAM_ID, RtmpMessage,
+        CONTROL_MESSAGE_STREAM_ID, MAIN_CHUNK_STREAM_ID, PROTOCOL_CHUNK_STREAM_ID,
+        RtmpMessage,
     },
     protocol::{MessageType, RawMessage},
 };
@@ -26,15 +27,14 @@ impl RtmpMessage {
                 timestamp: 0,
                 payload: Bytes::copy_from_slice(&bytes_received.to_be_bytes()[..]),
             },
-            RtmpMessage::SetPeerBandwidth {
-                bandwidth,
-                limit_type,
-            } => RawMessage {
+            RtmpMessage::SetPeerBandwidth { bandwidth, limit_type } => RawMessage {
                 msg_type: MessageType::SetPeerBandwidth.into_raw(),
                 stream_id: CONTROL_MESSAGE_STREAM_ID,
                 chunk_stream_id: PROTOCOL_CHUNK_STREAM_ID,
                 timestamp: 0,
-                payload: Bytes::from([&bandwidth.to_be_bytes()[..], &[limit_type]].concat()),
+                payload: Bytes::from(
+                    [&bandwidth.to_be_bytes()[..], &[limit_type]].concat(),
+                ),
             },
             RtmpMessage::UserControl(msg) => RawMessage {
                 msg_type: MessageType::UserControl.into_raw(),
@@ -64,14 +64,8 @@ impl RtmpMessage {
                 timestamp: 0,
                 payload: encode_amf_values(&data.into_amf_values())?,
             },
-            RtmpMessage::Video {
-                video: msg,
-                stream_id,
-            } => msg.into_raw(stream_id)?,
-            RtmpMessage::Audio {
-                audio: msg,
-                stream_id,
-            } => msg.into_raw(stream_id)?,
+            RtmpMessage::Video { video: msg, stream_id } => msg.into_raw(stream_id)?,
+            RtmpMessage::Audio { audio: msg, stream_id } => msg.into_raw(stream_id)?,
         };
         Ok(result)
     }

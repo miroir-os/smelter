@@ -48,12 +48,7 @@ impl NegotiationProgress {
         let RtmpMessage::CommandMessage { msg, .. } = msg else {
             return None;
         };
-        let CommandMessage::Connect {
-            transaction_id,
-            command_object,
-            ..
-        } = msg
-        else {
+        let CommandMessage::Connect { transaction_id, command_object, .. } = msg else {
             return None;
         };
 

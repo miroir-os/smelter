@@ -13,11 +13,7 @@ pub struct EmitOnceGuard {
 
 impl EmitOnceGuard {
     pub fn new(event: Event, emitter: &Arc<EventEmitter>) -> Self {
-        Self {
-            sent: false,
-            event,
-            emitter: emitter.clone(),
-        }
+        Self { sent: false, event, emitter: emitter.clone() }
     }
 
     /// Emits the event if it hasn't been sent yet.
@@ -57,10 +53,7 @@ pub struct PauseState {
 
 impl PauseState {
     pub fn new() -> Self {
-        Self {
-            paused_at_pts: None,
-            pts_offset: Duration::ZERO,
-        }
+        Self { paused_at_pts: None, pts_offset: Duration::ZERO }
     }
 
     /// Sets paused state. Returns `true` if the pause state was changed

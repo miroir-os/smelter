@@ -17,8 +17,9 @@ use self::{tcp_server::start_tcp_server_thread, udp::start_udp_reader_thread};
 use crate::{
     pipeline::{
         decoder::{
-            fdk_aac::FdkAacDecoder, ffmpeg_h264::FfmpegH264Decoder, ffmpeg_vp8::FfmpegVp8Decoder,
-            ffmpeg_vp9::FfmpegVp9Decoder, libopus::OpusDecoder, vulkan_h264::VulkanH264Decoder,
+            fdk_aac::FdkAacDecoder, ffmpeg_h264::FfmpegH264Decoder,
+            ffmpeg_vp8::FfmpegVp8Decoder, ffmpeg_vp9::FfmpegVp9Decoder,
+            libopus::OpusDecoder, vulkan_h264::VulkanH264Decoder,
         },
         input::Input,
         rtp::{
@@ -80,7 +81,8 @@ impl RtpInput {
         let (audio_handle, audio_samples_receiver) =
             Self::start_audio_thread(&ctx, &input_ref, opts.audio)?;
 
-        let jitter_buffer_init = RtpJitterBufferInitOptions::new(&ctx, opts.jitter_buffer);
+        let jitter_buffer_init =
+            RtpJitterBufferInitOptions::new(&ctx, opts.jitter_buffer);
 
         // TODO: this could ran on the same thread as tcp/udp socket
         Self::start_rtp_demuxer_thread(
@@ -115,8 +117,16 @@ impl RtpInput {
             .name(format!("Depayloading thread for input: {input_ref}"))
             .spawn(move || {
                 let _span =
-                    span!(Level::INFO, "RTP demuxer", input_id = input_ref.to_string()).entered();
-                run_rtp_demuxer_thread(ctx, &input_ref, jitter_buffer_init, receiver, video, audio)
+                    span!(Level::INFO, "RTP demuxer", input_id = input_ref.to_string())
+                        .entered();
+                run_rtp_demuxer_thread(
+                    ctx,
+                    &input_ref,
+                    jitter_buffer_init,
+                    receiver,
+                    video,
+                    audio,
+                )
             })
             .unwrap();
     }
@@ -127,10 +137,7 @@ impl RtpInput {
         input_ref: &Ref<InputId>,
         options: Option<VideoDecoderOptions>,
     ) -> Result<
-        (
-            Option<RtpVideoTrackThreadHandle>,
-            Option<Receiver<PipelineEvent<Frame>>>,
-        ),
+        (Option<RtpVideoTrackThreadHandle>, Option<Receiver<PipelineEvent<Frame>>>),
         DecoderInitError,
     > {
         let Some(options) = options else {
@@ -139,10 +146,12 @@ impl RtpInput {
 
         let (sender, receiver) = bounded(5);
         let handle = match options {
-            VideoDecoderOptions::FfmpegH264 => RtpVideoThread::<FfmpegH264Decoder>::spawn(
-                input_ref.clone(),
-                (ctx.clone(), DepayloaderOptions::H264, sender),
-            )?,
+            VideoDecoderOptions::FfmpegH264 => {
+                RtpVideoThread::<FfmpegH264Decoder>::spawn(
+                    input_ref.clone(),
+                    (ctx.clone(), DepayloaderOptions::H264, sender),
+                )?
+            }
             VideoDecoderOptions::FfmpegVp8 => RtpVideoThread::<FfmpegVp8Decoder>::spawn(
                 input_ref.clone(),
                 (ctx.clone(), DepayloaderOptions::Vp8, sender),
@@ -192,20 +201,21 @@ impl RtpInput {
                     decoded_samples_sender: sender,
                 },
             )?,
-            RtpAudioOptions::FdkAac {
-                asc,
-                raw_asc,
-                depayloader_mode,
-            } => RtpAudioThread::<FdkAacDecoder>::spawn(
-                input_ref,
-                RtpAudioThreadOptions {
-                    ctx: ctx.clone(),
-                    sample_rate: asc.sample_rate,
-                    decoder_options: FdkAacDecoderOptions { asc: Some(raw_asc) },
-                    depayloader_options: DepayloaderOptions::Aac(depayloader_mode, asc),
-                    decoded_samples_sender: sender,
-                },
-            )?,
+            RtpAudioOptions::FdkAac { asc, raw_asc, depayloader_mode } => {
+                RtpAudioThread::<FdkAacDecoder>::spawn(
+                    input_ref,
+                    RtpAudioThreadOptions {
+                        ctx: ctx.clone(),
+                        sample_rate: asc.sample_rate,
+                        decoder_options: FdkAacDecoderOptions { asc: Some(raw_asc) },
+                        depayloader_options: DepayloaderOptions::Aac(
+                            depayloader_mode,
+                            asc,
+                        ),
+                        decoded_samples_sender: sender,
+                    },
+                )?
+            }
         };
         Ok((Some(handle), Some(receiver)))
     }
@@ -213,8 +223,7 @@ impl RtpInput {
 
 impl Drop for RtpInput {
     fn drop(&mut self) {
-        self.should_close
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.should_close.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -240,8 +249,9 @@ fn run_rtp_demuxer_thread(
             jitter_buffer_init.clone(),
             handle.sample_rate,
             Box::new(move |event| {
-                audio_stats_sender
-                    .send(RtpInputStatsEvent::AudioRtp(event).into_event(&audio_input_ref));
+                audio_stats_sender.send(
+                    RtpInputStatsEvent::AudioRtp(event).into_event(&audio_input_ref),
+                );
             }),
         ),
         handle,
@@ -256,8 +266,9 @@ fn run_rtp_demuxer_thread(
             jitter_buffer_init,
             90_000,
             Box::new(move |event| {
-                video_stats_sender
-                    .send(RtpInputStatsEvent::VideoRtp(event).into_event(&video_input_ref));
+                video_stats_sender.send(
+                    RtpInputStatsEvent::VideoRtp(event).into_event(&video_input_ref),
+                );
             }),
         ),
         handle,
@@ -267,7 +278,9 @@ fn run_rtp_demuxer_thread(
     let mut audio_ssrc = None;
     let mut video_ssrc = None;
 
-    let maybe_send_video_eos = |video: &mut Option<TrackState<RtpVideoTrackThreadHandle>>| {
+    let maybe_send_video_eos = |video: &mut Option<
+        TrackState<RtpVideoTrackThreadHandle>,
+    >| {
         if let Some(video) = video
             && !video.eos_received
         {
@@ -278,7 +291,9 @@ fn run_rtp_demuxer_thread(
             }
         }
     };
-    let maybe_send_audio_eos = |audio: &mut Option<TrackState<RtpAudioTrackThreadHandle>>| {
+    let maybe_send_audio_eos = |audio: &mut Option<
+        TrackState<RtpAudioTrackThreadHandle>,
+    >| {
         if let Some(audio) = audio
             && !audio.eos_received
         {
@@ -326,7 +341,9 @@ fn run_rtp_demuxer_thread(
             // in the RTP/AVP profile [7] for the choice of RTP payload type values,
             // with the additional restriction that payload type values in the range
             // 64-95 MUST NOT be used.
-            Ok(packet) if packet.header.payload_type < 64 || packet.header.payload_type > 95 => {
+            Ok(packet)
+                if packet.header.payload_type < 64 || packet.header.payload_type > 95 =>
+            {
                 if packet.header.payload_type == 96 {
                     video_ssrc.get_or_insert(packet.header.ssrc);
                     if let Some(video) = &mut video {
@@ -389,8 +406,14 @@ fn run_rtp_demuxer_thread(
                                         while let Some(packet) =
                                             video.jitter_buffer.pop_packet(true)
                                         {
-                                            trace!(?packet, "(force) Received video RTP packet");
-                                            if sender.send(PipelineEvent::Data(packet)).is_err() {
+                                            trace!(
+                                                ?packet,
+                                                "(force) Received video RTP packet"
+                                            );
+                                            if sender
+                                                .send(PipelineEvent::Data(packet))
+                                                .is_err()
+                                            {
                                                 debug!("Channel closed");
                                             }
                                         }
@@ -400,8 +423,14 @@ fn run_rtp_demuxer_thread(
                                         while let Some(packet) =
                                             audio.jitter_buffer.pop_packet(true)
                                         {
-                                            trace!(?packet, "(force) Received audio RTP packet");
-                                            if sender.send(PipelineEvent::Data(packet)).is_err() {
+                                            trace!(
+                                                ?packet,
+                                                "(force) Received audio RTP packet"
+                                            );
+                                            if sender
+                                                .send(PipelineEvent::Data(packet))
+                                                .is_err()
+                                            {
                                                 debug!("Channel closed");
                                             }
                                         }
@@ -437,14 +466,12 @@ impl From<BindToPortError> for RtpInputError {
     fn from(value: BindToPortError) -> Self {
         match value {
             BindToPortError::SocketBind(err) => RtpInputError::SocketBind(err),
-            BindToPortError::PortAlreadyInUse(port) => RtpInputError::PortAlreadyInUse(port),
-            BindToPortError::AllPortsAlreadyInUse {
-                lower_bound,
-                upper_bound,
-            } => RtpInputError::AllPortsAlreadyInUse {
-                lower_bound,
-                upper_bound,
-            },
+            BindToPortError::PortAlreadyInUse(port) => {
+                RtpInputError::PortAlreadyInUse(port)
+            }
+            BindToPortError::AllPortsAlreadyInUse { lower_bound, upper_bound } => {
+                RtpInputError::AllPortsAlreadyInUse { lower_bound, upper_bound }
+            }
         }
     }
 }

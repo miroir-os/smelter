@@ -22,10 +22,7 @@ pub(crate) struct RtpNtpSyncPoint {
 
 impl RtpNtpSyncPoint {
     pub fn new() -> Arc<Self> {
-        Self {
-            ntp_time: RwLock::new(None),
-        }
-        .into()
+        Self { ntp_time: RwLock::new(None) }.into()
     }
 
     fn ntp_time_to_pts_secs(&self, ntp_time: u64) -> f64 {
@@ -148,7 +145,8 @@ impl RtpTimestampSync {
 
         let rolled_timestamp = self.rollover_state.timestamp(rtp_timestamp);
 
-        let rtp_timestamp_offset = *self.rtp_timestamp_offset.get_or_insert(rolled_timestamp);
+        let rtp_timestamp_offset =
+            *self.rtp_timestamp_offset.get_or_insert(rolled_timestamp);
 
         if rtp_timestamp_offset > rolled_timestamp {
             warn!("Rtp timestamp from before start. Timestamp smaller than the offset.")
@@ -159,16 +157,19 @@ impl RtpTimestampSync {
 
         match self.partial_sync_info {
             PartialNtpSyncInfo::None => {
-                self.partial_sync_info = PartialNtpSyncInfo::ReferencePacket {
-                    rtp_timestamp,
-                    pts_secs,
-                }
+                self.partial_sync_info =
+                    PartialNtpSyncInfo::ReferencePacket { rtp_timestamp, pts_secs }
             }
             PartialNtpSyncInfo::SenderReport {
                 ntp_time: sr_ntp_time,
                 rtp_timestamp: sr_rtp_timestamp,
             } => {
-                self.update_sync_offset(sr_ntp_time, sr_rtp_timestamp, rtp_timestamp, pts_secs);
+                self.update_sync_offset(
+                    sr_ntp_time,
+                    sr_rtp_timestamp,
+                    rtp_timestamp,
+                    pts_secs,
+                );
             }
             _ => (),
         }
@@ -184,10 +185,8 @@ impl RtpTimestampSync {
     pub fn on_sender_report(&mut self, ntp_time: u64, rtp_timestamp: u32) {
         match self.partial_sync_info {
             PartialNtpSyncInfo::None => {
-                self.partial_sync_info = PartialNtpSyncInfo::SenderReport {
-                    ntp_time,
-                    rtp_timestamp,
-                }
+                self.partial_sync_info =
+                    PartialNtpSyncInfo::SenderReport { ntp_time, rtp_timestamp }
             }
             PartialNtpSyncInfo::ReferencePacket {
                 rtp_timestamp: reference_rtp_timestamp,
@@ -223,7 +222,8 @@ impl RtpTimestampSync {
         // pts representing rtp timestamp from SenderReport
         let pts_secs = self.ntp_sync_point.ntp_time_to_pts_secs(sr_ntp_time);
 
-        let mut rtp_timestamp_diff = reference_rtp_timestamp as i64 - sr_rtp_timestamp as i64;
+        let mut rtp_timestamp_diff =
+            reference_rtp_timestamp as i64 - sr_rtp_timestamp as i64;
         if rtp_timestamp_diff > u32::MAX as i64 / 2 {
             rtp_timestamp_diff = rtp_timestamp_diff - u32::MAX as i64 - 1;
             info!(
@@ -246,7 +246,8 @@ impl RtpTimestampSync {
         // Validate that the NTP-based offset is reasonable. We can hit that issue when:
         // - receiving stream from SFU that modifies RTP packet but not RTCP packets.
         // - BroadcastBox if you connect to server over WHEP before starting stream
-        let offset_diff_secs = (new_offset_secs - self.sync_offset_secs.unwrap_or(0.0)).abs();
+        let offset_diff_secs =
+            (new_offset_secs - self.sync_offset_secs.unwrap_or(0.0)).abs();
         if offset_diff_secs > 2.0 {
             error!(
                 offset_diff_secs,

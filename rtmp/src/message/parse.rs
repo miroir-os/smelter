@@ -36,9 +36,11 @@ impl RtmpMessage {
                 return Err(RtmpMessageParseError::PayloadTooShort);
             }
 
-            MessageType::WindowAckSize if msg.payload.len() >= 4 => RtmpMessage::WindowAckSize {
-                window_size: u32::from_be_bytes([p[0], p[1], p[2], p[3]]),
-            },
+            MessageType::WindowAckSize if msg.payload.len() >= 4 => {
+                RtmpMessage::WindowAckSize {
+                    window_size: u32::from_be_bytes([p[0], p[1], p[2], p[3]]),
+                }
+            }
             MessageType::WindowAckSize => {
                 return Err(RtmpMessageParseError::PayloadTooShort);
             }
@@ -58,9 +60,11 @@ impl RtmpMessage {
                 stream_id: msg.stream_id,
             },
 
-            MessageType::Acknowledgement if p.len() >= 4 => RtmpMessage::Acknowledgement {
-                bytes_received: u32::from_be_bytes([p[0], p[1], p[2], p[3]]),
-            },
+            MessageType::Acknowledgement if p.len() >= 4 => {
+                RtmpMessage::Acknowledgement {
+                    bytes_received: u32::from_be_bytes([p[0], p[1], p[2], p[3]]),
+                }
+            }
             MessageType::Acknowledgement => {
                 return Err(RtmpMessageParseError::PayloadTooShort);
             }
@@ -70,7 +74,9 @@ impl RtmpMessage {
                     "{msg_type:?}",
                 )));
             }
-            MessageType::UserControl => RtmpMessage::UserControl(UserControlMessage::from_raw(p)?),
+            MessageType::UserControl => {
+                RtmpMessage::UserControl(UserControlMessage::from_raw(p)?)
+            }
         };
         Ok(result)
     }

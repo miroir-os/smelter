@@ -5,11 +5,11 @@ use glyphon::fontdb;
 use tracing::trace;
 
 use crate::{
-    FrameSet, InputId, OutputFrameFormat, OutputId, RegistryType, RendererId, RenderingMode,
-    Resolution,
+    FrameSet, InputId, OutputFrameFormat, OutputId, RegistryType, RendererId,
+    RenderingMode, Resolution,
     error::{
-        InitRendererEngineError, RegisterRendererError, RenderSceneError, UnregisterRendererError,
-        UpdateSceneError,
+        InitRendererEngineError, RegisterRendererError, RenderSceneError,
+        UnregisterRendererError, UpdateSceneError,
     },
     image,
     scene::{Component, OutputScene, SceneState},
@@ -102,19 +102,11 @@ impl Renderer {
     }
 
     pub fn unregister_input(&self, input_id: &InputId) {
-        self.0
-            .lock()
-            .unwrap()
-            .render_graph
-            .unregister_input(input_id);
+        self.0.lock().unwrap().render_graph.unregister_input(input_id);
     }
 
     pub fn unregister_output(&self, output_id: &OutputId) {
-        self.0
-            .lock()
-            .unwrap()
-            .render_graph
-            .unregister_output(output_id);
+        self.0.lock().unwrap().render_graph.unregister_output(output_id);
         self.0.lock().unwrap().scene.unregister_output(output_id)
     }
 
@@ -126,8 +118,9 @@ impl Renderer {
         let ctx = self.0.lock().unwrap().register_ctx();
         match spec {
             RendererSpec::Shader(spec) => {
-                let shader = Shader::new(&ctx.wgpu_ctx, spec)
-                    .map_err(|err| RegisterRendererError::Shader(err.into(), id.clone()))?;
+                let shader = Shader::new(&ctx.wgpu_ctx, spec).map_err(|err| {
+                    RegisterRendererError::Shader(err.into(), id.clone())
+                })?;
 
                 let mut guard = self.0.lock().unwrap();
                 Ok(guard.renderers.shaders.register(id, Arc::new(shader))?)
@@ -157,7 +150,9 @@ impl Renderer {
         let mut guard = self.0.lock().unwrap();
         match registry_type {
             RegistryType::Shader => guard.renderers.shaders.unregister(renderer_id)?,
-            RegistryType::WebRenderer => guard.renderers.web_renderers.unregister(renderer_id)?,
+            RegistryType::WebRenderer => {
+                guard.renderers.web_renderers.unregister(renderer_id)?
+            }
             RegistryType::Image => guard.renderers.images.unregister(renderer_id)?,
         }
         Ok(())
@@ -168,7 +163,10 @@ impl Renderer {
         ctx.add_font(font_source);
     }
 
-    pub fn render(&self, input: FrameSet<InputId>) -> Result<FrameSet<OutputId>, RenderSceneError> {
+    pub fn render(
+        &self,
+        input: FrameSet<InputId>,
+    ) -> Result<FrameSet<OutputId>, RenderSceneError> {
         self.0.lock().unwrap().render(input)
     }
 
@@ -179,10 +177,12 @@ impl Renderer {
         output_format: OutputFrameFormat,
         scene_root: Component,
     ) -> Result<(), UpdateSceneError> {
-        self.0
-            .lock()
-            .unwrap()
-            .update_scene(output_id, resolution, scene_root, output_format)
+        self.0.lock().unwrap().update_scene(
+            output_id,
+            resolution,
+            scene_root,
+            output_format,
+        )
     }
 
     pub fn wgpu_ctx(&self) -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
@@ -234,8 +234,7 @@ impl InnerRenderer {
             .iter()
             .map(|(input_id, frame)| (input_id.clone(), frame.resolution))
             .collect();
-        self.scene
-            .register_render_event(inputs.pts, input_resolutions);
+        self.scene.register_render_event(inputs.pts, input_resolutions);
 
         let pts = inputs.pts;
         trace!("Upload input textures");
@@ -257,14 +256,9 @@ impl InnerRenderer {
         scene_root: Component,
         output_format: OutputFrameFormat,
     ) -> Result<(), UpdateSceneError> {
-        let output = OutputScene {
-            output_id: output_id.clone(),
-            scene_root,
-            resolution,
-        };
+        let output = OutputScene { output_id: output_id.clone(), scene_root, resolution };
         let output_node =
-            self.scene
-                .update_scene(output, &self.renderers, &self.text_renderer_ctx)?;
+            self.scene.update_scene(output, &self.renderers, &self.text_renderer_ctx)?;
         self.render_graph.update(
             &RenderCtx {
                 wgpu_ctx: &self.wgpu_ctx,

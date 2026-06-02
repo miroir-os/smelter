@@ -26,12 +26,10 @@ pub(crate) async fn create_new_whip_session(
 ) -> Result<(Arc<str>, RTCSessionDescription), WhipWhepServerError> {
     let inputs = state.inputs.clone();
 
-    let (video_preferences, jitter_buffer_options) = inputs.get_with(&input_ref, |input| {
-        Ok((
-            input.video_preferences.clone(),
-            input.jitter_buffer_options.clone(),
-        ))
-    })?;
+    let (video_preferences, jitter_buffer_options) =
+        inputs.get_with(&input_ref, |input| {
+            Ok((input.video_preferences.clone(), input.jitter_buffer_options.clone()))
+        })?;
     let video_codecs = video_params_compliant_with_offer(&video_preferences, &offer);
 
     let peer_connection = RecvonlyPeerConnection::new(&state.ctx, &video_codecs).await?;
@@ -44,9 +42,7 @@ pub(crate) async fn create_new_whip_session(
     let answer = peer_connection.create_answer().await?;
     peer_connection.set_local_description(answer).await?;
 
-    peer_connection
-        .wait_for_ice_candidates(Duration::from_secs(1))
-        .await?;
+    peer_connection.wait_for_ice_candidates(Duration::from_secs(1)).await?;
 
     let answer = peer_connection.local_description().await.ok_or_else(|| {
         WhipWhepServerError::InternalError(

@@ -57,7 +57,8 @@ pub(super) fn resolve_mod_ex(data: Bytes) -> Result<ModExResult, FlvVideoTagPars
             if data.len() < offset + 2 {
                 return Err(FlvVideoTagParseError::TooShort);
             }
-            mod_ex_data_size = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize + 1;
+            mod_ex_data_size =
+                u16::from_be_bytes([data[offset], data[offset + 1]]) as usize + 1;
             offset += 2;
         }
 
@@ -71,13 +72,15 @@ pub(super) fn resolve_mod_ex(data: Bytes) -> Result<ModExResult, FlvVideoTagPars
         if data.len() < offset + 1 {
             return Err(FlvVideoTagParseError::TooShort);
         }
-        let mod_ex_type = VideoPacketModExType::from_raw((data[offset] & 0b11110000) >> 4)?;
+        let mod_ex_type =
+            VideoPacketModExType::from_raw((data[offset] & 0b11110000) >> 4)?;
         let next_packet_type = ExVideoPacketType::from_raw(data[offset] & 0b00001111)?;
         offset += 1;
 
         match mod_ex_type {
             VideoPacketModExType::TimestampOffsetNano => {
-                let mod_ex_data = &data[mod_ex_data_start..mod_ex_data_start + mod_ex_data_size];
+                let mod_ex_data =
+                    &data[mod_ex_data_start..mod_ex_data_start + mod_ex_data_size];
                 if mod_ex_data.len() >= 3 {
                     timestamp_offset_nanos = Some(u32::from_be_bytes([
                         0,

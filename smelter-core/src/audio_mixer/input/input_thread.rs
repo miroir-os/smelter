@@ -31,7 +31,9 @@ pub(super) fn start_input_thread(
                 let samples = processor.get_samples(pts_range);
                 let result = AudioMixerInputResult { samples, pts_range };
                 if result_sender.send(result).is_err() {
-                    trace!("Closing audio mixer input processing thread. Channel closed.");
+                    trace!(
+                        "Closing audio mixer input processing thread. Channel closed."
+                    );
                     return;
                 }
             }
@@ -46,10 +48,7 @@ struct InputProcessor {
 
 impl InputProcessor {
     pub fn new(mixing_sample_rate: u32) -> Self {
-        Self {
-            mixing_sample_rate,
-            resampler: None,
-        }
+        Self { mixing_sample_rate, resampler: None }
     }
 
     pub fn write_batch(&mut self, batch: InputAudioSamples) {
@@ -68,7 +67,9 @@ impl InputProcessor {
             )
             .unwrap()
         });
-        if resampler.channels() != channels || resampler.input_sample_rate() != input_sample_rate {
+        if resampler.channels() != channels
+            || resampler.input_sample_rate() != input_sample_rate
+        {
             *resampler = InputResampler::new(
                 input_sample_rate,
                 self.mixing_sample_rate,
@@ -90,7 +91,8 @@ impl InputProcessor {
             },
             None => {
                 let sample_count = f64::floor(
-                    (pts_range.1 - pts_range.0).as_secs_f64() * self.mixing_sample_rate as f64,
+                    (pts_range.1 - pts_range.0).as_secs_f64()
+                        * self.mixing_sample_rate as f64,
                 ) as usize;
                 vec![(0.0, 0.0); sample_count]
             }

@@ -39,10 +39,7 @@ pub struct RtpInputState {
 
 impl RtpInputState {
     pub fn new() -> Self {
-        Self {
-            video: RtpJitterBufferState::new(),
-            audio: RtpJitterBufferState::new(),
-        }
+        Self { video: RtpJitterBufferState::new(), audio: RtpJitterBufferState::new() }
     }
 
     pub fn handle_event(&mut self, event: RtpInputStatsEvent) {
@@ -125,16 +122,27 @@ impl RtpJitterBufferState {
             packets_lost: self.packets_lost,
             packets_received: self.packets_received,
 
-            bitrate_1_second: self.bitrate_1_sec.sum() / self.bitrate_1_sec.window_size().as_secs(),
+            bitrate_1_second: self.bitrate_1_sec.sum()
+                / self.bitrate_1_sec.window_size().as_secs(),
 
-            bitrate_1_minute: self.bitrate_1_min.sum() / self.bitrate_1_min.window_size().as_secs(),
+            bitrate_1_minute: self.bitrate_1_min.sum()
+                / self.bitrate_1_min.window_size().as_secs(),
 
             last_10_seconds: RtpJitterBufferSlidingWindowStatsReport {
                 packets_lost: self.packets_lost_10_secs.sum(),
                 packets_received: self.packets_received_10_secs.sum(),
-                effective_buffer_avg_seconds: self.effective_buffer_10_secs.avg().as_secs_f64(),
-                effective_buffer_max_seconds: self.effective_buffer_10_secs.max().as_secs_f64(),
-                effective_buffer_min_seconds: self.effective_buffer_10_secs.min().as_secs_f64(),
+                effective_buffer_avg_seconds: self
+                    .effective_buffer_10_secs
+                    .avg()
+                    .as_secs_f64(),
+                effective_buffer_max_seconds: self
+                    .effective_buffer_10_secs
+                    .max()
+                    .as_secs_f64(),
+                effective_buffer_min_seconds: self
+                    .effective_buffer_10_secs
+                    .min()
+                    .as_secs_f64(),
                 input_buffer_avg_seconds: self.input_buffer_10_secs.avg().as_secs_f64(),
                 input_buffer_max_seconds: self.input_buffer_10_secs.max().as_secs_f64(),
                 input_buffer_min_seconds: self.input_buffer_10_secs.min().as_secs_f64(),

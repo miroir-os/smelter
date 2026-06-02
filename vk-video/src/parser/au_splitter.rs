@@ -27,11 +27,7 @@ impl AUSplitter {
                 None => Vec::new(),
             };
             self.buffered_nals.push(nalu);
-            if !au.is_empty() {
-                Some(AccessUnit(au.into_boxed_slice()))
-            } else {
-                None
-            }
+            if !au.is_empty() { Some(AccessUnit(au.into_boxed_slice())) } else { None }
         } else {
             self.buffered_nals.push(nalu);
             None
@@ -42,9 +38,7 @@ impl AUSplitter {
         if self.buffered_nals.is_empty() {
             return None;
         }
-        Some(AccessUnit(
-            mem::take(&mut self.buffered_nals).into_boxed_slice(),
-        ))
+        Some(AccessUnit(mem::take(&mut self.buffered_nals).into_boxed_slice()))
     }
 
     /// returns `true` if `slice` is a first slice in an Access Unit
@@ -153,7 +147,8 @@ fn pic_order_cnt_zero_check(last: &Slice, curr: &Slice) -> bool {
 //           when (a.nal_unit_type == 5 or b.nal_unit_type == 5) and
 //                  a.nal_unit_type != b.nal_unit_type
 fn idr_and_non_idr(last: &Slice, curr: &Slice) -> bool {
-    (last.nal_header.nal_unit_type().id() == 5) ^ (curr.nal_header.nal_unit_type().id() == 5)
+    (last.nal_header.nal_unit_type().id() == 5)
+        ^ (curr.nal_header.nal_unit_type().id() == 5)
 }
 
 // defguardp idrs_with_idr_pic_id_differ(a, b)

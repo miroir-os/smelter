@@ -17,7 +17,8 @@ fn main() {
         .with_max_level(tracing::Level::INFO)
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to initialize tracing");
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("Failed to initialize tracing");
 
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() != 4 {
@@ -27,16 +28,14 @@ fn main() {
 
     let width = args[2].parse::<NonZeroU32>().expect("parse video width");
     let height = args[3].parse::<NonZeroU32>().expect("parse video height");
-    let mut nv12 =
-        std::fs::File::open(&args[1]).unwrap_or_else(|e| panic!("open {}: {}", args[1], e));
+    let mut nv12 = std::fs::File::open(&args[1])
+        .unwrap_or_else(|e| panic!("open {}: {}", args[1], e));
 
     let vulkan_instance = VulkanInstance::new().unwrap();
-    let vulkan_adapter = vulkan_instance
-        .create_adapter(&VulkanAdapterDescriptor::default())
-        .unwrap();
-    let vulkan_device = vulkan_adapter
-        .create_device(&VulkanDeviceDescriptor::default())
-        .unwrap();
+    let vulkan_adapter =
+        vulkan_instance.create_adapter(&VulkanAdapterDescriptor::default()).unwrap();
+    let vulkan_device =
+        vulkan_adapter.create_device(&VulkanDeviceDescriptor::default()).unwrap();
 
     let mut encoder = vulkan_device
         .create_bytes_encoder(EncoderParameters {

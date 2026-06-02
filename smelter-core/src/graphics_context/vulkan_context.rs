@@ -20,7 +20,8 @@ pub fn create_vulkan_graphics_ctx(
         ..
     } = opts;
 
-    let wgpu_features = features | required_wgpu_features() | wgpu::Features::TEXTURE_FORMAT_NV12;
+    let wgpu_features =
+        features | required_wgpu_features() | wgpu::Features::TEXTURE_FORMAT_NV12;
 
     let limits = set_required_wgpu_limits(limits);
 
@@ -51,11 +52,12 @@ pub fn create_vulkan_graphics_ctx(
             None => true,
         })
         .sorted_by_key(|a| {
-            let video_based_priority = match (a.supports_decoding(), a.supports_encoding()) {
-                (true, true) => 0,
-                (true, false) | (false, true) => 1,
-                (false, false) => 2,
-            };
+            let video_based_priority =
+                match (a.supports_decoding(), a.supports_encoding()) {
+                    (true, true) => 0,
+                    (true, false) | (false, true) => 1,
+                    (false, false) => 2,
+                };
             let performance_based_priority = match a.info().device_type {
                 VulkanDeviceType::DISCRETE_GPU => 0,
                 VulkanDeviceType::INTEGRATED_GPU => 1,

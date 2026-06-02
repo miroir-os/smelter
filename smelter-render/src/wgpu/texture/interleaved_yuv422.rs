@@ -31,11 +31,7 @@ impl InterleavedYuv422Texture {
             &[wgpu::TextureFormat::Rgba8Unorm],
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Self {
-            resolution,
-            texture,
-            view,
-        }
+        Self { resolution, texture, view }
     }
 
     pub fn new_bind_group(&self, ctx: &WgpuCtx) -> wgpu::BindGroup {

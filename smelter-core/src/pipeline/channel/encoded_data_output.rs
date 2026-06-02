@@ -17,6 +17,7 @@ use crate::{
             ffmpeg_vp8::FfmpegVp8Encoder,
             ffmpeg_vp9::FfmpegVp9Encoder,
             libopus::OpusEncoder,
+            vaapi_h264::VaapiH264Encoder,
             vulkan_h264::VulkanH264Encoder,
         },
         output::{Output, OutputAudio, OutputVideo},
@@ -80,6 +81,16 @@ impl EncodedDataOutput {
                         },
                     )?)
                 }
+                VideoEncoderOptions::VaapiH264(options) => {
+                    Some(VideoEncoderThread::<VaapiH264Encoder>::spawn(
+                        output_id.clone(),
+                        VideoEncoderThreadOptions {
+                            ctx: ctx.clone(),
+                            encoder_options: options.clone(),
+                            chunks_sender: sender.clone(),
+                        },
+                    )?)
+                }
             },
             None => None,
         };
@@ -116,9 +127,9 @@ impl EncodedDataOutput {
 
 impl Output for EncodedDataOutput {
     fn audio(&self) -> Option<OutputAudio<'_>> {
-        self.audio.as_ref().map(|audio| OutputAudio {
-            samples_batch_sender: &audio.sample_batch_sender,
-        })
+        self.audio
+            .as_ref()
+            .map(|audio| OutputAudio { samples_batch_sender: &audio.sample_batch_sender })
     }
 
     fn video(&self) -> Option<OutputVideo<'_>> {

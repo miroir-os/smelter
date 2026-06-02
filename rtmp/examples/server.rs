@@ -5,10 +5,7 @@ use tracing::info;
 fn main() {
     tracing_subscriber::fmt::init();
 
-    let config = RtmpServerConfig {
-        port: 1935,
-        tls: None,
-    };
+    let config = RtmpServerConfig { port: 1935, tls: None };
 
     let on_connection = Box::new(|conn: RtmpServerConnection| {
         let app = conn.app().to_string();
@@ -27,7 +24,9 @@ fn main() {
                     RtmpEvent::H264Data(video) => {
                         info!(?video, ?app, ?stream_key, "Received video")
                     }
-                    RtmpEvent::AacData(audio) => info!(?audio, ?app, ?stream_key, "Received audio"),
+                    RtmpEvent::AacData(audio) => {
+                        info!(?audio, ?app, ?stream_key, "Received audio")
+                    }
                     RtmpEvent::Metadata(data) => {
                         info!("Metadata received");
                         println!("{data:#?}");

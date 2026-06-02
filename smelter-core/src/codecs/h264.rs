@@ -45,8 +45,21 @@ pub struct VulkanH264EncoderOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VaapiH264EncoderOptions {
+    pub resolution: Resolution,
+    pub bitrate: Option<VaapiH264EncoderRateControl>,
+    pub keyframe_interval: Duration,
+    pub bitstream_format: H264BitstreamFormat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VulkanH264EncoderRateControl {
     VariableBitrate(VideoEncoderBitrate),
+    ConstantBitrate(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum VaapiH264EncoderRateControl {
     ConstantBitrate(u64),
 }
 

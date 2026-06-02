@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use crate::{
-    FlvVideoData, GenericVideoData, H264VideoConfig, H264VideoData, RtmpMessageParseError,
-    RtmpMessageSerializeError, VideoCodec, VideoTag, VideoTagFrameType, VideoTagH264PacketType,
+    FlvVideoData, GenericVideoData, H264VideoConfig, H264VideoData,
+    RtmpMessageParseError, RtmpMessageSerializeError, VideoCodec, VideoTag,
+    VideoTagFrameType, VideoTagH264PacketType,
     error::FlvVideoTagParseError,
     message::VIDEO_CHUNK_STREAM_ID,
     protocol::{MessageType, RawMessage},
@@ -25,7 +26,8 @@ impl VideoMessage {
             (VideoCodec::H264, Some(VideoTagH264PacketType::Data)) => {
                 Self::H264Data(H264VideoData {
                     pts: Duration::from_millis(
-                        (msg.timestamp as i64 + tag.composition_time.unwrap_or(0) as i64) as u64,
+                        (msg.timestamp as i64 + tag.composition_time.unwrap_or(0) as i64)
+                            as u64,
                     ),
                     dts: Duration::from_millis(msg.timestamp.into()),
                     data: tag.data,
@@ -58,7 +60,10 @@ impl VideoMessage {
         Ok(event)
     }
 
-    pub(super) fn into_raw(self, stream_id: u32) -> Result<RawMessage, RtmpMessageSerializeError> {
+    pub(super) fn into_raw(
+        self,
+        stream_id: u32,
+    ) -> Result<RawMessage, RtmpMessageSerializeError> {
         let result = match self {
             Self::H264Data(chunk) => RawMessage {
                 msg_type: MessageType::Video.into_raw(),
@@ -69,7 +74,8 @@ impl VideoMessage {
                     h264_packet_type: Some(VideoTagH264PacketType::Data),
                     codec: VideoCodec::H264,
                     composition_time: Some(
-                        (chunk.pts.as_millis() as i64 - chunk.dts.as_millis() as i64) as i32,
+                        (chunk.pts.as_millis() as i64 - chunk.dts.as_millis() as i64)
+                            as i32,
                     ),
                     frame_type: match chunk.is_keyframe {
                         true => VideoTagFrameType::Keyframe,

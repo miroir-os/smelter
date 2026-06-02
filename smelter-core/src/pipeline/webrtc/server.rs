@@ -66,9 +66,7 @@ impl WhipWhepServer {
         });
         init_result_receiver.blocking_recv().unwrap()?;
 
-        Ok(WhipWhepServerHandle {
-            shutdown_sender: Some(shutdown_sender),
-        })
+        Ok(WhipWhepServerHandle { shutdown_sender: Some(shutdown_sender) })
     }
 
     async fn new(port: u16) -> Result<Self, InitPipelineError> {
@@ -84,9 +82,7 @@ impl WhipWhepServer {
             };
             tokio::time::sleep(Duration::from_millis(1000)).await;
         }
-        Err(InitPipelineError::WhipWhepServerInitError(
-            last_error.unwrap(),
-        ))
+        Err(InitPipelineError::WhipWhepServerInitError(last_error.unwrap()))
     }
 
     async fn run(

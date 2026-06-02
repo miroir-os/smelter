@@ -18,14 +18,18 @@ impl AudioDecoder for OpusDecoder {
 
     type Options = ();
 
-    fn new(ctx: &Arc<PipelineCtx>, _options: Self::Options) -> Result<Self, DecoderInitError> {
+    fn new(
+        ctx: &Arc<PipelineCtx>,
+        _options: Self::Options,
+    ) -> Result<Self, DecoderInitError> {
         info!("Initializing libopus decoder");
         const OPUS_SAMPLE_RATES: [u32; 5] = [8_000, 12_000, 16_000, 24_000, 48_000];
 
-        let decoded_sample_rate = match OPUS_SAMPLE_RATES.contains(&ctx.mixing_sample_rate) {
-            true => ctx.mixing_sample_rate,
-            false => 48_000,
-        };
+        let decoded_sample_rate =
+            match OPUS_SAMPLE_RATES.contains(&ctx.mixing_sample_rate) {
+                true => ctx.mixing_sample_rate,
+                false => 48_000,
+            };
         let decoder = opus::Decoder::new(decoded_sample_rate, opus::Channels::Stereo)?;
         // Max sample rate for opus is 48kHz.
         // Usually packets contain 20ms audio chunks, but for safety we use buffer
@@ -87,14 +91,16 @@ impl OpusDecoder {
         let samples_len = decoded_samples.samples.sample_count();
         let sample_rate = decoded_samples.sample_rate;
 
-        let chunk_duration = Duration::from_secs_f64(samples_len as f64 / sample_rate as f64);
+        let chunk_duration =
+            Duration::from_secs_f64(samples_len as f64 / sample_rate as f64);
         self.last_decoded_pts = Some(decoded_samples.start_pts + chunk_duration);
     }
 
     fn should_use_fec(&self, stream_gap: Duration) -> bool {
         // If stream gap is one second or larger there it doesn't matter if FEC is used,
         // there will be a gap
-        (stream_gap > Duration::from_millis(1)) && (stream_gap < Duration::from_millis(1000))
+        (stream_gap > Duration::from_millis(1))
+            && (stream_gap < Duration::from_millis(1000))
     }
 
     fn calculate_stream_gap(&self, current_start: Duration) -> Duration {
@@ -122,11 +128,14 @@ impl OpusDecoder {
         &mut self,
         encoded_chunk: &EncodedInputChunk,
     ) -> Result<InputAudioSamples, DecodingError> {
-        let decoded_samples_count =
-            self.decoder
-                .decode(&encoded_chunk.data, &mut self.decoded_samples_buffer, false)?;
+        let decoded_samples_count = self.decoder.decode(
+            &encoded_chunk.data,
+            &mut self.decoded_samples_buffer,
+            false,
+        )?;
 
-        let samples = Self::read_buffer(&self.decoded_samples_buffer, decoded_samples_count);
+        let samples =
+            Self::read_buffer(&self.decoded_samples_buffer, decoded_samples_count);
         Ok(InputAudioSamples {
             samples,
             start_pts: encoded_chunk.pts,
@@ -151,7 +160,8 @@ impl OpusDecoder {
         )?;
         debug!("Decoded FEC samples: {decoded_samples_count}");
 
-        let samples = Self::read_buffer(&self.decoded_samples_buffer, decoded_samples_count);
+        let samples =
+            Self::read_buffer(&self.decoded_samples_buffer, decoded_samples_count);
         Ok(InputAudioSamples {
             samples,
             start_pts: encoded_chunk.pts - stream_gap,

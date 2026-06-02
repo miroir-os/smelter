@@ -24,11 +24,7 @@ where
 {
     pub fn new(ctx: Arc<PipelineCtx>, source: Source) -> Result<Self, DecoderInitError> {
         let decoder = Decoder::new(&ctx, None)?;
-        Ok(Self {
-            decoder,
-            source,
-            eos_sent: false,
-        })
+        Ok(Self { decoder, source, eos_sent: false })
     }
 }
 
@@ -81,11 +77,7 @@ where
         source: Source,
     ) -> Result<Self, DecoderInitError> {
         let decoder = Decoder::new(&ctx, options)?;
-        Ok(Self {
-            decoder,
-            source,
-            eos_sent: false,
-        })
+        Ok(Self { decoder, source, eos_sent: false })
     }
 }
 

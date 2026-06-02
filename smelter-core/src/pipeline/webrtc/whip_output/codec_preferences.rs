@@ -17,7 +17,8 @@ pub(super) fn resolve_video_preferences(
     ctx: &Arc<PipelineCtx>,
     options: &WhipOutputOptions,
 ) -> Result<Option<Vec<VideoEncoderOptions>>, WebrtcClientError> {
-    let Some(video_preferences) = options.clone().video.map(|v| v.encoder_preferences) else {
+    let Some(video_preferences) = options.clone().video.map(|v| v.encoder_preferences)
+    else {
         return Ok(None);
     };
 
@@ -134,17 +135,14 @@ pub(super) fn codec_params_from_preferences(
         Some(video_preferences) => video_preferences
             .iter()
             .flat_map(|pref| match pref {
-                VideoEncoderOptions::FfmpegH264(_) | VideoEncoderOptions::VulkanH264(_) => {
-                    h264_codec_params()
-                }
+                VideoEncoderOptions::FfmpegH264(_)
+                | VideoEncoderOptions::VulkanH264(_)
+                | VideoEncoderOptions::VaapiH264(_) => h264_codec_params(),
                 VideoEncoderOptions::FfmpegVp8(_) => vp8_codec_params(),
                 VideoEncoderOptions::FfmpegVp9(_) => vp9_codec_params(),
             })
             .unique_by(|c| {
-                (
-                    c.capability.mime_type.clone(),
-                    c.capability.sdp_fmtp_line.clone(),
-                )
+                (c.capability.mime_type.clone(), c.capability.sdp_fmtp_line.clone())
             })
             .collect(),
         None => h264_codec_params(), // default codecs register to make audio-only stream work
@@ -158,15 +156,14 @@ pub(super) fn codec_params_from_preferences(
         .as_ref()
         .and_then(|prefs| prefs.first())
         .and_then(|opt| match opt {
-            AudioEncoderOptions::Opus(opts) => Some((opts.forward_error_correction, opts.channels)),
+            AudioEncoderOptions::Opus(opts) => {
+                Some((opts.forward_error_correction, opts.channels))
+            }
             _ => None,
         })
         .unwrap_or((true, AudioChannels::Stereo));
 
     let audio_codecs = opus_codec_params(fec_first, channels);
 
-    CodecParameters {
-        video_codecs,
-        audio_codecs,
-    }
+    CodecParameters { video_codecs, audio_codecs }
 }

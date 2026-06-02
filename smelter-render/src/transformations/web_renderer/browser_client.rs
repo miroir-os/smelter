@@ -67,11 +67,7 @@ impl BrowserClient {
         source_transforms: SourceTransforms,
         resolution: Resolution,
     ) -> Self {
-        Self {
-            frame_data,
-            source_transforms,
-            resolution,
-        }
+        Self { frame_data, source_transforms, resolution }
     }
 
     fn read_frame_position(
@@ -106,7 +102,12 @@ impl libcef::RenderHandler for RenderHandler {
         }
     }
 
-    fn on_paint(&self, _browser: &libcef::Browser, buffer: &[u8], _resolution: libcef::Resolution) {
+    fn on_paint(
+        &self,
+        _browser: &libcef::Browser,
+        buffer: &[u8],
+        _resolution: libcef::Resolution,
+    ) {
         let mut frame_data = self.frame_data.lock().unwrap();
         *frame_data = Bytes::copy_from_slice(buffer);
     }
@@ -114,9 +115,6 @@ impl libcef::RenderHandler for RenderHandler {
 
 impl RenderHandler {
     pub fn new(frame_data: Arc<Mutex<Bytes>>, resolution: Resolution) -> Self {
-        Self {
-            frame_data,
-            resolution,
-        }
+        Self { frame_data, resolution }
     }
 }

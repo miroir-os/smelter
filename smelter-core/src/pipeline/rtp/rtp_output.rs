@@ -13,7 +13,8 @@ use crate::{
     pipeline::{
         encoder::{
             ffmpeg_h264::FfmpegH264Encoder, ffmpeg_vp8::FfmpegVp8Encoder,
-            ffmpeg_vp9::FfmpegVp9Encoder, libopus::OpusEncoder, vulkan_h264::VulkanH264Encoder,
+            ffmpeg_vp9::FfmpegVp9Encoder, libopus::OpusEncoder,
+            vaapi_h264::VaapiH264Encoder, vulkan_h264::VulkanH264Encoder,
         },
         output::{Output, OutputAudio, OutputVideo},
         rtp::{
@@ -73,7 +74,9 @@ impl RtpOutput {
 
         let (socket, port) = match &options.connection_options {
             RtpOutputConnectionOptions::Udp { port, ip } => udp::udp_socket(ip, *port)?,
-            RtpOutputConnectionOptions::TcpServer { port } => tcp_server::tcp_socket(*port)?,
+            RtpOutputConnectionOptions::TcpServer { port } => {
+                tcp_server::tcp_socket(*port)?
+            }
         };
 
         let (rtp_sender, rtp_receiver) = bounded(1);
@@ -111,34 +114,27 @@ impl RtpOutput {
         std::thread::Builder::new()
             .name(format!("RTP sender for output {output_ref}"))
             .spawn(move || {
-                let _span = span!(
-                    Level::INFO,
-                    "RTP sender",
-                    output_id = output_ref.to_string()
-                )
-                .entered();
+                let _span =
+                    span!(Level::INFO, "RTP sender", output_id = output_ref.to_string())
+                        .entered();
                 match connection_options {
                     RtpOutputConnectionOptions::Udp { .. } => {
                         udp::run_udp_sender_thread(socket, rtp_stream)
                     }
                     RtpOutputConnectionOptions::TcpServer { .. } => {
-                        tcp_server::run_tcp_sender_thread(socket, should_close2, rtp_stream)
+                        tcp_server::run_tcp_sender_thread(
+                            socket,
+                            should_close2,
+                            rtp_stream,
+                        )
                     }
                 }
-                ctx.event_emitter
-                    .emit(Event::OutputDone(output_ref.id().clone()));
+                ctx.event_emitter.emit(Event::OutputDone(output_ref.id().clone()));
                 debug!("Closing RTP sender thread.")
             })
             .unwrap();
 
-        Ok((
-            Self {
-                should_close,
-                audio,
-                video,
-            },
-            port,
-        ))
+        Ok((Self { should_close, audio, video }, port))
     }
 
     fn init_video_thread(
@@ -178,6 +174,18 @@ impl RtpOutput {
                     ));
                 }
                 RtpVideoTrackThread::<VulkanH264Encoder>::spawn(
+                    output_ref.clone(),
+                    RtpVideoTrackThreadOptions {
+                        ctx: ctx.clone(),
+                        output_ref: output_ref.clone(),
+                        encoder_options: options.clone(),
+                        payloader_options: payloader_options(PayloadedCodec::H264, mtu),
+                        chunks_sender: sender,
+                    },
+                )?
+            }
+            VideoEncoderOptions::VaapiH264(options) => {
+                RtpVideoTrackThread::<VaapiH264Encoder>::spawn(
                     output_ref.clone(),
                     RtpVideoTrackThreadOptions {
                         ctx: ctx.clone(),
@@ -238,16 +246,22 @@ impl RtpOutput {
         }
 
         let thread_handle = match options {
-            AudioEncoderOptions::Opus(options) => RtpAudioTrackThread::<OpusEncoder>::spawn(
-                output_ref.clone(),
-                RtpAudioTrackThreadOptions {
-                    ctx: ctx.clone(),
-                    output_ref: output_ref.clone(),
-                    encoder_options: options.clone(),
-                    payloader_options: payloader_options(PayloadedCodec::Opus, 48_000, mtu),
-                    chunks_sender: sender,
-                },
-            )?,
+            AudioEncoderOptions::Opus(options) => {
+                RtpAudioTrackThread::<OpusEncoder>::spawn(
+                    output_ref.clone(),
+                    RtpAudioTrackThreadOptions {
+                        ctx: ctx.clone(),
+                        output_ref: output_ref.clone(),
+                        encoder_options: options.clone(),
+                        payloader_options: payloader_options(
+                            PayloadedCodec::Opus,
+                            48_000,
+                            mtu,
+                        ),
+                        chunks_sender: sender,
+                    },
+                )?
+            }
             AudioEncoderOptions::FdkAac(_options) => {
                 return Err(OutputInitError::UnsupportedAudioCodec(AudioCodec::Aac));
             }
@@ -258,16 +272,15 @@ impl RtpOutput {
 
 impl Drop for RtpOutput {
     fn drop(&mut self) {
-        self.should_close
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.should_close.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
 impl Output for RtpOutput {
     fn audio(&self) -> Option<OutputAudio<'_>> {
-        self.audio.as_ref().map(|audio| OutputAudio {
-            samples_batch_sender: &audio.sample_batch_sender,
-        })
+        self.audio
+            .as_ref()
+            .map(|audio| OutputAudio { samples_batch_sender: &audio.sample_batch_sender })
     }
 
     fn video(&self) -> Option<OutputVideo<'_>> {

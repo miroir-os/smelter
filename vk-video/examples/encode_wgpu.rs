@@ -15,7 +15,8 @@ fn main() {
         .with_max_level(tracing::Level::INFO)
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to initialize tracing");
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("Failed to initialize tracing");
 
     let args = std::env::args().collect::<Vec<_>>();
 
@@ -29,16 +30,12 @@ fn main() {
     let frame_count = args[3].parse::<u32>().expect("parse frame count");
 
     let vulkan_instance = VulkanInstance::new().unwrap();
-    let vulkan_adapter = vulkan_instance
-        .create_adapter(&VulkanAdapterDescriptor::default())
-        .unwrap();
+    let vulkan_adapter =
+        vulkan_instance.create_adapter(&VulkanAdapterDescriptor::default()).unwrap();
     let vulkan_device = vulkan_adapter
         .create_device(&VulkanDeviceDescriptor {
             wgpu_features: wgpu::Features::IMMEDIATES,
-            wgpu_limits: wgpu::Limits {
-                max_immediate_size: 4,
-                ..Default::default()
-            },
+            wgpu_limits: wgpu::Limits { max_immediate_size: 4, ..Default::default() },
             ..Default::default()
         })
         .unwrap();
@@ -75,10 +72,7 @@ fn main() {
 
         let res = encoder
             .encode(
-                InputFrame {
-                    data: wgpu_state.nv12_texture.clone(),
-                    pts: None,
-                },
+                InputFrame { data: wgpu_state.nv12_texture.clone(), pts: None },
                 false,
             )
             .unwrap();
@@ -113,11 +107,12 @@ impl WgpuState {
         let shader = wgpu::include_wgsl!("encode_wgpu.wgsl");
         let shader = device.create_shader_module(shader);
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("wgpu pipeline layout"),
-            bind_group_layouts: &[],
-            immediate_size: 4,
-        });
+        let pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wgpu pipeline layout"),
+                bind_group_layouts: &[],
+                immediate_size: 4,
+            });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgpu pipeline"),
@@ -160,7 +155,8 @@ impl WgpuState {
         let rgba_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgpu render target"),
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             dimension: wgpu::TextureDimension::D2,
             sample_count: 1,
             view_formats: &[],
@@ -223,29 +219,29 @@ impl WgpuState {
     }
 
     fn render(&self, time: f32) {
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        let mut encoder =
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("wgpu encoder"),
             });
 
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("wgpu render pass"),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                depth_stencil_attachment: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.rgba_view,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    resolve_target: None,
-                    depth_slice: None,
-                })],
-                multiview_mask: None,
-            });
+            let mut render_pass =
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("wgpu render pass"),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    depth_stencil_attachment: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.rgba_view,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        resolve_target: None,
+                        depth_slice: None,
+                    })],
+                    multiview_mask: None,
+                });
 
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_immediates(0, &time.to_ne_bytes());

@@ -10,15 +10,18 @@ use crate::{
     RtmpEvent, RtmpServerConnectionError, RtmpStreamError,
     amf0::AmfValue,
     message::{
-        AudioMessage, CONTROL_MESSAGE_STREAM_ID, CommandMessage, CommandMessageOk, DataMessage,
-        RtmpMessage, UserControlMessage, VideoMessage,
+        AudioMessage, CONTROL_MESSAGE_STREAM_ID, CommandMessage, CommandMessageOk,
+        DataMessage, RtmpMessage, UserControlMessage, VideoMessage,
     },
     protocol::{
-        byte_stream::RtmpByteStream, handshake::Handshake, message_stream::RtmpMessageStream,
+        byte_stream::RtmpByteStream, handshake::Handshake,
+        message_stream::RtmpMessageStream,
     },
     server::{
         instance::ServerConnectionCtx,
-        negotiation::{NegotiationProgress, NegotiationResult, PEER_BANDWIDTH, WINDOW_ACK_SIZE},
+        negotiation::{
+            NegotiationProgress, NegotiationResult, PEER_BANDWIDTH, WINDOW_ACK_SIZE,
+        },
     },
     transport::RtmpTransport,
 };
@@ -48,9 +51,7 @@ pub(super) fn run_connection_thread(
 
     let (sender, receiver) = bounded(1000);
     // Return connection to caller via on_connection callback
-    ctx.lock()
-        .unwrap()
-        .send_connection(app, stream_key, receiver)?;
+    ctx.lock().unwrap().send_connection(app, stream_key, receiver)?;
 
     loop {
         let msg = state.next_msg()?;
@@ -67,8 +68,7 @@ pub(super) fn run_connection_thread(
                 VideoMessage::Unknown(data) => RtmpEvent::UnknownVideoData(data),
             },
             RtmpMessage::DataMessage {
-                data: DataMessage::OnMetaData(metadata),
-                ..
+                data: DataMessage::OnMetaData(metadata), ..
             } => RtmpEvent::Metadata(metadata),
             RtmpMessage::CommandMessage {
                 msg: CommandMessage::DeleteStream { .. },
@@ -114,7 +114,9 @@ impl RtmpServerConnectionState {
         }
     }
 
-    fn negotiate_connection(&mut self) -> Result<NegotiationResult, RtmpServerConnectionError> {
+    fn negotiate_connection(
+        &mut self,
+    ) -> Result<NegotiationResult, RtmpServerConnectionError> {
         let mut state = NegotiationProgress::WaitingForConnect;
 
         loop {
@@ -170,17 +172,18 @@ impl RtmpServerConnectionState {
         }
     }
 
-    fn on_connect(&mut self, transaction_id: u32) -> Result<(), RtmpServerConnectionError> {
-        self.stream.write_msg(RtmpMessage::WindowAckSize {
-            window_size: WINDOW_ACK_SIZE,
-        })?;
+    fn on_connect(
+        &mut self,
+        transaction_id: u32,
+    ) -> Result<(), RtmpServerConnectionError> {
+        self.stream
+            .write_msg(RtmpMessage::WindowAckSize { window_size: WINDOW_ACK_SIZE })?;
         self.stream.write_msg(RtmpMessage::SetPeerBandwidth {
             bandwidth: PEER_BANDWIDTH,
             limit_type: 0, // 0 - Hard, 1 - Soft, 2 - Dynamic
         })?;
 
-        self.stream
-            .write_msg(UserControlMessage::StreamBegin { stream_id: 0 }.into())?;
+        self.stream.write_msg(UserControlMessage::StreamBegin { stream_id: 0 }.into())?;
 
         // _result - connect response
         let props = HashMap::from_iter(
@@ -229,9 +232,8 @@ impl RtmpServerConnectionState {
             RtmpMessage::SetPeerBandwidth { bandwidth, .. } => {
                 // It configures how often client will be sending ACKs,
                 // it is different that self.window_size
-                self.stream.write_msg(RtmpMessage::WindowAckSize {
-                    window_size: bandwidth,
-                })?;
+                self.stream
+                    .write_msg(RtmpMessage::WindowAckSize { window_size: bandwidth })?;
             }
             RtmpMessage::UserControl(UserControlMessage::PingRequest { timestamp }) => {
                 let msg = UserControlMessage::PingResponse { timestamp };

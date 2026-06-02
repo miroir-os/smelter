@@ -122,30 +122,21 @@ mod tests {
     fn split_annexb_nalus_with_4byte_start_codes() {
         let data = [0, 0, 0, 1, 0x65, 0xAA, 0xBB, 0, 0, 0, 1, 0x06, 0xCC, 0xDD];
         let nalus = split_annexb_nalus(&data);
-        assert_eq!(
-            nalus,
-            vec![&[0x65, 0xAA, 0xBB][..], &[0x06, 0xCC, 0xDD][..]]
-        );
+        assert_eq!(nalus, vec![&[0x65, 0xAA, 0xBB][..], &[0x06, 0xCC, 0xDD][..]]);
     }
 
     #[test]
     fn split_annexb_nalus_with_3byte_start_codes() {
         let data = [0, 0, 1, 0x65, 0xAA, 0xBB, 0, 0, 1, 0x06, 0xCC, 0xDD];
         let nalus = split_annexb_nalus(&data);
-        assert_eq!(
-            nalus,
-            vec![&[0x65, 0xAA, 0xBB][..], &[0x06, 0xCC, 0xDD][..]]
-        );
+        assert_eq!(nalus, vec![&[0x65, 0xAA, 0xBB][..], &[0x06, 0xCC, 0xDD][..]]);
     }
 
     #[test]
     fn split_annexb_nalus_mixed_start_codes() {
         let data = [0, 0, 0, 1, 0x65, 0xAA, 0xBB, 0, 0, 1, 0x06, 0xCC, 0xDD];
         let nalus = split_annexb_nalus(&data);
-        assert_eq!(
-            nalus,
-            vec![&[0x65, 0xAA, 0xBB][..], &[0x06, 0xCC, 0xDD][..]]
-        );
+        assert_eq!(nalus, vec![&[0x65, 0xAA, 0xBB][..], &[0x06, 0xCC, 0xDD][..]]);
     }
 
     #[test]

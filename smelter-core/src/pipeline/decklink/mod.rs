@@ -26,20 +26,13 @@ impl DeckLink {
         input_ref: Ref<InputId>,
         opts: DeckLinkInputOptions,
     ) -> Result<(Input, InputInitInfo, QueueDataReceiver), InputInitError> {
-        let span = span!(
-            Level::INFO,
-            "DeckLink input",
-            input_id = input_ref.to_string()
-        );
+        let span = span!(Level::INFO, "DeckLink input", input_id = input_ref.to_string());
         let input = Arc::new(
-            find_decklink(&opts)?
-                .input()
-                .map_err(DeckLinkInputError::DecklinkError)?,
+            find_decklink(&opts)?.input().map_err(DeckLinkInputError::DecklinkError)?,
         );
         let initial_mode = decklink::DisplayModeType::ModeHD720p50;
-        let initial_pixel_format = opts
-            .pixel_format
-            .unwrap_or(decklink::PixelFormat::Format8BitYUV);
+        let initial_pixel_format =
+            opts.pixel_format.unwrap_or(decklink::PixelFormat::Format8BitYUV);
 
         // Initial options, real config should be set based on detected format, thanks
         // to the `enable_format_detection` option. When enabled it will call
@@ -68,17 +61,12 @@ impl DeckLink {
         input
             .set_callback(Box::new(callback))
             .map_err(DeckLinkInputError::DecklinkError)?;
-        input
-            .start_streams()
-            .map_err(DeckLinkInputError::DecklinkError)?;
+        input.start_streams().map_err(DeckLinkInputError::DecklinkError)?;
 
         Ok((
             Input::DeckLink(Self { input }),
             InputInitInfo::Other,
-            QueueDataReceiver {
-                video: receivers.video,
-                audio: receivers.audio,
-            },
+            QueueDataReceiver { video: receivers.video, audio: receivers.audio },
         ))
     }
 }

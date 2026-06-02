@@ -7,12 +7,14 @@ use crate::{
     amf0::AmfValue,
     error::RtmpStreamError,
     message::{
-        AudioMessage, CONTROL_MESSAGE_STREAM_ID, CommandMessage, CommandMessageConnectSuccess,
-        CommandMessageCreateStreamSuccess, CommandMessageResultExt, DataMessage, RtmpMessage,
-        UserControlMessage, VideoMessage,
+        AudioMessage, CONTROL_MESSAGE_STREAM_ID, CommandMessage,
+        CommandMessageConnectSuccess, CommandMessageCreateStreamSuccess,
+        CommandMessageResultExt, DataMessage, RtmpMessage, UserControlMessage,
+        VideoMessage,
     },
     protocol::{
-        byte_stream::RtmpByteStream, handshake::Handshake, message_stream::RtmpMessageStream,
+        byte_stream::RtmpByteStream, handshake::Handshake,
+        message_stream::RtmpMessageStream,
     },
     transport::RtmpTransport,
     utils::ShutdownCondition,
@@ -67,11 +69,7 @@ impl RtmpClient {
         let stream_id = state.negotiate_connection(&config.app, &config.stream_key)?;
         debug!("Negotiation complete");
 
-        Ok(Self {
-            state,
-            stream_id,
-            shutdown_condition,
-        })
+        Ok(Self { state, stream_id, shutdown_condition })
     }
 
     pub fn send<T>(&mut self, event: T) -> Result<(), RtmpStreamError>
@@ -163,8 +161,7 @@ impl RtmpClientState {
                 send_publish(&mut self.stream, stream_key, response.stream_id)?;
 
                 // should be after StreamBegin but e.g. YouTube does not send it
-                self.stream
-                    .write_msg(RtmpMessage::SetChunkSize { chunk_size: 4096 })?;
+                self.stream.write_msg(RtmpMessage::SetChunkSize { chunk_size: 4096 })?;
                 self.stream.set_writer_chunk_size(4096);
                 continue;
             }
@@ -193,9 +190,8 @@ impl RtmpClientState {
             RtmpMessage::SetPeerBandwidth { bandwidth, .. } => {
                 // It configures how often client will be sending ACKs,
                 // it is different that self.window_size
-                self.stream.write_msg(RtmpMessage::WindowAckSize {
-                    window_size: bandwidth,
-                })?;
+                self.stream
+                    .write_msg(RtmpMessage::WindowAckSize { window_size: bandwidth })?;
             }
             RtmpMessage::UserControl(UserControlMessage::PingRequest { timestamp }) => {
                 let msg = UserControlMessage::PingResponse { timestamp };
@@ -336,7 +332,10 @@ impl NegotiationProgress {
     }
 }
 
-fn send_connect(stream: &mut RtmpMessageStream, app: &str) -> Result<(), RtmpConnectionError> {
+fn send_connect(
+    stream: &mut RtmpMessageStream,
+    app: &str,
+) -> Result<(), RtmpConnectionError> {
     let props = HashMap::from_iter(
         [
             ("app", app.into()),

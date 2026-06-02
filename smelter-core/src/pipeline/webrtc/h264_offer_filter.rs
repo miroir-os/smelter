@@ -32,19 +32,22 @@ pub(crate) fn filter_h264_codecs_by_offer(
                 return true;
             }
 
-            let Some((plid, pmode)) = parse_h264_fmtp(&codec.capability.sdp_fmtp_line) else {
+            let Some((plid, pmode)) = parse_h264_fmtp(&codec.capability.sdp_fmtp_line)
+            else {
                 return true;
             };
 
-            offer_h264_params
-                .iter()
-                .any(|(offer_plid, offer_pmode)| *offer_plid == plid && *offer_pmode == pmode)
+            offer_h264_params.iter().any(|(offer_plid, offer_pmode)| {
+                *offer_plid == plid && *offer_pmode == pmode
+            })
         })
         .collect()
 }
 
 /// Extracts (profile-level-id, packetization-mode) pairs from H264 fmtp lines in the offer.
-fn extract_h264_params_from_offer(offer: &RTCSessionDescription) -> Option<Vec<(String, String)>> {
+fn extract_h264_params_from_offer(
+    offer: &RTCSessionDescription,
+) -> Option<Vec<(String, String)>> {
     let session_description = offer.unmarshal().ok()?;
     let mut params = Vec::new();
 

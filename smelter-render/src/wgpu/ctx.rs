@@ -108,9 +108,13 @@ impl WgpuCtx {
 }
 
 pub fn required_wgpu_features() -> wgpu::Features {
-    match cfg!(target_arch = "wasm32") {
+    let features = match cfg!(target_arch = "wasm32") {
         false => wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::IMMEDIATES,
         true => wgpu::Features::IMMEDIATES,
+    };
+    match cfg!(target_os = "linux") {
+        false => features,
+        true => features | wgpu::Features::TEXTURE_FORMAT_NV12,
     }
 }
 

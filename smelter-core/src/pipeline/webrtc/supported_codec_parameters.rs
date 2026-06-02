@@ -39,50 +39,20 @@ pub fn vp9_codec_params() -> Vec<RTCRtpCodecParameters> {
 pub fn h264_codec_params() -> Vec<RTCRtpCodecParameters> {
     let codec_configs = [
         // Constrained Baseline, level 3.1
-        (
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f",
-            102,
-        ),
-        (
-            "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f",
-            127,
-        ),
+        ("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f", 102),
+        ("level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f", 127),
         // Constrained Baseline extended, level 3.1
-        (
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
-            125,
-        ),
-        (
-            "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f",
-            108,
-        ),
+        ("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f", 125),
+        ("level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f", 108),
         // Main, level 3.1
-        (
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d001f",
-            104,
-        ),
-        (
-            "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=4d001f",
-            105,
-        ),
+        ("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d001f", 104),
+        ("level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=4d001f", 105),
         // High, level 3.1
-        (
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=64001f",
-            106,
-        ),
-        (
-            "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=64001f",
-            107,
-        ),
+        ("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=64001f", 106),
+        ("level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=64001f", 107),
         // High, level 5.0
-        (
-            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640032",
-            123,
-        ),
-        (
-            "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=640032",
-            124,
-        ),
+        ("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640032", 123),
+        ("level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=640032", 124),
     ];
 
     codec_configs
@@ -103,35 +73,24 @@ pub fn h264_codec_params() -> Vec<RTCRtpCodecParameters> {
 
 fn get_video_rtcp_feedback() -> Vec<RTCPFeedback> {
     vec![
-        RTCPFeedback {
-            typ: "goog-remb".to_owned(),
-            parameter: "".to_owned(),
-        },
-        RTCPFeedback {
-            typ: "ccm".to_owned(),
-            parameter: "fir".to_owned(),
-        },
-        RTCPFeedback {
-            typ: "nack".to_owned(),
-            parameter: "".to_owned(),
-        },
-        RTCPFeedback {
-            typ: "nack".to_owned(),
-            parameter: "pli".to_owned(),
-        },
+        RTCPFeedback { typ: "goog-remb".to_owned(), parameter: "".to_owned() },
+        RTCPFeedback { typ: "ccm".to_owned(), parameter: "fir".to_owned() },
+        RTCPFeedback { typ: "nack".to_owned(), parameter: "".to_owned() },
+        RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
     ]
 }
 
-pub fn opus_codec_params(fec_first: bool, channels: AudioChannels) -> Vec<RTCRtpCodecParameters> {
+pub fn opus_codec_params(
+    fec_first: bool,
+    channels: AudioChannels,
+) -> Vec<RTCRtpCodecParameters> {
     let codec_configs = match fec_first {
-        true => [
-            ("minptime=10;useinbandfec=1", 111),
-            ("minptime=10;useinbandfec=0", 110),
-        ],
-        false => [
-            ("minptime=10;useinbandfec=0", 110),
-            ("minptime=10;useinbandfec=1", 111),
-        ],
+        true => {
+            [("minptime=10;useinbandfec=1", 111), ("minptime=10;useinbandfec=0", 110)]
+        }
+        false => {
+            [("minptime=10;useinbandfec=0", 110), ("minptime=10;useinbandfec=1", 111)]
+        }
     };
 
     let channels = match channels {

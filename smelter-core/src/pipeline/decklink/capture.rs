@@ -65,10 +65,7 @@ impl ChannelCallbackAdapter {
                 video_offset: Mutex::new(None),
                 last_format: Mutex::new(initial_format),
             },
-            DataReceivers {
-                video: Some(video_receiver),
-                audio: audio_receiver,
-            },
+            DataReceivers { video: Some(video_receiver), audio: audio_receiver },
         )
     }
 
@@ -80,7 +77,9 @@ impl ChannelCallbackAdapter {
         let stream_time = video_frame.stream_time()?;
         let offset = {
             let mut guard = self.video_offset.lock().unwrap();
-            *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(stream_time))
+            *guard.get_or_insert_with(|| {
+                self.sync_point.elapsed().saturating_sub(stream_time)
+            })
         };
         let pts = stream_time + offset;
 
@@ -204,7 +203,9 @@ impl ChannelCallbackAdapter {
         let packet_time = audio_packet.packet_time()?;
         let offset = {
             let mut guard = self.audio_offset.lock().unwrap();
-            *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(packet_time))
+            *guard.get_or_insert_with(|| {
+                self.sync_point.elapsed().saturating_sub(packet_time)
+            })
         };
         let pts = packet_time + offset;
 
@@ -213,7 +214,9 @@ impl ChannelCallbackAdapter {
             samples: AudioSamples::Stereo(
                 samples
                     .into_iter()
-                    .map(|(l, r)| (l as f64 / i32::MAX as f64, r as f64 / i32::MAX as f64))
+                    .map(|(l, r)| {
+                        (l as f64 / i32::MAX as f64, r as f64 / i32::MAX as f64)
+                    })
                     .collect(),
             ),
             start_pts: pts,
@@ -257,19 +260,13 @@ impl ChannelCallbackAdapter {
         let pixel_format = match new_format.colorspace {
             Colorspace::YCbCr422 => {
                 if new_format.bit_depth != BitDepth::Depth8Bit {
-                    warn!(
-                        "Format changed to {:?}. Forcing 8-bit.",
-                        new_format.bit_depth
-                    )
+                    warn!("Format changed to {:?}. Forcing 8-bit.", new_format.bit_depth)
                 }
                 PixelFormat::Format8BitYUV
             }
             Colorspace::RGB444 => {
                 if new_format.bit_depth != BitDepth::Depth8Bit {
-                    warn!(
-                        "Format changed to {:?}. Forcing 8-bit.",
-                        new_format.bit_depth
-                    )
+                    warn!("Format changed to {:?}. Forcing 8-bit.", new_format.bit_depth)
                 }
                 PixelFormat::Format8BitBGRA
             }
@@ -282,10 +279,7 @@ impl ChannelCallbackAdapter {
         input.enable_video(
             mode,
             pixel_format,
-            VideoInputFlags {
-                enable_format_detection: true,
-                ..Default::default()
-            },
+            VideoInputFlags { enable_format_detection: true, ..Default::default() },
         )?;
         input.flush_streams()?;
         input.start_streams()?;
@@ -309,19 +303,13 @@ impl InputCallback for ChannelCallbackAdapter {
         if let (Some(video_frame), Some(sender)) = (video_frame, &self.video_sender)
             && let Err(err) = self.handle_video_frame(video_frame, sender)
         {
-            warn!(
-                "Failed to handle video frame: {}",
-                ErrorStack::new(&err).into_string()
-            )
+            warn!("Failed to handle video frame: {}", ErrorStack::new(&err).into_string())
         }
 
         if let (Some(audio_packet), Some(sender)) = (audio_packet, &self.audio_sender)
             && let Err(err) = self.handle_audio_packet(audio_packet, sender)
         {
-            warn!(
-                "Failed to handle video frame: {}",
-                ErrorStack::new(&err).into_string()
-            )
+            warn!("Failed to handle video frame: {}", ErrorStack::new(&err).into_string())
         }
 
         InputCallbackResult::Ok

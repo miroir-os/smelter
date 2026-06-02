@@ -109,9 +109,7 @@ impl std::fmt::Debug for H264VideoData {
 
 impl std::fmt::Debug for H264VideoConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("H264VideoConfig")
-            .field("data", &bytes_debug(&self.data))
-            .finish()
+        f.debug_struct("H264VideoConfig").field("data", &bytes_debug(&self.data)).finish()
     }
 }
 

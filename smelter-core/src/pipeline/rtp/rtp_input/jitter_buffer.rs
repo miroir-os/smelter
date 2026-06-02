@@ -79,14 +79,12 @@ impl RtpJitterBuffer {
     }
 
     pub fn on_sender_report(&mut self, ntp_time: u64, rtp_timestamp: u32) {
-        self.timestamp_sync
-            .on_sender_report(ntp_time, rtp_timestamp);
+        self.timestamp_sync.on_sender_report(ntp_time, rtp_timestamp);
     }
 
     pub fn write_packet(&mut self, packet: webrtc::rtp::packet::Packet) {
-        let sequence_number = self
-            .seq_num_rollover
-            .rolled_sequence_number(packet.header.sequence_number);
+        let sequence_number =
+            self.seq_num_rollover.rolled_sequence_number(packet.header.sequence_number);
 
         if let Some(last_returned) = self.next_seq_num
             && last_returned > sequence_number
@@ -100,20 +98,14 @@ impl RtpJitterBuffer {
             packet.payload.len(),
         ));
 
-        let pts = self
-            .timestamp_sync
-            .pts_from_timestamp(packet.header.timestamp);
+        let pts = self.timestamp_sync.pts_from_timestamp(packet.header.timestamp);
 
         self.input_buffer.recalculate_buffer(pts);
 
         trace!(packet=?packet.header, ?pts, buffer_size=self.packets.len(), "Writing packet to jitter buffer");
         self.packets.insert(
             sequence_number,
-            JitterBufferPacket {
-                packet,
-                pts,
-                received_at: Instant::now(),
-            },
+            JitterBufferPacket { packet, pts, received_at: Instant::now() },
         );
     }
 
@@ -174,10 +166,7 @@ impl RtpJitterBuffer {
         ));
 
         self.next_seq_num = Some(first_seq_num + 1);
-        Some(RtpInputEvent::Packet(RtpPacket {
-            packet: first_packet.packet,
-            timestamp,
-        }))
+        Some(RtpInputEvent::Packet(RtpPacket { packet: first_packet.packet, timestamp }))
     }
 }
 

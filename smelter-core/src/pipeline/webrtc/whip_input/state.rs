@@ -23,7 +23,10 @@ use crate::prelude::*;
 pub(crate) struct WhipInputsState(Arc<Mutex<HashMap<Ref<InputId>, WhipInputState>>>);
 
 impl WhipInputsState {
-    pub fn get_with<T, Func: FnOnce(&WhipInputState) -> Result<T, WhipWhepServerError>>(
+    pub fn get_with<
+        T,
+        Func: FnOnce(&WhipInputState) -> Result<T, WhipWhepServerError>,
+    >(
         &self,
         input_ref: &Ref<InputId>,
         func: Func,
@@ -31,13 +34,16 @@ impl WhipInputsState {
         let guard = self.0.lock().unwrap();
         match guard.get(input_ref) {
             Some(input) => func(input),
-            None => Err(WhipWhepServerError::NotFound(format!(
-                "Input {input_ref} not found"
-            ))),
+            None => {
+                Err(WhipWhepServerError::NotFound(format!("Input {input_ref} not found")))
+            }
         }
     }
 
-    pub fn get_mut_with<T, Func: FnOnce(&mut WhipInputState) -> Result<T, WhipWhepServerError>>(
+    pub fn get_mut_with<
+        T,
+        Func: FnOnce(&mut WhipInputState) -> Result<T, WhipWhepServerError>,
+    >(
         &self,
         input_ref: &Ref<InputId>,
         func: Func,
@@ -45,9 +51,9 @@ impl WhipInputsState {
         let mut guard = self.0.lock().unwrap();
         match guard.get_mut(input_ref) {
             Some(input) => func(input),
-            None => Err(WhipWhepServerError::NotFound(format!(
-                "Input {input_ref} not found"
-            ))),
+            None => {
+                Err(WhipWhepServerError::NotFound(format!("Input {input_ref} not found")))
+            }
         }
     }
 
@@ -56,14 +62,12 @@ impl WhipInputsState {
         endpoint_id: &Arc<str>,
     ) -> Result<Ref<InputId>, WhipWhepServerError> {
         let guard = self.0.lock().unwrap();
-        let entry = guard
-            .iter()
-            .find(|(_, input)| input.endpoint_id == *endpoint_id);
+        let entry = guard.iter().find(|(_, input)| input.endpoint_id == *endpoint_id);
         match entry {
             Some((input_ref, _)) => Ok(input_ref.clone()),
-            None => Err(WhipWhepServerError::NotFound(format!(
-                "{endpoint_id:?} not found"
-            ))),
+            None => {
+                Err(WhipWhepServerError::NotFound(format!("{endpoint_id:?} not found")))
+            }
         }
     }
 
@@ -73,13 +77,10 @@ impl WhipInputsState {
         options: WhipInputStateOptions,
     ) -> Result<(), WebrtcServerError> {
         let mut guard = self.0.lock().unwrap();
-        let is_endpoint_id_in_use = guard
-            .iter()
-            .any(|(_, input)| input.endpoint_id == options.endpoint_id);
+        let is_endpoint_id_in_use =
+            guard.iter().any(|(_, input)| input.endpoint_id == options.endpoint_id);
         if is_endpoint_id_in_use {
-            return Err(WebrtcServerError::EndpointIdAlreadyInUse(
-                options.endpoint_id,
-            ));
+            return Err(WebrtcServerError::EndpointIdAlreadyInUse(options.endpoint_id));
         }
         let old_value = guard.insert(input_ref.clone(), WhipInputState::new(options));
         if old_value.is_some() {
@@ -178,7 +179,8 @@ impl WhipInputState {
     ) -> Result<(), WhipWhepServerError> {
         // Deleting previous peer_connection on this input which was not in Connected state
         if let Some(session) = &self.session
-            && session.peer_connection.connection_state() == RTCPeerConnectionState::Connected
+            && session.peer_connection.connection_state()
+                == RTCPeerConnectionState::Connected
         {
             return Err(WhipWhepServerError::InternalError("Another stream is currently connected to this endpoint \
                       Disconnect the existing stream before starting a new one, or check if the session_id is correct.".to_string()));

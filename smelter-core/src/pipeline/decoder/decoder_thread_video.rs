@@ -8,8 +8,8 @@ use crate::{
     PipelineCtx, PipelineEvent,
     error::DecoderInitError,
     pipeline::decoder::{
-        BytestreamTransformStream, BytestreamTransformer, DecoderThreadHandle, EncodedInputEvent,
-        VideoDecoderStream,
+        BytestreamTransformStream, BytestreamTransformer, DecoderThreadHandle,
+        EncodedInputEvent, VideoDecoderStream,
     },
     utils::{InitializableThread, ThreadMetadata},
 };
@@ -23,14 +23,18 @@ pub(crate) struct VideoDecoderThreadOptions<Transformer: BytestreamTransformer> 
     pub input_buffer_size: usize,
 }
 
-pub(crate) struct VideoDecoderThread<Decoder: VideoDecoder, Transformer: BytestreamTransformer> {
+pub(crate) struct VideoDecoderThread<
+    Decoder: VideoDecoder,
+    Transformer: BytestreamTransformer,
+> {
     stream: Box<dyn Iterator<Item = PipelineEvent<Frame>>>,
     frame_sender: Sender<PipelineEvent<Frame>>,
     _decoder: PhantomData<Decoder>,
     _transformer: PhantomData<Transformer>,
 }
 
-impl<Decoder, Transformer> InitializableThread for VideoDecoderThread<Decoder, Transformer>
+impl<Decoder, Transformer> InitializableThread
+    for VideoDecoderThread<Decoder, Transformer>
 where
     Decoder: VideoDecoder + 'static,
     Transformer: BytestreamTransformer,
@@ -40,7 +44,9 @@ where
     type SpawnOutput = DecoderThreadHandle;
     type SpawnError = DecoderInitError;
 
-    fn init(options: Self::InitOptions) -> Result<(Self, Self::SpawnOutput), Self::SpawnError> {
+    fn init(
+        options: Self::InitOptions,
+    ) -> Result<(Self, Self::SpawnOutput), Self::SpawnError> {
         let VideoDecoderThreadOptions {
             ctx,
             transformer,
@@ -50,16 +56,17 @@ where
         let (chunk_sender, chunk_receiver) = crossbeam_channel::bounded(buffer_size);
 
         let transformed_bytestream =
-            BytestreamTransformStream::new(transformer, chunk_receiver.into_iter()).map(|event| {
-                match event {
+            BytestreamTransformStream::new(transformer, chunk_receiver.into_iter()).map(
+                |event| match event {
                     PipelineEvent::Data(chunk) => {
                         PipelineEvent::Data(EncodedInputEvent::Chunk(chunk))
                     }
                     PipelineEvent::EOS => PipelineEvent::EOS,
-                }
-            });
+                },
+            );
 
-        let decoder_stream = VideoDecoderStream::<Decoder, _>::new(ctx, transformed_bytestream)?;
+        let decoder_stream =
+            VideoDecoderStream::<Decoder, _>::new(ctx, transformed_bytestream)?;
 
         let state = Self {
             stream: Box::new(decoder_stream.flatten()),

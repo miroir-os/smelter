@@ -41,7 +41,9 @@ where
     type SpawnOutput = WhepVideoTrackThreadHandle;
     type SpawnError = EncoderInitError;
 
-    fn init(options: Self::InitOptions) -> Result<(Self, Self::SpawnOutput), Self::SpawnError> {
+    fn init(
+        options: Self::InitOptions,
+    ) -> Result<(Self, Self::SpawnOutput), Self::SpawnError> {
         let WhepVideoTrackThreadOptions {
             ctx,
             encoder_options,
@@ -64,11 +66,8 @@ where
             PipelineEvent::EOS => EncodedOutputEvent::VideoEOS,
         });
 
-        let state = Self {
-            stream: Box::new(stream),
-            chunks_sender,
-            _encoder: PhantomData,
-        };
+        let state =
+            Self { stream: Box::new(stream), chunks_sender, _encoder: PhantomData };
         let output = WhepVideoTrackThreadHandle {
             frame_sender,
             keyframe_request_sender: encoder_ctx.keyframe_request_sender,

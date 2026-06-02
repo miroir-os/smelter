@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::{self, Display},
+    os::fd::OwnedFd,
     sync::Arc,
     time::Duration,
 };
@@ -34,9 +35,74 @@ pub enum FrameData {
     InterleavedYuyv422(bytes::Bytes),
     Rgba8UnormWgpuTexture(Arc<wgpu::Texture>),
     Nv12WgpuTexture(Arc<wgpu::Texture>),
+    Nv12DmaBuf(Arc<DmaBufFrame>),
     Nv12(NvPlanes),
     Bgra(bytes::Bytes),
     Argb(bytes::Bytes),
+}
+
+#[derive(Clone)]
+pub struct DmaBufFrame {
+    pub fourcc: u32,
+    pub width: u32,
+    pub height: u32,
+    pub objects: Vec<DmaBufObject>,
+    pub layers: Vec<DmaBufLayer>,
+    texture: Arc<wgpu::Texture>,
+}
+
+impl DmaBufFrame {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn new(
+        texture: Arc<wgpu::Texture>,
+        fourcc: u32,
+        width: u32,
+        height: u32,
+        objects: Vec<DmaBufObject>,
+        layers: Vec<DmaBufLayer>,
+    ) -> Self {
+        Self { fourcc, width, height, objects, layers, texture }
+    }
+
+    pub(crate) fn texture(&self) -> Arc<wgpu::Texture> {
+        self.texture.clone()
+    }
+}
+
+impl fmt::Debug for DmaBufFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DMA-BUF frame")
+            .field("fourcc", &self.fourcc)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("objects", &self.objects)
+            .field("layers", &self.layers)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct DmaBufObject {
+    pub fd: Arc<OwnedFd>,
+    pub size: u32,
+    pub modifier: u64,
+}
+
+impl fmt::Debug for DmaBufObject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DMA-BUF object")
+            .field("size", &self.size)
+            .field("modifier", &self.modifier)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DmaBufLayer {
+    pub drm_format: u32,
+    pub object_index: Vec<usize>,
+    pub offset: Vec<u32>,
+    pub pitch: Vec<u32>,
 }
 
 #[derive(Clone)]
@@ -85,10 +151,7 @@ where
     Id: From<Arc<str>>,
 {
     pub fn new(pts: Duration) -> Self {
-        FrameSet {
-            frames: HashMap::new(),
-            pts,
-        }
+        FrameSet { frames: HashMap::new(), pts }
     }
 }
 
@@ -143,10 +206,7 @@ impl From<Arc<str>> for OutputId {
     }
 }
 
-pub const MAX_NODE_RESOLUTION: Resolution = Resolution {
-    width: 7682,
-    height: 4320,
-};
+pub const MAX_NODE_RESOLUTION: Resolution = Resolution { width: 7682, height: 4320 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Resolution {
@@ -155,20 +215,11 @@ pub struct Resolution {
 }
 
 impl Resolution {
-    pub const ZERO: Self = Resolution {
-        width: 0,
-        height: 0,
-    };
+    pub const ZERO: Self = Resolution { width: 0, height: 0 };
 
-    pub const ONE_PIXEL: Self = Resolution {
-        width: 1,
-        height: 1,
-    };
+    pub const ONE_PIXEL: Self = Resolution { width: 1, height: 1 };
 
-    pub const MIN_2X2: Self = Resolution {
-        width: 2,
-        height: 2,
-    };
+    pub const MIN_2X2: Self = Resolution { width: 2, height: 2 };
 
     pub fn ratio(&self) -> f32 {
         self.width as f32 / self.height as f32
@@ -177,10 +228,7 @@ impl Resolution {
 
 impl From<wgpu::Extent3d> for Resolution {
     fn from(value: wgpu::Extent3d) -> Self {
-        Self {
-            width: value.width as usize,
-            height: value.height as usize,
-        }
+        Self { width: value.width as usize, height: value.height as usize }
     }
 }
 
@@ -191,4 +239,5 @@ pub enum OutputFrameFormat {
     PlanarYuv444Bytes,
     RgbaWgpuTexture,
     Nv12WgpuTexture,
+    Nv12DmaBuf,
 }

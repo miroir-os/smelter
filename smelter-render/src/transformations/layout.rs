@@ -84,7 +84,10 @@ enum RenderLayoutContent {
         crop: Crop,
     },
     #[allow(dead_code)]
-    BoxShadow { color: RGBAColor, blur_radius: f32 },
+    BoxShadow {
+        color: RGBAColor,
+        blur_radius: f32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -149,10 +152,7 @@ impl LayoutNode {
     pub fn new(ctx: &RenderCtx, layout_provider: Box<dyn LayoutProvider>) -> Self {
         let shader = ctx.renderers.layout.0.clone();
 
-        Self {
-            layout_provider,
-            shader,
-        }
+        Self { layout_provider, shader }
     }
 
     pub fn render(
@@ -162,10 +162,8 @@ impl LayoutNode {
         target: &mut NodeTexture,
         pts: Duration,
     ) {
-        let input_resolutions: Vec<Option<Resolution>> = sources
-            .iter()
-            .map(|node_texture| node_texture.resolution())
-            .collect();
+        let input_resolutions: Vec<Option<Resolution>> =
+            sources.iter().map(|node_texture| node_texture.resolution()).collect();
         let output_resolution = self.layout_provider.resolution(pts);
         let layouts = self.layout_provider.layouts(pts, &input_resolutions);
         let layouts = layouts.flatten(&input_resolutions, output_resolution);
@@ -175,19 +173,20 @@ impl LayoutNode {
             .map(|layout| match layout.content {
                 RenderLayoutContent::BoxShadow { .. } => None,
                 RenderLayoutContent::Color { .. } => None,
-                RenderLayoutContent::ChildNode { index, .. } => match sources.get(index) {
-                    Some(node_texture) => Some(*node_texture),
-                    None => {
-                        error!("Invalid source index in layout");
-                        None
+                RenderLayoutContent::ChildNode { index, .. } => {
+                    match sources.get(index) {
+                        Some(node_texture) => Some(*node_texture),
+                        None => {
+                            error!("Invalid source index in layout");
+                            None
+                        }
                     }
-                },
+                }
             })
             .collect();
 
         let target = target.ensure_size(ctx.wgpu_ctx, output_resolution);
-        self.shader
-            .render(ctx.wgpu_ctx, output_resolution, layouts, &textures, target);
+        self.shader.render(ctx.wgpu_ctx, output_resolution, layouts, &textures, target);
     }
 }
 

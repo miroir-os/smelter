@@ -55,7 +55,9 @@ impl Input {
         sample_type: ffi::AudioSampleType,
         channels: u32,
     ) -> Result<(), DeckLinkError> {
-        match unsafe { ffi::input_enable_audio(self.0, sample_rate, sample_type, channels)? } {
+        match unsafe {
+            ffi::input_enable_audio(self.0, sample_rate, sample_type, channels)?
+        } {
             HResult::Ok => Ok(()),
             hresult => Err(DeckLinkError::DeckLinkCallFailed(
                 "IDeckLinkInput::EnableAudioInput",
@@ -146,7 +148,8 @@ impl VideoInputFrame {
         Ok(unsafe { ffi::video_input_frame_pixel_format(self.0)? })
     }
     pub fn stream_time(&self) -> Result<Duration, DeckLinkError> {
-        let time_value = unsafe { ffi::video_input_frame_stream_time(self.0, 1_000_000_000)? };
+        let time_value =
+            unsafe { ffi::video_input_frame_stream_time(self.0, 1_000_000_000)? };
         Ok(Duration::from_nanos(time_value as u64))
     }
 }
@@ -159,7 +162,8 @@ impl AudioInputPacket {
         channels: usize,
         sample_type: ffi::AudioSampleType,
     ) -> Result<bytes::Bytes, DeckLinkError> {
-        let sample_count = unsafe { ffi::audio_input_packet_sample_count(self.0) as usize };
+        let sample_count =
+            unsafe { ffi::audio_input_packet_sample_count(self.0) as usize };
         let bytes_per_sample = sample_type.repr / 8;
         let bytes_len = sample_count * channels * bytes_per_sample as usize;
         let mut data = bytes::BytesMut::zeroed(bytes_len);
@@ -171,7 +175,8 @@ impl AudioInputPacket {
     }
 
     pub fn as_32_bit_stereo(&self) -> Result<Vec<(i32, i32)>, DeckLinkError> {
-        let sample_count = unsafe { ffi::audio_input_packet_sample_count(self.0) as usize };
+        let sample_count =
+            unsafe { ffi::audio_input_packet_sample_count(self.0) as usize };
         let mut result: Vec<(i32, i32)> = Vec::with_capacity(sample_count);
         unsafe {
             let packet_ptr = ffi::audio_input_packet_bytes(self.0)?;
@@ -187,7 +192,8 @@ impl AudioInputPacket {
     }
 
     pub fn as_16_bit_stereo(&self) -> Result<Vec<(i16, i16)>, DeckLinkError> {
-        let sample_count = unsafe { ffi::audio_input_packet_sample_count(self.0) as usize };
+        let sample_count =
+            unsafe { ffi::audio_input_packet_sample_count(self.0) as usize };
         let mut result: Vec<(i16, i16)> = Vec::with_capacity(sample_count);
         unsafe {
             let packet_ptr = ffi::audio_input_packet_bytes(self.0)?;
@@ -203,7 +209,8 @@ impl AudioInputPacket {
     }
 
     pub fn packet_time(&self) -> Result<Duration, DeckLinkError> {
-        let time_value = unsafe { ffi::audio_input_packet_packet_time(self.0, 1_000_000_000)? };
+        let time_value =
+            unsafe { ffi::audio_input_packet_packet_time(self.0, 1_000_000_000)? };
         Ok(Duration::from_nanos(time_value as u64))
     }
 }
@@ -228,9 +235,7 @@ impl DynInputCallback {
         if !audio_packet.is_null() {
             audio = Some(AudioInputPacket(audio_packet))
         }
-        let result = self
-            .0
-            .video_input_frame_arrived(video.as_mut(), audio.as_mut());
+        let result = self.0.video_input_frame_arrived(video.as_mut(), audio.as_mut());
         match result {
             InputCallbackResult::Ok => ffi::HResult::Ok,
             InputCallbackResult::Failure => ffi::HResult::Fail,
@@ -243,9 +248,11 @@ impl DynInputCallback {
         display_mode: *mut ffi::IDeckLinkDisplayMode,
         flags: ffi::DetectedVideoInputFormatFlags,
     ) -> ffi::HResult {
-        let result =
-            self.0
-                .video_input_format_changed(events, DisplayMode(display_mode, false), flags);
+        let result = self.0.video_input_format_changed(
+            events,
+            DisplayMode(display_mode, false),
+            flags,
+        );
 
         match result {
             InputCallbackResult::Ok => ffi::HResult::Ok,

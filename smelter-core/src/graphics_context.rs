@@ -1,4 +1,6 @@
-use crate::graphics_context::wgpu_context::{BoxableHasDisplayHandle, create_wgpu_graphics_ctx};
+use crate::graphics_context::wgpu_context::{
+    BoxableHasDisplayHandle, create_wgpu_graphics_ctx,
+};
 use std::sync::Arc;
 
 #[cfg(feature = "vk-video")]

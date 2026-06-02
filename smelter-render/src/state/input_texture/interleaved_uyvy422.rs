@@ -19,11 +19,7 @@ impl InterleavedUyvy422Input {
         let upload_textures = InterleavedUyvy422Texture::new(ctx, Resolution::MIN_2X2);
         let yuv_bind_group = upload_textures.new_bind_group(ctx);
 
-        Self {
-            upload_textures,
-            yuv_bind_group,
-            color_space_converter: None,
-        }
+        Self { upload_textures, yuv_bind_group, color_space_converter: None }
     }
 
     pub fn resolution(&self) -> Resolution {

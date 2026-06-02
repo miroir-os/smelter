@@ -31,22 +31,18 @@ impl AccumulatedNalHandler for NalReceiver {
 
 impl NalReceiver {
     pub(crate) fn new(sender: mpsc::Sender<Result<ParsedNalu, H264ParserError>>) -> Self {
-        Self {
-            sender,
-            parser_ctx: Context::default(),
-        }
+        Self { sender, parser_ctx: Context::default() }
     }
 
     fn handle_nal(&mut self, nal: RefNal<'_>) -> Result<ParsedNalu, H264ParserError> {
-        let nal_unit_type = nal
-            .header()
-            .map_err(H264ParserError::NalHeaderParseError)?
-            .nal_unit_type();
+        let nal_unit_type =
+            nal.header().map_err(H264ParserError::NalHeaderParseError)?.nal_unit_type();
 
         match nal_unit_type {
             h264_reader::nal::UnitType::SeqParameterSet => {
-                let parsed = h264_reader::nal::sps::SeqParameterSet::from_bits(nal.rbsp_bits())
-                    .map_err(H264ParserError::SpsParseError)?;
+                let parsed =
+                    h264_reader::nal::sps::SeqParameterSet::from_bits(nal.rbsp_bits())
+                        .map_err(H264ParserError::SpsParseError)?;
 
                 // Perhaps this shouldn't be here, but this is the only place we process sps
                 // before sending them to the decoder. It also seems that this is the only thing we

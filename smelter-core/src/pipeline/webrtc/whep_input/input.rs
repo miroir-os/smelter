@@ -17,8 +17,10 @@ use crate::{
             http_client::{SdpAnswer, WhipWhepHttpClient},
             peer_connection_recvonly::RecvonlyPeerConnection,
             whep_input::{
-                WhepTrackContext, listen_for_trickle_candidates::listen_for_trickle_candidates,
-                on_track::handle_on_track, resolve_video_preferences::resolve_video_preferences,
+                WhepTrackContext,
+                listen_for_trickle_candidates::listen_for_trickle_candidates,
+                on_track::handle_on_track,
+                resolve_video_preferences::resolve_video_preferences,
             },
         },
     },
@@ -50,11 +52,8 @@ impl WhepInput {
             kind: InputProtocolKind::Whep,
         });
 
-        let span = span!(
-            Level::INFO,
-            "WHEP client task",
-            input_id = input_ref.to_string()
-        );
+        let span =
+            span!(Level::INFO, "WHEP client task", input_id = input_ref.to_string());
         let ctx_clone = ctx.clone();
         ctx.tokio_rt.spawn(
             async {
@@ -125,10 +124,7 @@ async fn init_whep_client(
     let offer = pc.create_offer().await?;
     debug!("SDP offer: {}", offer.sdp);
 
-    let SdpAnswer {
-        session_url,
-        answer,
-    } = client.send_offer(&offer).await?;
+    let SdpAnswer { session_url, answer } = client.send_offer(&offer).await?;
     debug!("SDP answer: {}", answer.sdp);
 
     pc.set_local_description(offer).await?;
@@ -154,12 +150,7 @@ async fn init_whep_client(
     }
 
     Ok((
-        Input::Whep(WhepInput {
-            ctx,
-            session_url,
-            client,
-            _peer_connection: pc,
-        }),
+        Input::Whep(WhepInput { ctx, session_url, client, _peer_connection: pc }),
         InputInitInfo::Other,
         QueueDataReceiver {
             video: Some(frame_receiver),

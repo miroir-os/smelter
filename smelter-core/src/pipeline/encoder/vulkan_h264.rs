@@ -8,7 +8,9 @@ use vk_video::{
 };
 
 use crate::{
-    pipeline::encoder::utils::{bitrate_from_resolution_framerate, gop_size_from_ms_framerate},
+    pipeline::encoder::utils::{
+        bitrate_from_resolution_framerate, gop_size_from_ms_framerate,
+    },
     pipeline::utils::{annexb_to_avcc, build_avc_decoder_config},
     prelude::*,
 };
@@ -38,10 +40,9 @@ impl VideoEncoder for VulkanH264Encoder {
         let height = NonZero::new(u32::max(options.resolution.height as u32, 1)).unwrap();
         let framerate = ctx.output_framerate;
         let bitrate = options.bitrate.unwrap_or_else(|| {
-            VulkanH264EncoderRateControl::VariableBitrate(bitrate_from_resolution_framerate(
-                options.resolution,
-                framerate,
-            ))
+            VulkanH264EncoderRateControl::VariableBitrate(
+                bitrate_from_resolution_framerate(options.resolution, framerate),
+            )
         });
 
         let rate_control = match bitrate {
@@ -74,15 +75,18 @@ impl VideoEncoder for VulkanH264Encoder {
         let mut encoder_params = match options.preset {
             VulkanH264EncoderPreset::HighQuality => EncoderParameters {
                 input_parameters: video_params,
-                output_parameters: device.encoder_output_parameters_high_quality(rate_control)?,
+                output_parameters: device
+                    .encoder_output_parameters_high_quality(rate_control)?,
             },
             VulkanH264EncoderPreset::LowLatency => EncoderParameters {
                 input_parameters: video_params,
-                output_parameters: device.encoder_output_parameters_low_latency(rate_control)?,
+                output_parameters: device
+                    .encoder_output_parameters_low_latency(rate_control)?,
             },
         };
 
-        let gop_size_raw = gop_size_from_ms_framerate(options.keyframe_interval, framerate) as u32;
+        let gop_size_raw =
+            gop_size_from_ms_framerate(options.keyframe_interval, framerate) as u32;
         let gop_size = NonZero::new(gop_size_raw).unwrap_or(NonZero::new(1).unwrap());
 
         encoder_params.output_parameters.idr_period = Some(gop_size);
@@ -104,10 +108,7 @@ impl VideoEncoder for VulkanH264Encoder {
         };
 
         Ok((
-            Self {
-                encoder,
-                bitstream_format: options.bitstream_format,
-            },
+            Self { encoder, bitstream_format: options.bitstream_format },
             VideoEncoderConfig {
                 resolution: options.resolution,
                 output_format: OutputFrameFormat::Nv12WgpuTexture,
@@ -123,10 +124,7 @@ impl VideoEncoder for VulkanH264Encoder {
         };
 
         let result = self.encoder.encode(
-            vk_video::InputFrame {
-                data: texture.deref().clone(),
-                pts: None,
-            },
+            vk_video::InputFrame { data: texture.deref().clone(), pts: None },
             force_keyframe,
         );
 

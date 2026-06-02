@@ -60,8 +60,10 @@ impl WebRenderer {
             source_transforms.clone(),
             spec.resolution,
         );
-        let chromium_sender = ChromiumSender::new(chromium_context, instance_id, &spec, client);
-        let embedding_helper = EmbeddingHelper::new(ctx, chromium_sender, spec.embedding_method);
+        let chromium_sender =
+            ChromiumSender::new(chromium_context, instance_id, &spec, client);
+        let embedding_helper =
+            EmbeddingHelper::new(ctx, chromium_sender, spec.embedding_method);
         let render_website_shader = WebRendererShader::new(&ctx.wgpu_ctx)?;
         let website_texture = WebsiteTexture::new(&ctx.wgpu_ctx, spec.resolution);
 
@@ -82,17 +84,16 @@ impl WebRenderer {
         embedding_data: &EmbeddingData,
         target: &mut NodeTexture,
     ) -> Result<(), RenderWebsiteError> {
-        self.embedding_helper
-            .prepare_embedding(sources, embedding_data)
-            .map_err(|err| RenderWebsiteError::EmbeddingFailed(self.spec.url.clone(), err))?;
+        self.embedding_helper.prepare_embedding(sources, embedding_data).map_err(
+            |err| RenderWebsiteError::EmbeddingFailed(self.spec.url.clone(), err),
+        )?;
 
         if let Some(frame) = self.retrieve_frame() {
             let target = target.ensure_size(ctx.wgpu_ctx, self.spec.resolution);
             self.website_texture.upload(ctx.wgpu_ctx, &frame);
             let render_textures = self.prepare_textures(sources);
 
-            self.render_website_shader
-                .render(ctx.wgpu_ctx, &render_textures, target);
+            self.render_website_shader.render(ctx.wgpu_ctx, &render_textures, target);
         }
 
         Ok(())
@@ -152,7 +153,9 @@ impl WebsiteTexture {
             RenderingMode::GpuOptimized | RenderingMode::WebGl => {
                 Self::Srgb(BgraSrgbTexture::new(ctx, resolution))
             }
-            RenderingMode::CpuOptimized => Self::Linear(BgraLinearTexture::new(ctx, resolution)),
+            RenderingMode::CpuOptimized => {
+                Self::Linear(BgraLinearTexture::new(ctx, resolution))
+            }
         }
     }
     fn view(&self) -> &wgpu::TextureView {

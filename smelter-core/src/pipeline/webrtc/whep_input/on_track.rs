@@ -11,7 +11,8 @@ use crate::{
             input_rtp_reader::WebrtcRtpReader,
             input_thread::{AudioTrackThread, VideoTrackThread},
             negotiated_codecs::{
-                WebrtcVideoDecoderMapping, WebrtcVideoPayloadTypeMapping, audio_codec_negotiated,
+                WebrtcVideoDecoderMapping, WebrtcVideoPayloadTypeMapping,
+                audio_codec_negotiated,
             },
             whep_input::WhepTrackContext,
         },
@@ -39,7 +40,8 @@ pub fn handle_on_track(
                     process_audio_track(ctx, input_ref, input_samples_sender).await
                 }
                 RTPCodecType::Video => {
-                    process_video_track(ctx, input_ref, frame_sender, video_preferences).await
+                    process_video_track(ctx, input_ref, frame_sender, video_preferences)
+                        .await
                 }
                 RTPCodecType::Unspecified => {
                     warn!("Unknown track kind");
@@ -80,19 +82,15 @@ async fn process_audio_track(
             ctx.buffer,
             48_000,
             Box::new(move |event| {
-                stats_sender.send(WhepInputStatsEvent::AudioRtp(event).into_event(&input_ref));
+                stats_sender
+                    .send(WhepInputStatsEvent::AudioRtp(event).into_event(&input_ref));
             }),
         ),
     );
 
     while let Some(packet) = rtp_reader.read_packet().await {
         trace!(?packet, "Sending RTP packet");
-        if handle
-            .rtp_packet_sender
-            .send(PipelineEvent::Data(packet))
-            .await
-            .is_err()
-        {
+        if handle.rtp_packet_sender.send(PipelineEvent::Data(packet)).await.is_err() {
             debug!("Failed to send audio RTP packet, Channel closed.");
             break;
         }
@@ -108,7 +106,8 @@ async fn process_video_track(
     video_preferences: Vec<VideoDecoderOptions>,
 ) -> Result<(), WebrtcClientError> {
     let (Some(decoder_mapping), Some(payload_type_mapping)) = (
-        VideoDecoderMapping::from_webrtc_receiver(&ctx.rtc_receiver, &video_preferences).await,
+        VideoDecoderMapping::from_webrtc_receiver(&ctx.rtc_receiver, &video_preferences)
+            .await,
         VideoPayloadTypeMapping::from_webrtc_receiver(&ctx.rtc_receiver).await,
     ) else {
         warn!("Skipping video track, no valid codec negotiated");
@@ -119,7 +118,8 @@ async fn process_video_track(
         let stats_sender = ctx.pipeline_ctx.stats_sender.clone();
         let input_ref = input_ref.clone();
         Box::new(move |event| {
-            stats_sender.send(WhepInputStatsEvent::VideoRtp(event).into_event(&input_ref));
+            stats_sender
+                .send(WhepInputStatsEvent::VideoRtp(event).into_event(&input_ref));
         })
     };
     let mut rtp_reader = WebrtcRtpReader::new(
@@ -143,12 +143,7 @@ async fn process_video_track(
 
     while let Some(packet) = rtp_reader.read_packet().await {
         trace!(?packet, "Sending RTP packet");
-        if handle
-            .rtp_packet_sender
-            .send(PipelineEvent::Data(packet))
-            .await
-            .is_err()
-        {
+        if handle.rtp_packet_sender.send(PipelineEvent::Data(packet)).await.is_err() {
             debug!("Failed to send video RTP packet, Channel closed.");
             break;
         }

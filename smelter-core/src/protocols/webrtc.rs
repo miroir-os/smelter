@@ -7,7 +7,8 @@ use crate::{
     AudioChannels,
     codecs::{
         AudioEncoderOptions, FfmpegH264EncoderOptions, FfmpegVp8EncoderOptions,
-        FfmpegVp9EncoderOptions, OpusEncoderOptions, VideoEncoderOptions, VulkanH264EncoderOptions,
+        FfmpegVp9EncoderOptions, OpusEncoderOptions, VideoEncoderOptions,
+        VulkanH264EncoderOptions,
     },
     error::{DecoderInitError, EncoderInitError},
     protocols::RtpJitterBufferOptions,

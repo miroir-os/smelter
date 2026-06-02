@@ -33,11 +33,7 @@ impl VideoDecoder for VulkanH264Decoder {
                     missed_frame_handling: MissedFrameHandling::Strict,
                     usage_flags: DecoderUsageFlags::DEFAULT,
                 })?;
-                Ok(Self {
-                    decoder,
-                    keyframe_request_sender,
-                    drop_frames: false,
-                })
+                Ok(Self { decoder, keyframe_request_sender, drop_frames: false })
             }
             None => Err(DecoderInitError::VulkanContextRequiredForVulkanDecoder),
         }
@@ -62,7 +58,9 @@ impl VideoDecoderInstance for VulkanH264Decoder {
 
         let frames = match self.decoder.process_event(decoder_event) {
             Ok(frames) => frames,
-            Err(DecoderError::ReferenceManagementError(ReferenceManagementError::MissingFrame)) => {
+            Err(DecoderError::ReferenceManagementError(
+                ReferenceManagementError::MissingFrame,
+            )) => {
                 if let Some(s) = self.keyframe_request_sender.as_ref() {
                     s.send()
                 }
@@ -97,10 +95,8 @@ impl VideoDecoderInstance for VulkanH264Decoder {
 
 fn from_vk_frame(frame: vk_video::OutputFrame<wgpu::Texture>) -> Frame {
     let vk_video::OutputFrame { data, metadata } = frame;
-    let resolution = Resolution {
-        width: data.width() as usize,
-        height: data.height() as usize,
-    };
+    let resolution =
+        Resolution { width: data.width() as usize, height: data.height() as usize };
 
     Frame {
         data: FrameData::Nv12WgpuTexture(data.into()),

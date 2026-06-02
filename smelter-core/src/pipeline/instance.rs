@@ -12,7 +12,8 @@ use tokio::runtime::Runtime;
 use tracing::{Level, error, info, span, trace, warn};
 
 use smelter_render::{
-    FrameSet, InputId, OutputId, RegistryType, Renderer, RendererId, RendererOptions, RendererSpec,
+    FrameSet, InputId, OutputId, RegistryType, Renderer, RendererId, RendererOptions,
+    RendererSpec,
     error::{
         ErrorStack, RegisterRendererError, RequestKeyframeError, UnregisterRendererError,
         UpdateSceneError,
@@ -27,10 +28,13 @@ use crate::{
         RtmpPipelineState,
         channel::{EncodedDataOutput, RawDataInput, RawDataOutput},
         input::{PipelineInput, new_external_input, register_pipeline_input},
-        output::{OutputSender, PipelineOutput, new_external_output, register_pipeline_output},
+        output::{
+            OutputSender, PipelineOutput, new_external_output, register_pipeline_output,
+        },
         rtmp::spawn_rtmp_server,
         webrtc::{
-            WebrtcSettingEngineCtx, WhipWhepPipelineState, WhipWhepServer, WhipWhepServerHandle,
+            WebrtcSettingEngineCtx, WhipWhepPipelineState, WhipWhepServer,
+            WhipWhepServerHandle,
         },
     },
     queue::{Queue, QueueAudioOutput, QueueOptions, QueueVideoOutput},
@@ -127,7 +131,10 @@ impl Pipeline {
         Ok(())
     }
 
-    pub fn unregister_input(&mut self, input_id: &InputId) -> Result<(), UnregisterInputError> {
+    pub fn unregister_input(
+        &mut self,
+        input_id: &InputId,
+    ) -> Result<(), UnregisterInputError> {
         if !self.inputs.contains_key(input_id) {
             return Err(UnregisterInputError::NotFound(input_id.clone()));
         }
@@ -157,7 +164,9 @@ impl Pipeline {
             output_id,
             register_options.video,
             register_options.audio,
-            |ctx, output_ref| new_external_output(ctx, output_ref, register_options.output_options),
+            |ctx, output_ref| {
+                new_external_output(ctx, output_ref, register_options.output_options)
+            },
         )
     }
 
@@ -172,8 +181,11 @@ impl Pipeline {
             register_options.video,
             register_options.audio,
             |ctx, output_ref| {
-                let (output, result) =
-                    EncodedDataOutput::new(ctx, output_ref, register_options.output_options)?;
+                let (output, result) = EncodedDataOutput::new(
+                    ctx,
+                    output_ref,
+                    register_options.output_options,
+                )?;
                 Ok((Box::new(output), result))
             },
         )
@@ -190,13 +202,17 @@ impl Pipeline {
             register_options.video,
             register_options.audio,
             |_ctx, _output_ref| {
-                let (output, result) = RawDataOutput::new(register_options.output_options)?;
+                let (output, result) =
+                    RawDataOutput::new(register_options.output_options)?;
                 Ok((Box::new(output), result))
             },
         )
     }
 
-    pub fn unregister_output(&mut self, output_id: &OutputId) -> Result<(), UnregisterOutputError> {
+    pub fn unregister_output(
+        &mut self,
+        output_id: &OutputId,
+    ) -> Result<(), UnregisterOutputError> {
         if !self.outputs.contains_key(output_id) {
             return Err(UnregisterOutputError::NotFound(output_id.clone()));
         }
@@ -222,8 +238,7 @@ impl Pipeline {
         renderer_id: &RendererId,
         registry_type: RegistryType,
     ) -> Result<(), UnregisterRendererError> {
-        self.renderer
-            .unregister_renderer(renderer_id, registry_type)
+        self.renderer.unregister_renderer(renderer_id, registry_type)
     }
 
     pub fn update_output(
@@ -244,16 +259,18 @@ impl Pipeline {
         Ok(())
     }
 
-    pub fn request_keyframe(&self, output_id: OutputId) -> Result<(), RequestKeyframeError> {
+    pub fn request_keyframe(
+        &self,
+        output_id: OutputId,
+    ) -> Result<(), RequestKeyframeError> {
         let Some(output) = self.outputs.get(&output_id) else {
             return Err(RequestKeyframeError::OutputNotRegistered(output_id.clone()));
         };
 
         match output.output.video() {
-            Some(video) => video
-                .keyframe_request_sender
-                .send(())
-                .map_err(|_| RequestKeyframeError::KeyframesUnsupported(output_id.clone())),
+            Some(video) => video.keyframe_request_sender.send(()).map_err(|_| {
+                RequestKeyframeError::KeyframesUnsupported(output_id.clone())
+            }),
             None => Err(RequestKeyframeError::NoVideoOutput(output_id.clone())),
         }
     }
@@ -536,18 +553,15 @@ fn create_pipeline(opts: PipelineOptions) -> Result<Pipeline, InitPipelineError>
 
     let graphics_context = match opts.wgpu_options {
         PipelineWgpuOptions::Context(ctx) => ctx,
-        PipelineWgpuOptions::Options {
-            device_id,
-            driver_name,
-            features,
-            force_gpu,
-        } => GraphicsContext::new(GraphicsContextOptions {
-            device_id,
-            driver_name,
-            force_gpu,
-            features,
-            ..Default::default()
-        })?,
+        PipelineWgpuOptions::Options { device_id, driver_name, features, force_gpu } => {
+            GraphicsContext::new(GraphicsContextOptions {
+                device_id,
+                driver_name,
+                force_gpu,
+                features,
+                ..Default::default()
+            })?
+        }
     };
 
     let renderer = Renderer::new(RendererOptions {
@@ -560,11 +574,10 @@ fn create_pipeline(opts: PipelineOptions) -> Result<Pipeline, InitPipelineError>
         rendering_mode: opts.rendering_mode,
     })?;
 
-    let download_dir = opts
-        .download_root
-        .join(format!("smelter-{}", rand::random::<u64>()))
-        .into();
-    std::fs::create_dir_all(&download_dir).map_err(InitPipelineError::CreateDownloadDir)?;
+    let download_dir =
+        opts.download_root.join(format!("smelter-{}", rand::random::<u64>())).into();
+    std::fs::create_dir_all(&download_dir)
+        .map_err(InitPipelineError::CreateDownloadDir)?;
 
     let tokio_rt = match opts.tokio_rt {
         Some(tokio_rt) => tokio_rt,

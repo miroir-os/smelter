@@ -6,7 +6,8 @@ use crate::{
     Ref,
     stats::{
         input_reports::{
-            HlsInputStatsReport, HlsInputTrackSlidingWindowStatsReport, HlsInputTrackStatsReport,
+            HlsInputStatsReport, HlsInputTrackSlidingWindowStatsReport,
+            HlsInputTrackStatsReport,
         },
         state::StatsEvent,
         utils::SlidingWindowValue,
@@ -72,7 +73,9 @@ impl HlsInputState {
             video,
             audio,
             corrupted_packets_received: 0,
-            corrupted_packets_received_10_secs: SlidingWindowValue::new(Duration::from_secs(10)),
+            corrupted_packets_received_10_secs: SlidingWindowValue::new(
+                Duration::from_secs(10),
+            ),
         }
     }
 
@@ -92,8 +95,12 @@ impl HlsInputState {
 
     pub fn handle_event(&mut self, event: HlsInputStatsEvent) {
         match event {
-            HlsInputStatsEvent::Video(track_event) => self.video.handle_event(track_event),
-            HlsInputStatsEvent::Audio(track_event) => self.audio.handle_event(track_event),
+            HlsInputStatsEvent::Video(track_event) => {
+                self.video.handle_event(track_event)
+            }
+            HlsInputStatsEvent::Audio(track_event) => {
+                self.audio.handle_event(track_event)
+            }
             HlsInputStatsEvent::CorruptedPacketReceived => {
                 self.corrupted_packets_received += 1;
                 self.corrupted_packets_received_10_secs.push(1);
@@ -109,7 +116,9 @@ impl HlsInputTrackState {
             packets_received_10_secs: SlidingWindowValue::new(Duration::from_secs(10)),
 
             discontinuities_detected: 0,
-            discontinuities_detected_10_secs: SlidingWindowValue::new(Duration::from_secs(10)),
+            discontinuities_detected_10_secs: SlidingWindowValue::new(
+                Duration::from_secs(10),
+            ),
 
             bitrate_1_sec: SlidingWindowValue::new(Duration::from_secs(1)),
             bitrate_1_min: SlidingWindowValue::new(Duration::from_mins(1)),
@@ -124,17 +133,28 @@ impl HlsInputTrackState {
             packets_received: self.packets_received,
             discontinuities_detected: self.discontinuities_detected,
 
-            bitrate_1_second: self.bitrate_1_sec.sum() / self.bitrate_1_sec.window_size().as_secs(),
+            bitrate_1_second: self.bitrate_1_sec.sum()
+                / self.bitrate_1_sec.window_size().as_secs(),
 
-            bitrate_1_minute: self.bitrate_1_min.sum() / self.bitrate_1_min.window_size().as_secs(),
+            bitrate_1_minute: self.bitrate_1_min.sum()
+                / self.bitrate_1_min.window_size().as_secs(),
 
             last_10_seconds: HlsInputTrackSlidingWindowStatsReport {
                 packets_received: self.packets_received_10_secs.sum(),
                 discontinuities_detected: self.discontinuities_detected_10_secs.sum(),
 
-                effective_buffer_avg_seconds: self.effective_buffer_10_secs.avg().as_secs_f64(),
-                effective_buffer_max_seconds: self.effective_buffer_10_secs.max().as_secs_f64(),
-                effective_buffer_min_seconds: self.effective_buffer_10_secs.min().as_secs_f64(),
+                effective_buffer_avg_seconds: self
+                    .effective_buffer_10_secs
+                    .avg()
+                    .as_secs_f64(),
+                effective_buffer_max_seconds: self
+                    .effective_buffer_10_secs
+                    .max()
+                    .as_secs_f64(),
+                effective_buffer_min_seconds: self
+                    .effective_buffer_10_secs
+                    .min()
+                    .as_secs_f64(),
 
                 input_buffer_avg_seconds: self.input_buffer_10_secs.avg().as_secs_f64(),
                 input_buffer_max_seconds: self.input_buffer_10_secs.max().as_secs_f64(),

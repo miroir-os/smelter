@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    DecoderError, VulkanAdapter, VulkanDevice, VulkanEncoderError, VulkanInstance, WgpuInitError,
-    WgpuTexturesDecoder, WgpuTexturesEncoder,
+    DecoderError, VulkanAdapter, VulkanDevice, VulkanEncoderError, VulkanInstance,
+    WgpuInitError, WgpuTexturesDecoder, WgpuTexturesEncoder,
     device::{DecoderParameters, EncoderParameters, VulkanDeviceDescriptor},
     parser::{h264::H264Parser, reference_manager::ReferenceContext},
     vulkan_decoder::{FrameSorter, ImageModifiers, VulkanDecoder},
@@ -29,12 +29,7 @@ impl VulkanDevice {
         )?;
         let frame_sorter = FrameSorter::<wgpu::Texture>::new();
 
-        Ok(WgpuTexturesDecoder {
-            parser,
-            reference_ctx,
-            vulkan_decoder,
-            frame_sorter,
-        })
+        Ok(WgpuTexturesDecoder { parser, reference_ctx, vulkan_decoder, frame_sorter })
     }
 
     pub fn create_wgpu_textures_encoder(
@@ -48,9 +43,7 @@ impl VulkanDevice {
             parameters.input_parameters.target_framerate,
         )?;
         let encoder = VulkanEncoder::new(Arc::new(self.encoding_device()?), parameters)?;
-        Ok(WgpuTexturesEncoder {
-            vulkan_encoder: encoder,
-        })
+        Ok(WgpuTexturesEncoder { vulkan_encoder: encoder })
     }
 
     pub fn wgpu_device(&self) -> wgpu::Device {
@@ -103,7 +96,8 @@ impl WgpuContext {
             )?
         };
 
-        let wgpu_adapter = unsafe { instance.wgpu_instance.create_adapter_from_hal(wgpu_adapter) };
+        let wgpu_adapter =
+            unsafe { instance.wgpu_instance.create_adapter_from_hal(wgpu_adapter) };
         let (wgpu_device, wgpu_queue) = unsafe {
             wgpu_adapter.create_device_from_hal(
                 wgpu_device,
@@ -118,11 +112,7 @@ impl WgpuContext {
             )?
         };
 
-        Ok(Self {
-            wgpu_device,
-            wgpu_queue,
-            wgpu_adapter,
-        })
+        Ok(Self { wgpu_device, wgpu_queue, wgpu_adapter })
     }
 }
 
@@ -132,10 +122,8 @@ pub(crate) fn append_wgpu_device_extensions(
     required_extensions: &mut Vec<&'static std::ffi::CStr>,
 ) {
     let wgpu_features = wgpu_features | wgpu::Features::TEXTURE_FORMAT_NV12;
-    let mut wgpu_extensions = adapter
-        .wgpu_adapter
-        .adapter
-        .required_device_extensions(wgpu_features);
+    let mut wgpu_extensions =
+        adapter.wgpu_adapter.adapter.required_device_extensions(wgpu_features);
 
     required_extensions.append(&mut wgpu_extensions);
 }

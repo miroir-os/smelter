@@ -3,8 +3,8 @@ use std::{fmt::Display, sync::Arc, time::Duration};
 use crate::{InputId, RendererId};
 
 use super::{
-    AbsolutePosition, BorderRadius, BoxShadow, Component, HorizontalAlign, InterpolationKind,
-    RGBAColor, Size, VerticalAlign,
+    AbsolutePosition, BorderRadius, BoxShadow, Component, HorizontalAlign,
+    InterpolationKind, RGBAColor, Size, VerticalAlign,
 };
 
 mod interpolation;
@@ -170,10 +170,7 @@ pub struct Transition {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Position {
-    Static {
-        width: Option<f32>,
-        height: Option<f32>,
-    },
+    Static { width: Option<f32>, height: Option<f32> },
     Absolute(AbsolutePosition),
 }
 
@@ -192,12 +189,7 @@ pub struct Padding {
 }
 
 impl Padding {
-    pub const ZERO: Padding = Padding {
-        top: 0.0,
-        right: 0.0,
-        bottom: 0.0,
-        left: 0.0,
-    };
+    pub const ZERO: Padding = Padding { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 };
 
     pub fn horizontal(&self) -> f32 {
         self.left + self.right
@@ -257,10 +249,7 @@ impl Default for ViewComponent {
             id: None,
             children: vec![],
             direction: ViewChildrenDirection::Row,
-            position: Position::Static {
-                width: None,
-                height: None,
-            },
+            position: Position::Static { width: None, height: None },
             transition: None,
             overflow: Overflow::Hidden,
             background_color: RGBAColor(0, 0, 0, 0),
@@ -278,10 +267,7 @@ impl Default for RescalerComponent {
         Self {
             id: None,
             child: Component::View(ViewComponent::default()).into(),
-            position: Position::Static {
-                width: None,
-                height: None,
-            },
+            position: Position::Static { width: None, height: None },
             transition: None,
             mode: RescaleMode::Fit,
             horizontal_align: HorizontalAlign::Center,

@@ -104,15 +104,9 @@ impl NodeTextureState {
     // bind group used to write to output texture
     pub fn output_texture_bind_group(&self) -> &wgpu::BindGroup {
         match &self {
-            NodeTextureState::GpuOptimized {
-                linear_bind_group, ..
-            } => linear_bind_group,
-            NodeTextureState::CpuOptimized {
-                linear_bind_group, ..
-            } => linear_bind_group,
-            NodeTextureState::WebGl {
-                srgb_bind_group, ..
-            } => srgb_bind_group,
+            NodeTextureState::GpuOptimized { linear_bind_group, .. } => linear_bind_group,
+            NodeTextureState::CpuOptimized { linear_bind_group, .. } => linear_bind_group,
+            NodeTextureState::WebGl { srgb_bind_group, .. } => srgb_bind_group,
         }
     }
 

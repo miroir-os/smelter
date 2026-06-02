@@ -85,10 +85,9 @@ impl OpusEncoder {
         {
             let samples = self.input_buffer.read_samples(SAMPLES_PER_BATCH);
             let raw_samples: Vec<_> = match samples {
-                AudioSamples::Mono(samples) => samples
-                    .iter()
-                    .map(|val| (*val * i16::MAX as f64) as i16)
-                    .collect(),
+                AudioSamples::Mono(samples) => {
+                    samples.iter().map(|val| (*val * i16::MAX as f64) as i16).collect()
+                }
                 AudioSamples::Stereo(samples) => samples
                     .iter()
                     .flat_map(|(l, r)| {

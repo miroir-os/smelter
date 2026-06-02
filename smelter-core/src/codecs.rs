@@ -47,6 +47,7 @@ pub enum VideoEncoderOptions {
     FfmpegVp8(FfmpegVp8EncoderOptions),
     FfmpegVp9(FfmpegVp9EncoderOptions),
     VulkanH264(VulkanH264EncoderOptions),
+    VaapiH264(VaapiH264EncoderOptions),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -80,6 +81,37 @@ impl VideoEncoderOptions {
             VideoEncoderOptions::FfmpegVp8(opt) => opt.resolution,
             VideoEncoderOptions::FfmpegVp9(opt) => opt.resolution,
             VideoEncoderOptions::VulkanH264(opt) => opt.resolution,
+            VideoEncoderOptions::VaapiH264(opt) => opt.resolution,
+        }
+    }
+
+    pub fn codec(&self) -> VideoCodec {
+        match self {
+            VideoEncoderOptions::FfmpegH264(_)
+            | VideoEncoderOptions::VulkanH264(_)
+            | VideoEncoderOptions::VaapiH264(_) => VideoCodec::H264,
+            VideoEncoderOptions::FfmpegVp8(_) => VideoCodec::Vp8,
+            VideoEncoderOptions::FfmpegVp9(_) => VideoCodec::Vp9,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            VideoEncoderOptions::FfmpegH264(_) => "ffmpeg-h264",
+            VideoEncoderOptions::FfmpegVp8(_) => "ffmpeg-vp8",
+            VideoEncoderOptions::FfmpegVp9(_) => "ffmpeg-vp9",
+            VideoEncoderOptions::VulkanH264(_) => "vulkan-h264",
+            VideoEncoderOptions::VaapiH264(_) => "vaapi-h264",
+        }
+    }
+
+    pub fn frame_path(&self) -> &str {
+        match self {
+            VideoEncoderOptions::FfmpegH264(_)
+            | VideoEncoderOptions::FfmpegVp8(_)
+            | VideoEncoderOptions::FfmpegVp9(_) => "planar-yuv-cpu-readback",
+            VideoEncoderOptions::VulkanH264(_) => "nv12-wgpu-texture",
+            VideoEncoderOptions::VaapiH264(_) => "nv12-dmabuf-zero-copy",
         }
     }
 }

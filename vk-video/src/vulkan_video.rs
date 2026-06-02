@@ -11,12 +11,15 @@ pub mod capabilities {
 pub mod parameters {
     pub use crate::adapter::VulkanAdapterDescriptor;
     pub use crate::device::{
-        ColorRange, ColorSpace, DecoderParameters, EncoderOutputParameters, EncoderParameters,
-        MissedFrameHandling, Rational, VideoParameters, VulkanDeviceDescriptor,
+        ColorRange, ColorSpace, DecoderParameters, EncoderOutputParameters,
+        EncoderParameters, MissedFrameHandling, Rational, VideoParameters,
+        VulkanDeviceDescriptor,
     };
     pub use crate::vulkan_encoder::RateControl;
     #[cfg(feature = "transcoder")]
-    pub use crate::vulkan_transcoder::{TranscoderOutputParameters, TranscoderParameters};
+    pub use crate::vulkan_transcoder::{
+        TranscoderOutputParameters, TranscoderParameters,
+    };
 
     #[cfg(feature = "wgpu")]
     pub use crate::wgpu_helpers::WgpuConverterParameters;
@@ -76,7 +79,9 @@ use ash::vk;
 pub use crate::adapter::VulkanAdapter;
 pub use crate::device::VulkanDevice;
 pub use crate::instance::VulkanInstance;
-pub use crate::parser::{h264::H264ParserError, reference_manager::ReferenceManagementError};
+pub use crate::parser::{
+    h264::H264ParserError, reference_manager::ReferenceManagementError,
+};
 pub use crate::vulkan_decoder::VulkanDecoderError;
 pub use crate::vulkan_encoder::VulkanEncoderError;
 #[cfg(feature = "transcoder")]
@@ -139,7 +144,9 @@ pub enum VulkanCommonError {
     #[error("Memory copy requested to a buffer that is not set up for receiving input")]
     UploadToImproperBuffer,
 
-    #[error("A slot in the Decoded Pictures Buffer was requested, but all slots are taken")]
+    #[error(
+        "A slot in the Decoded Pictures Buffer was requested, but all slots are taken"
+    )]
     NoFreeSlotsInDpb,
 
     #[error("DPB can have at most 32 slots, {0} was requested")]
@@ -297,7 +304,8 @@ impl BytesDecoder {
         &mut self,
         access_units: Vec<AccessUnit>,
     ) -> Result<Vec<OutputFrame<RawFrameData>>, DecoderError> {
-        let instructions = compile_to_decoder_instructions(&mut self.reference_ctx, access_units)?;
+        let instructions =
+            compile_to_decoder_instructions(&mut self.reference_ctx, access_units)?;
         let unsorted_frames = self.vulkan_decoder.decode_to_bytes(&instructions)?;
         let sorted_frames = self.frame_sorter.put_frames(unsorted_frames);
         Ok(sorted_frames)

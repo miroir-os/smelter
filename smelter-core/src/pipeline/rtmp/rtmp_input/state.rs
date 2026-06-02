@@ -49,7 +49,10 @@ impl RtmpInputState {
 }
 
 impl RtmpInputsState {
-    pub fn get_mut_with<T, Func: FnOnce(&mut RtmpInputState) -> Result<T, RtmpServerError>>(
+    pub fn get_mut_with<
+        T,
+        Func: FnOnce(&mut RtmpInputState) -> Result<T, RtmpServerError>,
+    >(
         &self,
         input_ref: &Ref<InputId>,
         func: Func,
@@ -68,9 +71,7 @@ impl RtmpInputsState {
     ) -> Result<(), RtmpServerError> {
         let mut guard = self.0.lock().unwrap();
         if guard.contains_key(input_ref) {
-            return Err(RtmpServerError::InputAlreadyRegistered(
-                input_ref.id().clone(),
-            ));
+            return Err(RtmpServerError::InputAlreadyRegistered(input_ref.id().clone()));
         }
         guard.insert(input_ref.clone(), RtmpInputState::new(options));
         Ok(())
@@ -106,9 +107,9 @@ impl RtmpInputState {
         input_ref: &Ref<InputId>,
     ) -> Result<(), RtmpServerError> {
         match &self.connection_handle {
-            Some(handle) if !handle.is_finished() => Err(RtmpServerError::ConnectionAlreadyActive(
-                input_ref.id().clone(),
-            )),
+            Some(handle) if !handle.is_finished() => {
+                Err(RtmpServerError::ConnectionAlreadyActive(input_ref.id().clone()))
+            }
             _ => Ok(()),
         }
     }

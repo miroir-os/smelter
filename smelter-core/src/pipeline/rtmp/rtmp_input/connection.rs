@@ -131,7 +131,10 @@ struct RtmpConnectionState {
 }
 
 impl RtmpConnectionState {
-    fn handle_rtmp_event(&mut self, rtmp_event: RtmpEvent) -> Result<(), RtmpConnectionError> {
+    fn handle_rtmp_event(
+        &mut self,
+        rtmp_event: RtmpEvent,
+    ) -> Result<(), RtmpConnectionError> {
         match rtmp_event {
             RtmpEvent::H264Config(config) => self.process_video_config(config)?,
             RtmpEvent::AacConfig(config) => self.process_audio_config(config)?,
@@ -143,7 +146,10 @@ impl RtmpConnectionState {
         Ok(())
     }
 
-    fn process_video_config(&mut self, config: H264VideoConfig) -> Result<(), RtmpConnectionError> {
+    fn process_video_config(
+        &mut self,
+        config: H264VideoConfig,
+    ) -> Result<(), RtmpConnectionError> {
         let h264_config = H264AvcDecoderConfig::parse(config.data)?;
 
         let options = VideoDecoderThreadOptions {
@@ -162,14 +168,16 @@ impl RtmpConnectionState {
 
         let input_ref = self.input_ref.clone();
         let handle = match h264_decoder {
-            VideoDecoderOptions::FfmpegH264 => {
-                VideoDecoderThread::<ffmpeg_h264::FfmpegH264Decoder, _>::spawn(input_ref, options)
-                    .map_err(RtmpConnectionError::InitH264Decoder)?
-            }
-            VideoDecoderOptions::VulkanH264 => {
-                VideoDecoderThread::<vulkan_h264::VulkanH264Decoder, _>::spawn(input_ref, options)
-                    .map_err(RtmpConnectionError::InitH264Decoder)?
-            }
+            VideoDecoderOptions::FfmpegH264 => VideoDecoderThread::<
+                ffmpeg_h264::FfmpegH264Decoder,
+                _,
+            >::spawn(input_ref, options)
+            .map_err(RtmpConnectionError::InitH264Decoder)?,
+            VideoDecoderOptions::VulkanH264 => VideoDecoderThread::<
+                vulkan_h264::VulkanH264Decoder,
+                _,
+            >::spawn(input_ref, options)
+            .map_err(RtmpConnectionError::InitH264Decoder)?,
             _ => {
                 return Err(RtmpConnectionError::InvalidVideoDecoder);
             }
@@ -179,12 +187,13 @@ impl RtmpConnectionState {
         Ok(())
     }
 
-    fn process_audio_config(&mut self, config: AacAudioConfig) -> Result<(), RtmpConnectionError> {
+    fn process_audio_config(
+        &mut self,
+        config: AacAudioConfig,
+    ) -> Result<(), RtmpConnectionError> {
         let options = AudioDecoderThreadOptions {
             ctx: self.ctx.clone(),
-            decoder_options: FdkAacDecoderOptions {
-                asc: Some(config.data().clone()),
-            },
+            decoder_options: FdkAacDecoderOptions { asc: Some(config.data().clone()) },
             samples_sender: self.samples_sender.clone(),
             input_buffer_size: 1000,
         };
@@ -246,9 +255,9 @@ impl RtmpConnectionState {
     }
 
     fn shift_pts_to_queue_offset(&mut self, pts: Duration) -> Duration {
-        let offset = *self
-            .first_packet_offset
-            .get_or_insert_with(|| self.ctx.queue_sync_point.elapsed().saturating_sub(pts));
+        let offset = *self.first_packet_offset.get_or_insert_with(|| {
+            self.ctx.queue_sync_point.elapsed().saturating_sub(pts)
+        });
 
         let pts = pts + offset;
         self.buffer.recalculate_buffer(pts);

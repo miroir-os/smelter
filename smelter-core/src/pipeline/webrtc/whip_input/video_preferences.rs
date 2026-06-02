@@ -11,7 +11,9 @@ use crate::{
     codecs::VideoDecoderOptions,
     pipeline::webrtc::{
         h264_offer_filter::filter_h264_codecs_by_offer,
-        supported_codec_parameters::{h264_codec_params, vp8_codec_params, vp9_codec_params},
+        supported_codec_parameters::{
+            h264_codec_params, vp8_codec_params, vp9_codec_params,
+        },
     },
     prelude::WebrtcVideoDecoderOptions,
 };
@@ -35,7 +37,9 @@ pub(super) fn resolve_video_preferences(
     let video_preferences: Vec<VideoDecoderOptions> = video_preferences
         .into_iter()
         .flat_map(|preference| match preference {
-            WebrtcVideoDecoderOptions::FfmpegH264 => vec![VideoDecoderOptions::FfmpegH264],
+            WebrtcVideoDecoderOptions::FfmpegH264 => {
+                vec![VideoDecoderOptions::FfmpegH264]
+            }
             WebrtcVideoDecoderOptions::VulkanH264 => {
                 if vulkan_supported {
                     vec![VideoDecoderOptions::VulkanH264]
@@ -89,10 +93,7 @@ fn params_from_video_preferences(
             VideoDecoderOptions::FfmpegVp9 => vp9_codec_params(),
         })
         .unique_by(|c| {
-            (
-                c.capability.mime_type.clone(),
-                c.capability.sdp_fmtp_line.clone(),
-            )
+            (c.capability.mime_type.clone(), c.capability.sdp_fmtp_line.clone())
         })
         .collect()
 }

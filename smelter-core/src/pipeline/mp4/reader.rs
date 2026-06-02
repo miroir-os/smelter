@@ -40,20 +40,21 @@ impl<Reader: Read + Seek + Send + 'static> Mp4FileReader<Reader> {
     }
 
     pub fn try_new_aac_track(self) -> Option<Track<Reader>> {
-        let (&track_id, track, aac) = self.reader.tracks().iter().find_map(|(id, track)| {
-            let track_type = track.track_type().ok()?;
-            let media_type = track.media_type().ok()?;
-            let aac = track.trak.mdia.minf.stbl.stsd.mp4a.as_ref();
+        let (&track_id, track, aac) =
+            self.reader.tracks().iter().find_map(|(id, track)| {
+                let track_type = track.track_type().ok()?;
+                let media_type = track.media_type().ok()?;
+                let aac = track.trak.mdia.minf.stbl.stsd.mp4a.as_ref();
 
-            if track_type != mp4::TrackType::Audio
-                || media_type != mp4::MediaType::AAC
-                || aac.is_none()
-            {
-                return None;
-            }
+                if track_type != mp4::TrackType::Audio
+                    || media_type != mp4::MediaType::AAC
+                    || aac.is_none()
+                {
+                    return None;
+                }
 
-            aac.map(|aac| (id, track, aac))
-        })?;
+                aac.map(|aac| (id, track, aac))
+            })?;
 
         let asc = aac
             .esds
@@ -77,20 +78,21 @@ impl<Reader: Read + Seek + Send + 'static> Mp4FileReader<Reader> {
     }
 
     pub fn try_new_h264_track(self) -> Option<Track<Reader>> {
-        let (&track_id, track, avc) = self.reader.tracks().iter().find_map(|(id, track)| {
-            let track_type = track.track_type().ok()?;
-            let media_type = track.media_type().ok()?;
-            let avc = track.avc1_or_3_inner();
+        let (&track_id, track, avc) =
+            self.reader.tracks().iter().find_map(|(id, track)| {
+                let track_type = track.track_type().ok()?;
+                let media_type = track.media_type().ok()?;
+                let avc = track.avc1_or_3_inner();
 
-            if track_type != mp4::TrackType::Video
-                || media_type != mp4::MediaType::H264
-                || avc.is_none()
-            {
-                return None;
-            }
+                if track_type != mp4::TrackType::Video
+                    || media_type != mp4::MediaType::H264
+                    || avc.is_none()
+                {
+                    return None;
+                }
 
-            avc.map(|avc| (id, track, avc))
-        })?;
+                avc.map(|avc| (id, track, avc))
+            })?;
 
         let h264_config = H264AvcDecoderConfig {
             nalu_length_size: avc.avcc.length_size_minus_one as usize + 1,
@@ -179,11 +181,7 @@ impl<Reader: Read + Seek + Send + 'static> Track<Reader> {
     }
 
     pub(super) fn duration(&self) -> Option<Duration> {
-        if self.duration == Duration::ZERO {
-            None
-        } else {
-            Some(self.duration)
-        }
+        if self.duration == Duration::ZERO { None } else { Some(self.duration) }
     }
 
     /// Returns `(start_index, present_from_index)` for the given seek position.
@@ -191,7 +189,8 @@ impl<Reader: Read + Seek + Send + 'static> Track<Reader> {
     /// `present_from_index` is the first sample at or after seek.
     /// Returns `None` if seek is past the end.
     fn find_seek_start_sample(&mut self, seek: Duration) -> Option<(u32, u32)> {
-        let seek_timescale = ((seek + self.offset).as_secs_f64() * self.timescale as f64) as u64;
+        let seek_timescale =
+            ((seek + self.offset).as_secs_f64() * self.timescale as f64) as u64;
         let mut best_sync_index = 1u32;
         // TODO: improve performance
         for i in 1..=self.sample_count {
@@ -224,10 +223,7 @@ impl<Reader: Read + Seek + Send + 'static> Iterator for TrackChunks<'_, Reader> 
     fn next(&mut self) -> Option<Self::Item> {
         while self.next_sample_index <= self.track.sample_count {
             let sample_index = self.next_sample_index;
-            let sample = self
-                .track
-                .reader
-                .read_sample(self.track.track_id, sample_index);
+            let sample = self.track.reader.read_sample(self.track.track_id, sample_index);
             self.next_sample_index += 1;
             match sample {
                 Ok(Some(sample)) => {
@@ -254,8 +250,9 @@ impl<Reader: Read + Seek + Send + 'static> TrackChunks<'_, Reader> {
         let sample_duration =
             Duration::from_secs_f64(sample.duration as f64 / self.track.timescale as f64);
 
-        let dts = Duration::from_secs_f64(start_time as f64 / self.track.timescale as f64)
-            .saturating_sub(self.seek);
+        let dts =
+            Duration::from_secs_f64(start_time as f64 / self.track.timescale as f64)
+                .saturating_sub(self.seek);
         let pts = Duration::from_secs_f64(
             (start_time as f64 + rendering_offset as f64) / self.track.timescale as f64,
         )

@@ -87,8 +87,7 @@ impl AudioQueue {
             return;
         };
         if input.pause_state.pause(pts) {
-            self.event_emitter
-                .emit(Event::AudioInputStreamPaused(input_id.clone()));
+            self.event_emitter.emit(Event::AudioInputStreamPaused(input_id.clone()));
         }
     }
 
@@ -101,8 +100,7 @@ impl AudioQueue {
             // non running state it will be stuck at paused until state does
             // not change
             if input.state == QueueState::Running {
-                self.event_emitter
-                    .emit(Event::AudioInputStreamPlaying(input_id.clone()));
+                self.event_emitter.emit(Event::AudioInputStreamPlaying(input_id.clone()));
             }
             input.queue.clear();
         }
@@ -125,12 +123,7 @@ impl AudioQueue {
             })
             .collect();
 
-        QueueAudioOutput {
-            required,
-            samples,
-            start_pts,
-            end_pts,
-        }
+        QueueAudioOutput { required, samples, start_pts, end_pts }
     }
 
     pub(super) fn should_push_for_pts_range(
@@ -138,20 +131,22 @@ impl AudioQueue {
         pts_range: (Duration, Duration),
         queue_start_pts: Duration,
     ) -> bool {
-        if !self.ahead_of_time_processing && self.sync_point + pts_range.0 > Instant::now() {
+        if !self.ahead_of_time_processing
+            && self.sync_point + pts_range.0 > Instant::now()
+        {
             return false;
         }
 
-        let all_inputs_ready = self
-            .inputs
-            .values_mut()
-            .all(|input| input.try_enqueue_until_ready_for_pts(pts_range, queue_start_pts));
+        let all_inputs_ready = self.inputs.values_mut().all(|input| {
+            input.try_enqueue_until_ready_for_pts(pts_range, queue_start_pts)
+        });
         if all_inputs_ready {
             return true;
         };
 
         let all_required_inputs_ready = self.inputs.values_mut().all(|input| {
-            (!input.required) || input.try_enqueue_until_ready_for_pts(pts_range, queue_start_pts)
+            (!input.required)
+                || input.try_enqueue_until_ready_for_pts(pts_range, queue_start_pts)
         });
         if !all_required_inputs_ready {
             return false;
@@ -211,10 +206,7 @@ impl AudioQueueInput {
         queue_start_pts: Duration,
     ) -> AudioEvent {
         if self.pause_state.is_paused() {
-            return AudioEvent {
-                required: false,
-                event: PipelineEvent::Data(vec![]),
-            };
+            return AudioEvent { required: false, event: PipelineEvent::Data(vec![]) };
         }
 
         // ignore result, we only need to ensure samples are enqueued
@@ -234,19 +226,15 @@ impl AudioQueueInput {
                 self.event_playing_guard.emit();
                 self.state = QueueState::Running;
             }
-            QueueState::Draining if self.queue.is_empty() && popped_samples.is_empty() => {
+            QueueState::Draining
+                if self.queue.is_empty() && popped_samples.is_empty() =>
+            {
                 self.reset_after_eos();
-                return AudioEvent {
-                    event: PipelineEvent::EOS,
-                    required: true,
-                };
+                return AudioEvent { event: PipelineEvent::EOS, required: true };
             }
             _ => (),
         };
-        AudioEvent {
-            required: self.required,
-            event: PipelineEvent::Data(popped_samples),
-        }
+        AudioEvent { required: self.required, event: PipelineEvent::Data(popped_samples) }
     }
 
     fn try_enqueue_until_ready_for_pts(
@@ -270,7 +258,9 @@ impl AudioQueueInput {
             range_end_pts: Duration,
         ) -> bool {
             match queue.back() {
-                Some(batch) => batch.end_pts() >= range_end_pts + Duration::from_millis(40),
+                Some(batch) => {
+                    batch.end_pts() >= range_end_pts + Duration::from_millis(40)
+                }
                 None => false,
             }
         }
@@ -325,14 +315,17 @@ impl AudioQueueInput {
                 PipelineEvent::EOS => self.state = QueueState::Draining,
             };
         } else {
-            let Some(offset_pts) = queue_start_pts.and_then(|start| self.offset_pts(start)) else {
+            let Some(offset_pts) =
+                queue_start_pts.and_then(|start| self.offset_pts(start))
+            else {
                 // if there is offset, do not enqueue before start
                 return Err(TryRecvError::Empty);
             };
             match self.receiver.try_recv()? {
                 // pts start from sync point
                 PipelineEvent::Data(mut batch) => {
-                    let first_pts = self.shared_state.get_or_init_first_pts(batch.start_pts);
+                    let first_pts =
+                        self.shared_state.get_or_init_first_pts(batch.start_pts);
                     batch.start_pts =
                         (offset_pts + batch.start_pts + self.pause_state.pts_offset())
                             .saturating_sub(first_pts);
@@ -361,7 +354,6 @@ impl AudioQueueInput {
 
     /// Offset value calculated in form of PTS(relative to sync point)
     fn offset_pts(&self, queue_start_pts: Duration) -> Option<Duration> {
-        self.offset_from_start
-            .map(|offset| queue_start_pts + offset)
+        self.offset_from_start.map(|offset| queue_start_pts + offset)
     }
 }

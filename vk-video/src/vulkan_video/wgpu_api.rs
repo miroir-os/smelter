@@ -1,6 +1,6 @@
 use crate::{
-    DecoderError, DecoderEvent, EncodedInputChunk, EncodedOutputChunk, InputFrame, OutputFrame,
-    VulkanEncoderError,
+    DecoderError, DecoderEvent, EncodedInputChunk, EncodedOutputChunk, InputFrame,
+    OutputFrame, VulkanEncoderError,
     parser::{
         decoder_instructions::compile_to_decoder_instructions,
         h264::{AccessUnit, H264Parser},
@@ -68,8 +68,10 @@ impl WgpuTexturesDecoder {
         &mut self,
         access_units: Vec<AccessUnit>,
     ) -> Result<Vec<OutputFrame<wgpu::Texture>>, DecoderError> {
-        let instructions = compile_to_decoder_instructions(&mut self.reference_ctx, access_units)?;
-        let unsorted_frames = self.vulkan_decoder.decode_to_wgpu_textures(&instructions)?;
+        let instructions =
+            compile_to_decoder_instructions(&mut self.reference_ctx, access_units)?;
+        let unsorted_frames =
+            self.vulkan_decoder.decode_to_wgpu_textures(&instructions)?;
         let sorted_frames = self.frame_sorter.put_frames(unsorted_frames);
         Ok(sorted_frames)
     }

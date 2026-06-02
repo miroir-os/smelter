@@ -7,7 +7,9 @@ use rubato::{
 };
 use tracing::{debug, error, trace, warn};
 
-use crate::{AudioChannels, AudioSamples, prelude::InputAudioSamples, utils::AudioSamplesBuffer};
+use crate::{
+    AudioChannels, AudioSamples, prelude::InputAudioSamples, utils::AudioSamplesBuffer,
+};
 
 const MAX_STRETCH_FACTOR: f64 = 1.05;
 
@@ -102,7 +104,8 @@ impl InputResampler {
         );
         let samples_in_batch = 256;
 
-        let original_resampler_ratio = output_sample_rate as f64 / input_sample_rate as f64;
+        let original_resampler_ratio =
+            output_sample_rate as f64 / input_sample_rate as f64;
         let resampler = rubato::Async::<f64>::new_sinc(
             original_resampler_ratio,
             MAX_STRETCH_FACTOR,
@@ -119,7 +122,8 @@ impl InputResampler {
         let default_output_delay =
             Duration::from_secs_f64(output_delay as f64 / input_sample_rate as f64);
 
-        let mut resampler_output_buffer = ResamplerOutputBuffer::new(channels, samples_in_batch);
+        let mut resampler_output_buffer =
+            ResamplerOutputBuffer::new(channels, samples_in_batch);
         resampler_output_buffer.samples_to_drop = output_delay;
 
         Ok(Self {
@@ -160,17 +164,17 @@ impl InputResampler {
     }
 
     fn input_buffer_start_pts(&self) -> Duration {
-        self.input_buffer_end_pts
-            .saturating_sub(Duration::from_secs_f64(
-                self.resampler_input_buffer.frames() as f64 / self.input_sample_rate as f64,
-            ))
+        self.input_buffer_end_pts.saturating_sub(Duration::from_secs_f64(
+            self.resampler_input_buffer.frames() as f64 / self.input_sample_rate as f64,
+        ))
     }
 
     fn set_resample_ratio_relative(&mut self, rel_ratio: f64) {
         let rel_ratio = rel_ratio.clamp(1.0 / MAX_STRETCH_FACTOR, MAX_STRETCH_FACTOR);
         let desired = self.original_resampler_ratio * rel_ratio;
         let current = self.resampler.resample_ratio();
-        let should_update = (current == 1.0 && desired != 1.0) || (desired - current).abs() > 0.01;
+        let should_update =
+            (current == 1.0 && desired != 1.0) || (desired - current).abs() > 0.01;
         if should_update
             && let Err(err) = self.resampler.set_resample_ratio_relative(rel_ratio, true)
         {
@@ -184,21 +188,19 @@ impl InputResampler {
     /// function will fill a gap with zeros or drop overlapping batches.
     pub fn write_batch(&mut self, batch: InputAudioSamples) {
         let (start_pts, end_pts) = batch.pts_range();
-        trace!(
-            ?start_pts,
-            ?end_pts,
-            len = batch.len(),
-            "Resampler received a new batch"
-        );
+        trace!(?start_pts, ?end_pts, len = batch.len(), "Resampler received a new batch");
 
         if start_pts > self.input_buffer_end_pts + CONTINUITY_THRESHOLD {
             let gap_duration = start_pts.saturating_sub(self.input_buffer_end_pts);
             let zero_samples =
-                f64::floor(gap_duration.as_secs_f64() * self.input_sample_rate as f64) as usize;
+                f64::floor(gap_duration.as_secs_f64() * self.input_sample_rate as f64)
+                    as usize;
             trace!(zero_samples, "Detected gap, filling with zero samples");
             let samples = match self.channels {
                 AudioChannels::Mono => AudioSamples::Mono(vec![0.0; zero_samples]),
-                AudioChannels::Stereo => AudioSamples::Stereo(vec![(0.0, 0.0); zero_samples]),
+                AudioChannels::Stereo => {
+                    AudioSamples::Stereo(vec![(0.0, 0.0); zero_samples])
+                }
             };
             self.resampler_input_buffer.push_back(samples)
         }
@@ -229,9 +231,8 @@ impl InputResampler {
             // PTS of the first timestamp that would be produced from resampler
             // if current input buffer was resampled. It takes into account
             // that something is already in the internal buffer.
-            let input_start_pts = self
-                .input_buffer_start_pts()
-                .saturating_sub(self.original_output_delay);
+            let input_start_pts =
+                self.input_buffer_start_pts().saturating_sub(self.original_output_delay);
 
             if input_start_pts > requested_start_pts + STRETCH_THRESHOLD {
                 // write full buffer of zeros (go through resampler)
@@ -242,7 +243,9 @@ impl InputResampler {
                     (gap_duration.as_secs_f64() * self.input_sample_rate as f64) as usize;
                 let samples = match self.channels {
                     AudioChannels::Mono => AudioSamples::Mono(vec![0.0; zero_samples]),
-                    AudioChannels::Stereo => AudioSamples::Stereo(vec![(0.0, 0.0); zero_samples]),
+                    AudioChannels::Stereo => {
+                        AudioSamples::Stereo(vec![(0.0, 0.0); zero_samples])
+                    }
                 };
                 self.resampler_input_buffer.push_front(samples);
                 self.set_resample_ratio_relative(1.0);
@@ -271,9 +274,11 @@ impl InputResampler {
                 // drop data
                 // TODO: handle discontinuity
 
-                let duration_to_drop = requested_start_pts.saturating_sub(input_start_pts);
-                let samples_to_drop =
-                    (duration_to_drop.as_secs_f64() * self.input_sample_rate as f64) as usize;
+                let duration_to_drop =
+                    requested_start_pts.saturating_sub(input_start_pts);
+                let samples_to_drop = (duration_to_drop.as_secs_f64()
+                    * self.input_sample_rate as f64)
+                    as usize;
                 self.resampler_input_buffer.drain_samples(samples_to_drop);
                 self.set_resample_ratio_relative(1.0);
                 trace!(
@@ -301,17 +306,21 @@ impl InputResampler {
         // if entire input buffer is in the future
         if pts_range.1 < self.input_buffer_start_pts() {
             let duration = pts_range.1.saturating_sub(pts_range.0);
-            let zero_samples = (duration.as_secs_f64() * self.output_sample_rate as f64) as usize;
+            let zero_samples =
+                (duration.as_secs_f64() * self.output_sample_rate as f64) as usize;
             let samples = match self.channels {
                 AudioChannels::Mono => AudioSamples::Mono(vec![0.0; zero_samples]),
-                AudioChannels::Stereo => AudioSamples::Stereo(vec![(0.0, 0.0); zero_samples]),
+                AudioChannels::Stereo => {
+                    AudioSamples::Stereo(vec![(0.0, 0.0); zero_samples])
+                }
             };
             return Some(samples);
         };
 
         if pts_range.0 < input_buffer_start_pts && input_buffer_start_pts < pts_range.1 {
             let duration = input_buffer_start_pts.saturating_sub(pts_range.0);
-            let samples = (duration.as_secs_f64() * self.input_sample_rate as f64) as usize;
+            let samples =
+                (duration.as_secs_f64() * self.input_sample_rate as f64) as usize;
             let batch = match self.channels {
                 AudioChannels::Mono => AudioSamples::Mono(vec![0.0; samples]),
                 AudioChannels::Stereo => AudioSamples::Stereo(vec![(0.0, 0.0); samples]),
@@ -320,7 +329,8 @@ impl InputResampler {
             self.resampler_input_buffer.push_front(batch)
         } else if pts_range.0 > input_buffer_start_pts {
             let duration = pts_range.0.saturating_sub(input_buffer_start_pts);
-            let samples = (duration.as_secs_f64() * self.input_sample_rate as f64) as usize;
+            let samples =
+                (duration.as_secs_f64() * self.input_sample_rate as f64) as usize;
             trace!(samples, ?duration, "Drain samples before first resample");
             self.resampler_input_buffer.drain_samples(samples);
         }
@@ -346,18 +356,19 @@ impl InputResampler {
             }
             false => None,
         };
-        let (consumed_samples, generated_samples) = match self.resampler.process_into_buffer(
-            &self.resampler_input_buffer,
-            &mut self.resampler_output_buffer,
-            indexing.as_ref(),
-        ) {
-            Ok(result) => result,
-            Err(err) => {
-                error!("Resampling error: {err}");
-                self.resampler_output_buffer.fill_with(&0.0);
-                (0, self.resampler_output_buffer.frames())
-            }
-        };
+        let (consumed_samples, generated_samples) =
+            match self.resampler.process_into_buffer(
+                &self.resampler_input_buffer,
+                &mut self.resampler_output_buffer,
+                indexing.as_ref(),
+            ) {
+                Ok(result) => result,
+                Err(err) => {
+                    error!("Resampling error: {err}");
+                    self.resampler_output_buffer.fill_with(&0.0);
+                    (0, self.resampler_output_buffer.frames())
+                }
+            };
 
         self.resampler_input_buffer.drain_samples(consumed_samples);
         if generated_samples != self.resampler_output_buffer.frames() {
@@ -367,8 +378,7 @@ impl InputResampler {
                 "Resampler generated wrong amount of samples"
             )
         }
-        self.output_buffer
-            .push_back(self.resampler_output_buffer.get_samples());
+        self.output_buffer.push_back(self.resampler_output_buffer.get_samples());
 
         // set that for the next iteration
         if is_partial_read {
@@ -405,13 +415,20 @@ impl ResamplerOutputBuffer {
         self.samples_to_drop = 0;
         match &self.buffer {
             AudioSamples::Mono(samples) => AudioSamples::Mono(samples[start..].to_vec()),
-            AudioSamples::Stereo(samples) => AudioSamples::Stereo(samples[start..].to_vec()),
+            AudioSamples::Stereo(samples) => {
+                AudioSamples::Stereo(samples[start..].to_vec())
+            }
         }
     }
 }
 
 impl AdapterMut<'_, f64> for ResamplerOutputBuffer {
-    unsafe fn write_sample_unchecked(&mut self, channel: usize, frame: usize, value: &f64) -> bool {
+    unsafe fn write_sample_unchecked(
+        &mut self,
+        channel: usize,
+        frame: usize,
+        value: &f64,
+    ) -> bool {
         match &mut self.buffer {
             AudioSamples::Mono(samples) => {
                 if channel != 0 {

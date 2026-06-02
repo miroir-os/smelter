@@ -30,14 +30,8 @@ fn test_rtcp_sync_pts_from_zero() {
     let stream_1_second_pts = stream_1.pts_from_timestamp(1_000);
     let stream_2_second_pts = stream_2.pts_from_timestamp(1_000);
 
-    assert_eq!(
-        stream_1_second_pts,
-        stream_1_first_pts + Duration::from_secs(1)
-    );
-    assert_eq!(
-        stream_2_second_pts,
-        stream_2_first_pts + Duration::from_secs(1)
-    );
+    assert_eq!(stream_1_second_pts, stream_1_first_pts + Duration::from_secs(1));
+    assert_eq!(stream_2_second_pts, stream_2_first_pts + Duration::from_secs(1));
 
     // provide sync information
     assert!(sync_point.ntp_time.read().unwrap().is_none());
@@ -48,10 +42,7 @@ fn test_rtcp_sync_pts_from_zero() {
     stream_2.on_sender_report(REFERENCE_NTP_TIME, 0);
 
     // check is sync point did not change
-    assert_eq!(
-        sync_point.ntp_time.read().unwrap().unwrap(),
-        sync_point_ntp_time
-    );
+    assert_eq!(sync_point.ntp_time.read().unwrap().unwrap(), sync_point_ntp_time);
 
     let stream_1_second_pts_old = stream_1_second_pts;
     let stream_2_second_pts_old = stream_2_second_pts;
@@ -87,14 +78,8 @@ fn test_rtcp_sync_pts_from_non_zero() {
     let stream_1_second_pts = stream_1.pts_from_timestamp(61_000);
     let stream_2_second_pts = stream_2.pts_from_timestamp(91_000);
 
-    assert_eq!(
-        stream_1_second_pts,
-        stream_1_first_pts + Duration::from_secs(1)
-    );
-    assert_eq!(
-        stream_2_second_pts,
-        stream_2_first_pts + Duration::from_secs(1)
-    );
+    assert_eq!(stream_1_second_pts, stream_1_first_pts + Duration::from_secs(1));
+    assert_eq!(stream_2_second_pts, stream_2_first_pts + Duration::from_secs(1));
 
     // provide sync information
     assert!(sync_point.ntp_time.read().unwrap().is_none());
@@ -108,10 +93,7 @@ fn test_rtcp_sync_pts_from_non_zero() {
     stream_2.on_sender_report(REFERENCE_NTP_TIME, 30_000);
 
     // check is sync point did not change
-    assert_eq!(
-        sync_point.ntp_time.read().unwrap().unwrap(),
-        sync_point_ntp_time
-    );
+    assert_eq!(sync_point.ntp_time.read().unwrap().unwrap(), sync_point_ntp_time);
 
     let stream_1_second_pts_old = stream_1_second_pts;
     let stream_2_second_pts_old = stream_2_second_pts;
@@ -147,14 +129,8 @@ fn test_rtcp_sync_pts_from_non_zero_different_clocks() {
     let stream_1_second_pts = stream_1.pts_from_timestamp(61_000);
     let stream_2_second_pts = stream_2.pts_from_timestamp(91_000 * 3);
 
-    assert_eq!(
-        stream_1_second_pts,
-        stream_1_first_pts + Duration::from_secs(1)
-    );
-    assert_eq!(
-        stream_2_second_pts,
-        stream_2_first_pts + Duration::from_secs(1)
-    );
+    assert_eq!(stream_1_second_pts, stream_1_first_pts + Duration::from_secs(1));
+    assert_eq!(stream_2_second_pts, stream_2_first_pts + Duration::from_secs(1));
 
     // provide sync information
     assert!(sync_point.ntp_time.read().unwrap().is_none());
@@ -168,10 +144,7 @@ fn test_rtcp_sync_pts_from_non_zero_different_clocks() {
     stream_2.on_sender_report(REFERENCE_NTP_TIME, 30_000 * 3);
 
     // check is sync point did not change
-    assert_eq!(
-        sync_point.ntp_time.read().unwrap().unwrap(),
-        sync_point_ntp_time
-    );
+    assert_eq!(sync_point.ntp_time.read().unwrap().unwrap(), sync_point_ntp_time);
 
     let stream_1_second_pts_old = stream_1_second_pts;
     let stream_2_second_pts_old = stream_2_second_pts;
@@ -209,16 +182,11 @@ fn test_rtcp_sync_pts_with_rollover_before_sender_report_first_stream() {
 
     // after 10 seconds
     let stream_1_second_pts = stream_1.pts_from_timestamp(5_000); // rolled over
-    let stream_2_second_pts = stream_2.pts_from_timestamp(stream_2_first_rtp_timestamp + 10_000);
+    let stream_2_second_pts =
+        stream_2.pts_from_timestamp(stream_2_first_rtp_timestamp + 10_000);
 
-    assert_eq!(
-        stream_1_second_pts,
-        stream_1_first_pts + Duration::from_secs(10)
-    );
-    assert_eq!(
-        stream_2_second_pts,
-        stream_2_first_pts + Duration::from_secs(10)
-    );
+    assert_eq!(stream_1_second_pts, stream_1_first_pts + Duration::from_secs(10));
+    assert_eq!(stream_2_second_pts, stream_2_first_pts + Duration::from_secs(10));
 
     // provide sync information
     assert!(sync_point.ntp_time.read().unwrap().is_none());
@@ -234,15 +202,13 @@ fn test_rtcp_sync_pts_with_rollover_before_sender_report_first_stream() {
     stream_2.on_sender_report(REFERENCE_NTP_TIME, stream_2_first_rtp_timestamp);
 
     // check is sync point did not change
-    assert_eq!(
-        sync_point.ntp_time.read().unwrap().unwrap(),
-        sync_point_ntp_time
-    );
+    assert_eq!(sync_point.ntp_time.read().unwrap().unwrap(), sync_point_ntp_time);
 
     let stream_1_second_pts_old = stream_1_second_pts;
     let stream_2_second_pts_old = stream_2_second_pts;
     let stream_1_second_pts = stream_1.pts_from_timestamp(5_000);
-    let stream_2_second_pts = stream_2.pts_from_timestamp(stream_2_first_rtp_timestamp + 10_000);
+    let stream_2_second_pts =
+        stream_2.pts_from_timestamp(stream_2_first_rtp_timestamp + 10_000);
     // check if stream_1 pts did not change
     assert_eq!(stream_1_second_pts, stream_1_second_pts_old);
     // check if stream_2 is the same as stream 1 for the same pts (no 100ms difference anymore)
@@ -274,17 +240,12 @@ fn test_rtcp_sync_pts_with_rollover_before_sender_report_second_stream() {
     assert_duration_eq(stream_2_first_pts, Duration::from_millis(100), PREC_RUNTIME);
 
     // after 10 seconds
-    let stream_1_second_pts = stream_1.pts_from_timestamp(stream_1_first_rtp_timestamp + 10_000);
+    let stream_1_second_pts =
+        stream_1.pts_from_timestamp(stream_1_first_rtp_timestamp + 10_000);
     let stream_2_second_pts = stream_2.pts_from_timestamp(5_000);
 
-    assert_eq!(
-        stream_1_second_pts,
-        stream_1_first_pts + Duration::from_secs(10)
-    );
-    assert_eq!(
-        stream_2_second_pts,
-        stream_2_first_pts + Duration::from_secs(10)
-    );
+    assert_eq!(stream_1_second_pts, stream_1_first_pts + Duration::from_secs(10));
+    assert_eq!(stream_2_second_pts, stream_2_first_pts + Duration::from_secs(10));
 
     // provide sync information
     assert!(sync_point.ntp_time.read().unwrap().is_none());
@@ -300,14 +261,12 @@ fn test_rtcp_sync_pts_with_rollover_before_sender_report_second_stream() {
     stream_2.on_sender_report(REFERENCE_NTP_TIME, stream_2_first_rtp_timestamp);
 
     // check is sync point did not change
-    assert_eq!(
-        sync_point.ntp_time.read().unwrap().unwrap(),
-        sync_point_ntp_time
-    );
+    assert_eq!(sync_point.ntp_time.read().unwrap().unwrap(), sync_point_ntp_time);
 
     let stream_1_second_pts_old = stream_1_second_pts;
     let stream_2_second_pts_old = stream_2_second_pts;
-    let stream_1_second_pts = stream_1.pts_from_timestamp(stream_1_first_rtp_timestamp + 10_000);
+    let stream_1_second_pts =
+        stream_1.pts_from_timestamp(stream_1_first_rtp_timestamp + 10_000);
     let stream_2_second_pts = stream_2.pts_from_timestamp(5_000);
     // check if stream_1 pts did not change
     assert_eq!(stream_1_second_pts, stream_1_second_pts_old);
@@ -341,16 +300,11 @@ fn test_rtcp_sync_pts_with_rollover_after_sender_report_first_stream() {
 
     // after 10 seconds
     let stream_1_second_pts = stream_1.pts_from_timestamp(15_000);
-    let stream_2_second_pts = stream_2.pts_from_timestamp(stream_2_first_rtp_timestamp + 10_000);
+    let stream_2_second_pts =
+        stream_2.pts_from_timestamp(stream_2_first_rtp_timestamp + 10_000);
 
-    assert_eq!(
-        stream_1_second_pts,
-        stream_1_first_pts + Duration::from_secs(10)
-    );
-    assert_eq!(
-        stream_2_second_pts,
-        stream_2_first_pts + Duration::from_secs(10)
-    );
+    assert_eq!(stream_1_second_pts, stream_1_first_pts + Duration::from_secs(10));
+    assert_eq!(stream_2_second_pts, stream_2_first_pts + Duration::from_secs(10));
 
     // provide sync information
     assert!(sync_point.ntp_time.read().unwrap().is_none());
@@ -366,15 +320,13 @@ fn test_rtcp_sync_pts_with_rollover_after_sender_report_first_stream() {
     stream_2.on_sender_report(REFERENCE_NTP_TIME, stream_2_first_rtp_timestamp - 10_000);
 
     // check is sync point did not change
-    assert_eq!(
-        sync_point.ntp_time.read().unwrap().unwrap(),
-        sync_point_ntp_time
-    );
+    assert_eq!(sync_point.ntp_time.read().unwrap().unwrap(), sync_point_ntp_time);
 
     let stream_1_second_pts_old = stream_1_second_pts;
     let stream_2_second_pts_old = stream_2_second_pts;
     let stream_2_second_pts = stream_1.pts_from_timestamp(15_000);
-    let stream_1_second_pts = stream_2.pts_from_timestamp(stream_2_first_rtp_timestamp + 10_000);
+    let stream_1_second_pts =
+        stream_2.pts_from_timestamp(stream_2_first_rtp_timestamp + 10_000);
     // check if stream_1 pts did not change
     assert_eq!(stream_1_second_pts, stream_1_second_pts_old);
     // check if stream_2 is the same as stream 1 for the same pts (no 100ms difference anymore)
@@ -406,17 +358,12 @@ fn test_rtcp_sync_pts_with_rollover_after_sender_report_second_stream() {
     assert_duration_eq(stream_2_first_pts, Duration::from_millis(100), PREC_RUNTIME);
 
     // after 10 seconds
-    let stream_1_second_pts = stream_1.pts_from_timestamp(stream_1_first_rtp_timestamp + 10_000);
+    let stream_1_second_pts =
+        stream_1.pts_from_timestamp(stream_1_first_rtp_timestamp + 10_000);
     let stream_2_second_pts = stream_2.pts_from_timestamp(15_000);
 
-    assert_eq!(
-        stream_1_second_pts,
-        stream_1_first_pts + Duration::from_secs(10)
-    );
-    assert_eq!(
-        stream_2_second_pts,
-        stream_2_first_pts + Duration::from_secs(10)
-    );
+    assert_eq!(stream_1_second_pts, stream_1_first_pts + Duration::from_secs(10));
+    assert_eq!(stream_2_second_pts, stream_2_first_pts + Duration::from_secs(10));
 
     // provide sync information
     assert!(sync_point.ntp_time.read().unwrap().is_none());
@@ -432,14 +379,12 @@ fn test_rtcp_sync_pts_with_rollover_after_sender_report_second_stream() {
     stream_2.on_sender_report(REFERENCE_NTP_TIME, u32::MAX - 5_000 + 1);
 
     // check is sync point did not change
-    assert_eq!(
-        sync_point.ntp_time.read().unwrap().unwrap(),
-        sync_point_ntp_time
-    );
+    assert_eq!(sync_point.ntp_time.read().unwrap().unwrap(), sync_point_ntp_time);
 
     let stream_1_second_pts_old = stream_1_second_pts;
     let stream_2_second_pts_old = stream_2_second_pts;
-    let stream_1_second_pts = stream_1.pts_from_timestamp(stream_1_first_rtp_timestamp + 10_000);
+    let stream_1_second_pts =
+        stream_1.pts_from_timestamp(stream_1_first_rtp_timestamp + 10_000);
     let stream_2_second_pts = stream_2.pts_from_timestamp(15_000);
     // check if stream_1 pts did not change
     assert_eq!(stream_1_second_pts, stream_1_second_pts_old);
@@ -460,8 +405,10 @@ fn test_rtcp_sync_rejects_mismatched_sr_timestamps() {
     let queue_sync_point = Instant::now();
     let sync_point = RtpNtpSyncPoint::new();
 
-    let mut stream_1 = RtpTimestampSync::new(queue_sync_point, sync_point.clone(), 48_000);
-    let mut stream_2 = RtpTimestampSync::new(queue_sync_point, sync_point.clone(), 90_000);
+    let mut stream_1 =
+        RtpTimestampSync::new(queue_sync_point, sync_point.clone(), 48_000);
+    let mut stream_2 =
+        RtpTimestampSync::new(queue_sync_point, sync_point.clone(), 90_000);
 
     // Simulate pipeline running for ~20000 seconds before WHEP input starts
     // by using a large initial offset in NTP calculations.

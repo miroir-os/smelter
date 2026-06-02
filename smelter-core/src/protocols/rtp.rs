@@ -7,7 +7,8 @@ pub use aac::*;
 use crate::{
     InputBufferOptions,
     codecs::{
-        AacAudioSpecificConfig, AudioEncoderOptions, VideoDecoderOptions, VideoEncoderOptions,
+        AacAudioSpecificConfig, AudioEncoderOptions, VideoDecoderOptions,
+        VideoEncoderOptions,
     },
     protocols::{Port, PortOrRange},
 };

@@ -25,7 +25,9 @@ impl fmt::Debug for InputBuffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::None => write!(f, "None"),
-            Self::Const { buffer } => f.debug_struct("Const").field("buffer", buffer).finish(),
+            Self::Const { buffer } => {
+                f.debug_struct("Const").field("buffer", buffer).finish()
+            }
             Self::LatencyOptimized(_) => f.debug_struct("LatencyOptimized").finish(),
             Self::Adaptive(_) => f.debug_struct("Adaptive").finish(),
         }
@@ -39,9 +41,9 @@ impl InputBuffer {
             InputBufferOptions::Const(buffer) => InputBuffer::Const {
                 buffer: buffer.unwrap_or(ctx.default_buffer_duration),
             },
-            InputBufferOptions::LatencyOptimized => InputBuffer::LatencyOptimized(Arc::new(
-                Mutex::new(LatencyOptimizedBuffer::new(ctx)),
-            )),
+            InputBufferOptions::LatencyOptimized => InputBuffer::LatencyOptimized(
+                Arc::new(Mutex::new(LatencyOptimizedBuffer::new(ctx))),
+            ),
             InputBufferOptions::Adaptive => {
                 InputBuffer::Adaptive(Arc::new(Mutex::new(AdaptiveBuffer::new(ctx))))
             }
@@ -50,8 +52,12 @@ impl InputBuffer {
 
     pub fn recalculate_buffer(&self, pts: Duration) {
         match self {
-            InputBuffer::LatencyOptimized(buffer) => buffer.lock().unwrap().recalculate_buffer(pts),
-            InputBuffer::Adaptive(buffer) => buffer.lock().unwrap().recalculate_buffer(pts),
+            InputBuffer::LatencyOptimized(buffer) => {
+                buffer.lock().unwrap().recalculate_buffer(pts)
+            }
+            InputBuffer::Adaptive(buffer) => {
+                buffer.lock().unwrap().recalculate_buffer(pts)
+            }
             _ => (),
         }
     }
@@ -60,7 +66,9 @@ impl InputBuffer {
         match self {
             InputBuffer::None => Duration::ZERO,
             InputBuffer::Const { buffer } => *buffer,
-            InputBuffer::LatencyOptimized(buffer) => buffer.lock().unwrap().dynamic_buffer,
+            InputBuffer::LatencyOptimized(buffer) => {
+                buffer.lock().unwrap().dynamic_buffer
+            }
             InputBuffer::Adaptive(buffer) => buffer.lock().unwrap().dynamic_buffer,
         }
     }
@@ -134,19 +142,20 @@ impl LatencyOptimizedBuffer {
         if next_pts > self.sync_point.elapsed() + self.shrink_threshold_1 {
             let first_pts = self.state.set_too_large(next_pts);
             if next_pts.saturating_sub(first_pts) > STABLE_STATE_DURATION {
-                self.dynamic_buffer = self
-                    .dynamic_buffer
-                    .saturating_sub(self.dynamic_buffer / 1000);
+                self.dynamic_buffer =
+                    self.dynamic_buffer.saturating_sub(self.dynamic_buffer / 1000);
             }
         } else if next_pts > self.sync_point.elapsed() + self.shrink_threshold_2 {
             let first_pts = self.state.set_too_large(next_pts);
             if next_pts.saturating_sub(first_pts) > STABLE_STATE_DURATION {
-                self.dynamic_buffer = self.dynamic_buffer.saturating_sub(LARGE_DECREMENT_DURATION);
+                self.dynamic_buffer =
+                    self.dynamic_buffer.saturating_sub(LARGE_DECREMENT_DURATION);
             }
         } else if next_pts > self.sync_point.elapsed() + self.max_desired_buffer {
             let first_pts = self.state.set_too_large(next_pts);
             if next_pts.saturating_sub(first_pts) > STABLE_STATE_DURATION {
-                self.dynamic_buffer = self.dynamic_buffer.saturating_sub(SMALL_DECREMENT_DURATION);
+                self.dynamic_buffer =
+                    self.dynamic_buffer.saturating_sub(SMALL_DECREMENT_DURATION);
             }
         } else if next_pts > self.sync_point.elapsed() + self.min_desired_buffer {
             self.state.set_ok();
@@ -212,7 +221,10 @@ impl AdaptiveBuffer {
         Self {
             sync_point: ctx.queue_sync_point,
             desired_buffer: ctx.default_buffer_duration,
-            min_buffer: Duration::min(Duration::from_millis(20), ctx.default_buffer_duration),
+            min_buffer: Duration::min(
+                Duration::from_millis(20),
+                ctx.default_buffer_duration,
+            ),
             dynamic_buffer: ctx.default_buffer_duration,
         }
     }
@@ -231,7 +243,8 @@ impl AdaptiveBuffer {
             );
             self.dynamic_buffer += INCREMENT_DURATION;
         } else {
-            let new_buffer = (self.sync_point.elapsed() + self.desired_buffer).saturating_sub(pts);
+            let new_buffer =
+                (self.sync_point.elapsed() + self.desired_buffer).saturating_sub(pts);
             info!(
                 old=?self.dynamic_buffer,
                 new=?new_buffer,

@@ -191,12 +191,8 @@ impl Queue {
             should_close: AtomicBool::new(false),
         });
 
-        QueueThread::new(
-            queue.clone(),
-            queue_start_receiver,
-            scheduled_event_receiver,
-        )
-        .spawn();
+        QueueThread::new(queue.clone(), queue_start_receiver, scheduled_event_receiver)
+            .spawn();
 
         queue
     }
@@ -256,19 +252,13 @@ impl Queue {
             let start_time_pts = Instant::now().duration_since(self.sync_point);
             *self.start_time_pts.lock().unwrap() = Some(start_time_pts);
             sender
-                .send(QueueStartEvent {
-                    audio_sender,
-                    video_sender,
-                    start_time_pts,
-                })
+                .send(QueueStartEvent { audio_sender, video_sender, start_time_pts })
                 .unwrap()
         }
     }
 
     pub fn schedule_event(&self, pts: Duration, callback: Box<dyn FnOnce() + Send>) {
-        self.scheduled_event_sender
-            .send(ScheduledEvent { pts, callback })
-            .unwrap();
+        self.scheduled_event_sender.send(ScheduledEvent { pts, callback }).unwrap();
     }
 }
 
