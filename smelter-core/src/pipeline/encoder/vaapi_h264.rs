@@ -21,7 +21,7 @@ mod imp {
         },
         video_frame::{ReadMapping, VideoFrame, WriteMapping},
     };
-    use smelter_render::{DmaBufFrame, FrameData, OutputFrameFormat};
+    use smelter_render::{DmaBufFrame, DmaBufLayer, FrameData, OutputFrameFormat};
     use tracing::{error, info};
 
     use crate::{
@@ -131,7 +131,7 @@ mod imp {
                 return Vec::new();
             };
 
-            let input = VaapiDmaBufFrame(dmabuf);
+            let input = VaapiDmaBufFrame::new(dmabuf);
             let metadata = FrameMetadata {
                 timestamp: duration_micros(frame.pts),
                 layout: input.layout(),
@@ -191,8 +191,18 @@ mod imp {
     struct VaapiDmaBufFrame(Arc<DmaBufFrame>);
 
     impl VaapiDmaBufFrame {
+        fn new(frame: Arc<DmaBufFrame>) -> Self {
+            assert_eq!(frame.fourcc, u32::from_le_bytes(*b"NV12"));
+            assert_eq!(frame.layers().len(), 1);
+            Self(frame)
+        }
+
+        fn layer(&self) -> &DmaBufLayer {
+            &self.0.layers()[0]
+        }
+
         fn layout(&self) -> FrameLayout {
-            let layer = self.0.layers.first().expect("DMA-BUF frame has no layers");
+            let layer = self.layer();
             FrameLayout {
                 format: (Fourcc::from(self.0.fourcc), self.modifier()),
                 size: cros_codecs::Resolution {
@@ -200,21 +210,19 @@ mod imp {
                     height: self.0.height,
                 },
                 planes: layer
-                    .offset
+                    .planes
                     .iter()
-                    .zip(layer.pitch.iter())
-                    .enumerate()
-                    .map(|(index, (offset, pitch))| PlaneLayout {
-                        buffer_index: layer.object_index[index],
-                        offset: *offset as usize,
-                        stride: *pitch as usize,
+                    .map(|plane| PlaneLayout {
+                        buffer_index: plane.object_index,
+                        offset: plane.offset as usize,
+                        stride: plane.pitch as usize,
                     })
                     .collect(),
             }
         }
 
         fn modifier(&self) -> u64 {
-            self.0.objects.first().map(|object| object.modifier).unwrap_or_default()
+            self.0.objects()[0].modifier
         }
     }
 
@@ -223,29 +231,26 @@ mod imp {
         type DescriptorAttribute = VADRMPRIMESurfaceDescriptor;
 
         fn va_surface_attribute(&mut self) -> Self::DescriptorAttribute {
-            let layer = self.0.layers.first().expect("DMA-BUF frame has no layers");
-            let objects = self
-                .0
-                .objects
-                .iter()
-                .map(|object| VADRMPRIMESurfaceDescriptorObject {
+            let layer = self.layer();
+            let mut objects =
+                std::array::from_fn(|_| VADRMPRIMESurfaceDescriptorObject::default());
+            for (dst, object) in objects.iter_mut().zip(self.0.objects()) {
+                *dst = VADRMPRIMESurfaceDescriptorObject {
                     fd: object.fd.as_ref().as_raw_fd(),
                     size: object.size,
                     drm_format_modifier: object.modifier,
-                })
-                .chain(std::iter::repeat(Default::default()))
-                .take(4)
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
+                };
+            }
 
             let layers = [
                 VADRMPRIMESurfaceDescriptorLayer {
                     drm_format: layer.drm_format,
-                    num_planes: layer.offset.len() as u32,
-                    object_index: fixed_usize(&layer.object_index),
-                    offset: fixed_u32(&layer.offset),
-                    pitch: fixed_u32(&layer.pitch),
+                    num_planes: layer.planes.len() as u32,
+                    object_index: fixed_u32(
+                        layer.planes.iter().map(|plane| plane.object_index as u32),
+                    ),
+                    offset: fixed_u32(layer.planes.iter().map(|plane| plane.offset)),
+                    pitch: fixed_u32(layer.planes.iter().map(|plane| plane.pitch)),
                 },
                 Default::default(),
                 Default::default(),
@@ -256,7 +261,7 @@ mod imp {
                 fourcc: self.0.fourcc,
                 width: self.0.width,
                 height: self.0.height,
-                num_objects: self.0.objects.len() as u32,
+                num_objects: self.0.objects().len() as u32,
                 objects,
                 num_layers: 1,
                 layers,
@@ -277,26 +282,18 @@ mod imp {
         }
 
         fn get_plane_size(&self) -> Vec<usize> {
-            let layer = self.0.layers.first().expect("DMA-BUF frame has no layers");
+            let layer = self.layer();
             layer
-                .object_index
+                .planes
                 .iter()
-                .zip(layer.offset.iter())
-                .map(|(object_index, offset)| {
-                    self.0.objects[*object_index].size.saturating_sub(*offset) as usize
+                .map(|plane| {
+                    (self.0.objects()[plane.object_index].size - plane.offset) as usize
                 })
                 .collect()
         }
 
         fn get_plane_pitch(&self) -> Vec<usize> {
-            self.0
-                .layers
-                .first()
-                .expect("DMA-BUF frame has no layers")
-                .pitch
-                .iter()
-                .map(|pitch| *pitch as usize)
-                .collect()
+            self.layer().planes.iter().map(|plane| plane.pitch as usize).collect()
         }
 
         fn map<'a>(&'a self) -> Result<Box<dyn ReadMapping<'a> + 'a>, String> {
@@ -325,28 +322,12 @@ mod imp {
         }
     }
 
-    fn fixed_u32<T: Copy + Into<u32>>(values: &[T]) -> [u32; 4] {
-        values
-            .iter()
-            .copied()
-            .map(Into::into)
-            .chain(std::iter::repeat(0))
-            .take(4)
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap()
-    }
-
-    fn fixed_usize(values: &[usize]) -> [u32; 4] {
-        values
-            .iter()
-            .copied()
-            .map(|value| value as u32)
-            .chain(std::iter::repeat(0))
-            .take(4)
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap()
+    fn fixed_u32(values: impl IntoIterator<Item = u32>) -> [u32; 4] {
+        let mut out = [0; 4];
+        for (dst, value) in out.iter_mut().zip(values) {
+            *dst = value;
+        }
+        out
     }
 
     fn duration_micros(duration: Duration) -> u64 {

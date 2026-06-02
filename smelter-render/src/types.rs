@@ -46,8 +46,8 @@ pub struct DmaBufFrame {
     pub fourcc: u32,
     pub width: u32,
     pub height: u32,
-    pub objects: Vec<DmaBufObject>,
-    pub layers: Vec<DmaBufLayer>,
+    objects: Vec<DmaBufObject>,
+    layers: Vec<DmaBufLayer>,
     texture: Arc<wgpu::Texture>,
 }
 
@@ -61,11 +61,43 @@ impl DmaBufFrame {
         objects: Vec<DmaBufObject>,
         layers: Vec<DmaBufLayer>,
     ) -> Self {
+        assert!(
+            !objects.is_empty() && objects.len() <= 4,
+            "DMA-BUF frame must have 1..=4 objects"
+        );
+        assert!(
+            !layers.is_empty() && layers.len() <= 4,
+            "DMA-BUF frame must have 1..=4 layers"
+        );
+        for layer in &layers {
+            assert!(
+                !layer.planes.is_empty() && layer.planes.len() <= 4,
+                "DMA-BUF layer must have 1..=4 planes"
+            );
+            for plane in &layer.planes {
+                assert!(
+                    plane.object_index < objects.len(),
+                    "DMA-BUF plane references a missing object"
+                );
+                assert!(
+                    plane.offset <= objects[plane.object_index].size,
+                    "DMA-BUF plane offset exceeds object size"
+                );
+            }
+        }
         Self { fourcc, width, height, objects, layers, texture }
     }
 
-    pub(crate) fn texture(&self) -> Arc<wgpu::Texture> {
-        self.texture.clone()
+    pub(crate) fn texture(&self) -> &wgpu::Texture {
+        &self.texture
+    }
+
+    pub fn objects(&self) -> &[DmaBufObject] {
+        &self.objects
+    }
+
+    pub fn layers(&self) -> &[DmaBufLayer] {
+        &self.layers
     }
 }
 
@@ -100,9 +132,14 @@ impl fmt::Debug for DmaBufObject {
 #[derive(Debug, Clone)]
 pub struct DmaBufLayer {
     pub drm_format: u32,
-    pub object_index: Vec<usize>,
-    pub offset: Vec<u32>,
-    pub pitch: Vec<u32>,
+    pub planes: Vec<DmaBufPlane>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DmaBufPlane {
+    pub object_index: usize,
+    pub offset: u32,
+    pub pitch: u32,
 }
 
 #[derive(Clone)]

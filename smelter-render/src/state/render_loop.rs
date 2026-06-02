@@ -141,7 +141,7 @@ pub(super) fn read_outputs(
                     copy_texture(
                         ctx.wgpu_ctx,
                         texture.texture(),
-                        frame.texture().as_ref(),
+                        frame.texture(),
                         *resolution,
                     );
 
@@ -216,7 +216,7 @@ pub(super) fn read_outputs(
                     copy_texture(
                         ctx.wgpu_ctx,
                         texture.texture(),
-                        frame.texture().as_ref(),
+                        frame.texture(),
                         *resolution,
                     );
                     partial_textures.push(PartialOutputFrame::CompleteFrame {

@@ -23,7 +23,7 @@ use crate::{
     },
 };
 #[cfg(target_os = "linux")]
-use crate::{DmaBufLayer, DmaBufObject};
+use crate::{DmaBufLayer, DmaBufObject, DmaBufPlane};
 
 pub enum OutputTexture {
     PlanarYuvTextures(Box<PlanarYuvOutput>),
@@ -184,14 +184,29 @@ pub fn export_nv12_dmabuf_texture(
             }],
             vec![DmaBufLayer {
                 drm_format: DRM_FORMAT_NV12,
-                object_index: vec![0, 0],
-                offset: vec![
-                    plane0.offset.try_into().expect("NV12 Y offset does not fit u32"),
-                    plane1.offset.try_into().expect("NV12 UV offset does not fit u32"),
-                ],
-                pitch: vec![
-                    plane0.row_pitch.try_into().expect("NV12 Y pitch does not fit u32"),
-                    plane1.row_pitch.try_into().expect("NV12 UV pitch does not fit u32"),
+                planes: vec![
+                    DmaBufPlane {
+                        object_index: 0,
+                        offset: plane0
+                            .offset
+                            .try_into()
+                            .expect("NV12 Y offset does not fit u32"),
+                        pitch: plane0
+                            .row_pitch
+                            .try_into()
+                            .expect("NV12 Y pitch does not fit u32"),
+                    },
+                    DmaBufPlane {
+                        object_index: 0,
+                        offset: plane1
+                            .offset
+                            .try_into()
+                            .expect("NV12 UV offset does not fit u32"),
+                        pitch: plane1
+                            .row_pitch
+                            .try_into()
+                            .expect("NV12 UV pitch does not fit u32"),
+                    },
                 ],
             }],
         ))
