@@ -101,9 +101,8 @@ impl ExternalBufferDescriptor for VaapiDmaBufFrame {
 }
 
 pub(crate) fn open_display() -> Result<Rc<Display>, String> {
-    let configured = std::env::var("SMELTER_VAAPI_DRM_DEVICE").ok();
-    for path in configured.as_deref().into_iter().chain(["/dev/dri/renderD128"]) {
-        match Display::open_drm_display(path) {
+    for path in vaapi_drm_paths() {
+        match Display::open_drm_display(&path) {
             Ok(display) => return Ok(display),
             Err(err) => {
                 tracing::error!("Failed to open VA-API DRM display {path}: {err}")
@@ -120,44 +119,8 @@ pub(crate) fn export_surface_as_frame(
     surface
         .export_prime()
         .map_err(|err| format!("failed to export VA surface: {err}"))
-        .and_then(|descriptor| import_prime_surface(device, descriptor, None))
-}
-
-fn import_prime_surface(
-    device: &wgpu::Device,
-    descriptor: DrmPrimeSurfaceDescriptor,
-    owner: Option<Arc<dyn DmaBufFrameOwner>>,
-) -> Result<Arc<DmaBufFrame>, String> {
-    let fourcc = descriptor.fourcc;
-    let width = descriptor.width;
-    let height = descriptor.height;
-    let objects = descriptor
-        .objects
-        .into_iter()
-        .map(|object| DmaBufObject {
-            fd: Arc::new(object.fd),
-            size: object.size,
-            modifier: object.drm_format_modifier,
-        })
-        .collect::<Vec<_>>();
-    let layers = descriptor
-        .layers
-        .into_iter()
-        .map(|layer| DmaBufLayer {
-            drm_format: layer.drm_format,
-            planes: (0..layer.num_planes as usize)
-                .map(|index| DmaBufPlane {
-                    object_index: layer.object_index[index] as usize,
-                    offset: layer.offset[index],
-                    pitch: layer.pitch[index],
-                })
-                .collect(),
-        })
-        .collect::<Vec<_>>();
-
-    smelter_render::import_nv12_dmabuf_texture_with_owner(
-        device, fourcc, width, height, objects, layers, owner,
-    )
+        .and_then(ExportedVaSurface::from_drm_prime)
+        .and_then(|surface| surface.import_sampled(device, None))
 }
 
 pub(crate) struct VaapiEncoderInputAllocator {
@@ -180,7 +143,8 @@ impl DmaBufAllocator for VaapiEncoderInputAllocator {
             Arc::new(self.display.create_nv12_encoder_input_surface(resolution)?);
         let descriptor = surface.export_for_write()?;
         let owner: Arc<dyn DmaBufFrameOwner> = surface;
-        import_raw_prime_surface(device, descriptor, Some(owner))
+        ExportedVaSurface::from_raw_prime(descriptor)?
+            .import_renderable(device, Some(owner))
     }
 }
 
@@ -194,9 +158,8 @@ unsafe impl Sync for RawVaapiDisplay {}
 
 impl RawVaapiDisplay {
     fn open() -> Result<Arc<Self>, String> {
-        let configured = std::env::var("SMELTER_VAAPI_DRM_DEVICE").ok();
-        for path in configured.as_deref().into_iter().chain(["/dev/dri/renderD128"]) {
-            match Self::open_drm(path) {
+        for path in vaapi_drm_paths() {
+            match Self::open_drm(&path) {
                 Ok(display) => return Ok(display),
                 Err(err) => {
                     tracing::error!("Failed to open raw VA-API DRM display {path}: {err}")
@@ -291,41 +254,141 @@ impl Drop for VaapiOwnedSurface {
     }
 }
 
-fn import_raw_prime_surface(
-    device: &wgpu::Device,
-    descriptor: libva::VADRMPRIMESurfaceDescriptor,
-    owner: Option<Arc<dyn DmaBufFrameOwner>>,
-) -> Result<Arc<DmaBufFrame>, String> {
-    let fourcc = descriptor.fourcc;
-    let width = descriptor.width;
-    let height = descriptor.height;
-    let objects = (0..descriptor.num_objects as usize)
-        .take(4)
-        .map(|index| descriptor.objects[index])
-        .map(|object| DmaBufObject {
-            fd: Arc::new(unsafe { OwnedFd::from_raw_fd(object.fd) }),
-            size: object.size,
-            modifier: object.drm_format_modifier,
-        })
-        .collect::<Vec<_>>();
-    let layers = (0..descriptor.num_layers as usize)
-        .take(4)
-        .map(|index| descriptor.layers[index])
-        .map(|layer| DmaBufLayer {
-            drm_format: layer.drm_format,
-            planes: (0..layer.num_planes as usize)
-                .map(|index| DmaBufPlane {
-                    object_index: layer.object_index[index] as usize,
-                    offset: layer.offset[index],
-                    pitch: layer.pitch[index],
-                })
-                .collect(),
-        })
-        .collect::<Vec<_>>();
+struct ExportedVaSurface {
+    fourcc: u32,
+    width: u32,
+    height: u32,
+    objects: Vec<DmaBufObject>,
+    layers: Vec<DmaBufLayer>,
+}
 
-    smelter_render::import_renderable_nv12_dmabuf_texture_with_owner(
-        device, fourcc, width, height, objects, layers, owner,
-    )
+impl ExportedVaSurface {
+    fn from_drm_prime(descriptor: DrmPrimeSurfaceDescriptor) -> Result<Self, String> {
+        let objects = descriptor
+            .objects
+            .into_iter()
+            .map(|object| DmaBufObject {
+                fd: Arc::new(object.fd),
+                size: object.size,
+                modifier: object.drm_format_modifier,
+            })
+            .collect();
+        let layers = descriptor
+            .layers
+            .into_iter()
+            .map(|layer| {
+                let plane_count =
+                    checked_va_array_count("DRM PRIME layer plane", layer.num_planes)?;
+                Ok(DmaBufLayer {
+                    drm_format: layer.drm_format,
+                    planes: (0..plane_count)
+                        .map(|index| DmaBufPlane {
+                            object_index: layer.object_index[index] as usize,
+                            offset: layer.offset[index],
+                            pitch: layer.pitch[index],
+                        })
+                        .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        Ok(Self {
+            fourcc: descriptor.fourcc,
+            width: descriptor.width,
+            height: descriptor.height,
+            objects,
+            layers,
+        })
+    }
+
+    fn from_raw_prime(
+        descriptor: libva::VADRMPRIMESurfaceDescriptor,
+    ) -> Result<Self, String> {
+        let object_count =
+            checked_va_array_count("DRM PRIME object", descriptor.num_objects)?;
+        let layer_count =
+            checked_va_array_count("DRM PRIME layer", descriptor.num_layers)?;
+        let objects = (0..object_count)
+            .map(|index| descriptor.objects[index])
+            .map(|object| DmaBufObject {
+                fd: Arc::new(unsafe { OwnedFd::from_raw_fd(object.fd) }),
+                size: object.size,
+                modifier: object.drm_format_modifier,
+            })
+            .collect();
+        let layers = (0..layer_count)
+            .map(|index| {
+                let layer = descriptor.layers[index];
+                let plane_count =
+                    checked_va_array_count("DRM PRIME layer plane", layer.num_planes)?;
+                Ok(DmaBufLayer {
+                    drm_format: layer.drm_format,
+                    planes: (0..plane_count)
+                        .map(|index| DmaBufPlane {
+                            object_index: layer.object_index[index] as usize,
+                            offset: layer.offset[index],
+                            pitch: layer.pitch[index],
+                        })
+                        .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        Ok(Self {
+            fourcc: descriptor.fourcc,
+            width: descriptor.width,
+            height: descriptor.height,
+            objects,
+            layers,
+        })
+    }
+
+    fn import_sampled(
+        self,
+        device: &wgpu::Device,
+        owner: Option<Arc<dyn DmaBufFrameOwner>>,
+    ) -> Result<Arc<DmaBufFrame>, String> {
+        smelter_render::import_nv12_dmabuf_texture_with_owner(
+            device,
+            self.fourcc,
+            self.width,
+            self.height,
+            self.objects,
+            self.layers,
+            owner,
+        )
+    }
+
+    fn import_renderable(
+        self,
+        device: &wgpu::Device,
+        owner: Option<Arc<dyn DmaBufFrameOwner>>,
+    ) -> Result<Arc<DmaBufFrame>, String> {
+        smelter_render::import_renderable_nv12_dmabuf_texture_with_owner(
+            device,
+            self.fourcc,
+            self.width,
+            self.height,
+            self.objects,
+            self.layers,
+            owner,
+        )
+    }
+}
+
+fn vaapi_drm_paths() -> Vec<String> {
+    std::env::var("SMELTER_VAAPI_DRM_DEVICE")
+        .into_iter()
+        .chain(std::iter::once("/dev/dri/renderD128".to_string()))
+        .collect()
+}
+
+fn checked_va_array_count(name: &str, count: u32) -> Result<usize, String> {
+    let count = count as usize;
+    if count > 4 {
+        return Err(format!("{name} count {count} exceeds VA-API descriptor limit"));
+    }
+    Ok(count)
 }
 
 fn check_va_status(action: &str, status: libva::VAStatus) -> Result<(), String> {
@@ -343,4 +406,38 @@ fn fixed_u32(values: impl IntoIterator<Item = u32>) -> [u32; 4] {
         *dst = value;
     }
     out
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::sync::Mutex;
+
+    use crate::graphics_context::{GraphicsContext, GraphicsContextOptions};
+
+    use super::*;
+
+    static VAAPI_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    #[ignore = "requires a VA-API capable Linux host"]
+    fn allocates_va_owned_encoder_input_dmabuf_frame() {
+        let _guard = VAAPI_TEST_LOCK.lock().unwrap();
+        let graphics_context = GraphicsContext::new(GraphicsContextOptions {
+            force_gpu: true,
+            ..Default::default()
+        })
+        .expect("failed to create WGPU graphics context");
+        let allocator =
+            VaapiEncoderInputAllocator::new().expect("failed to create allocator");
+        let resolution = Resolution { width: 64, height: 64 };
+
+        let frame = allocator
+            .allocate(&graphics_context.device, resolution)
+            .expect("failed to allocate VA-owned encoder input frame");
+
+        assert_eq!(frame.fourcc(), DRM_FORMAT_NV12);
+        assert_eq!(frame.resolution(), resolution);
+        assert_eq!(frame.layers().len(), 1);
+        assert_eq!(frame.layers()[0].planes.len(), 2);
+    }
 }
