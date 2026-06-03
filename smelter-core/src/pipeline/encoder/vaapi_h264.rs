@@ -597,6 +597,78 @@ mod imp {
     fn duration_micros(duration: Duration) -> u64 {
         duration.as_micros().try_into().unwrap_or(u64::MAX)
     }
+
+    #[cfg(all(test, target_os = "linux"))]
+    mod tests {
+        use std::{sync::Mutex, time::Duration};
+
+        use smelter_render::{DmaBufAllocator, Resolution};
+
+        use super::*;
+        use crate::graphics_context::{GraphicsContext, GraphicsContextOptions};
+
+        const TEST_RESOLUTION: Resolution = Resolution { width: 64, height: 64 };
+        const TEST_FRAMERATE: Framerate = Framerate { num: 30, den: 1 };
+        static VAAPI_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+        #[test]
+        #[ignore = "requires a VA-API capable Linux host"]
+        fn encodes_va_owned_dmabuf_frames_to_h264() {
+            let _guard = VAAPI_TEST_LOCK.lock().unwrap();
+            let graphics_context = GraphicsContext::new(GraphicsContextOptions {
+                force_gpu: true,
+                ..Default::default()
+            })
+            .expect("failed to create WGPU graphics context");
+            let encoder_display =
+                open_encoder_display().expect("failed to open VA-API encoder display");
+            let mut encoder = IntelVaapiH264Encoder::new(
+                encoder_display.display,
+                TEST_RESOLUTION,
+                500_000,
+                30,
+                TEST_FRAMERATE,
+                h264_main_parameter_sets(TEST_RESOLUTION, TEST_FRAMERATE),
+            )
+            .expect("failed to create VA-API H264 encoder");
+
+            let keyframe = encoder
+                .encode(
+                    encoder_display
+                        .input_allocator
+                        .allocate(&graphics_context.device, TEST_RESOLUTION)
+                        .expect("failed to allocate VA-API encoder input frame"),
+                    Duration::ZERO,
+                    true,
+                )
+                .expect("failed to encode VA-API keyframe");
+            let delta = encoder
+                .encode(
+                    encoder_display
+                        .input_allocator
+                        .allocate(&graphics_context.device, TEST_RESOLUTION)
+                        .expect("failed to allocate VA-API encoder input frame"),
+                    Duration::from_millis(33),
+                    false,
+                )
+                .expect("failed to encode VA-API delta frame");
+
+            assert!(keyframe.is_keyframe);
+            assert!(contains_h264_nal(&keyframe.data, 7));
+            assert!(contains_h264_nal(&keyframe.data, 8));
+            assert!(contains_h264_nal(&keyframe.data, 5));
+            assert!(!delta.is_keyframe);
+            assert!(contains_h264_nal(&delta.data, 1));
+        }
+
+        fn contains_h264_nal(data: &[u8], nal_type: u8) -> bool {
+            data.windows(5)
+                .any(|window| window[..4] == [0, 0, 0, 1] && window[4] & 0x1f == nal_type)
+                || data.windows(4).any(|window| {
+                    window[..3] == [0, 0, 1] && window[3] & 0x1f == nal_type
+                })
+        }
+    }
 }
 
 #[cfg(feature = "vaapi")]
