@@ -1094,31 +1094,35 @@ mod imp {
     mod tests {
         use std::{
             fs,
+            path::{Path, PathBuf},
             process::Command,
+            sync::Mutex,
             time::{Duration, SystemTime, UNIX_EPOCH},
         };
 
         use bytes::Bytes;
 
         use super::*;
-        use crate::graphics_context::{GraphicsContext, GraphicsContextOptions};
+        use crate::{
+            graphics_context::{GraphicsContext, GraphicsContextOptions},
+            pipeline::{
+                decoder::BytestreamTransformer,
+                utils::{H264AvcDecoderConfig, H264AvccToAnnexB},
+            },
+        };
 
         const TEST_WIDTH: usize = 64;
         const TEST_HEIGHT: usize = 64;
         const TEST_FRAME_COUNT: usize = 4;
+        static VAAPI_TEST_LOCK: Mutex<()> = Mutex::new(());
 
         #[test]
         #[ignore = "requires ffmpeg and a VA-API capable Linux host"]
         fn decodes_ffmpeg_annexb_stream_to_nv12_dmabuf_frames() {
-            let stream = generated_h264_stream();
-            let graphics_context = GraphicsContext::new(GraphicsContextOptions {
-                force_gpu: true,
-                ..Default::default()
-            })
-            .expect("failed to create WGPU graphics context");
-            let mut decoder =
-                VaapiH264Decoder::new_with_device(graphics_context.device, None)
-                    .expect("failed to create VA-API H264 decoder");
+            let _guard = VAAPI_TEST_LOCK.lock().unwrap();
+            let video = GeneratedVideo::new("stream.h264", "h264");
+            let stream = fs::read(&video.path).expect("failed to read generated stream");
+            let mut decoder = test_decoder();
 
             let mut frames =
                 decoder.decode(EncodedInputEvent::Chunk(EncodedInputChunk {
@@ -1150,13 +1154,76 @@ mod imp {
             }
         }
 
-        fn generated_h264_stream() -> Vec<u8> {
-            let dir = std::env::temp_dir().join(format!(
-                "smelter-vaapi-h264-{}",
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-            ));
-            fs::create_dir(&dir).expect("failed to create temp dir");
-            let output = dir.join("stream.h264");
+        #[test]
+        #[ignore = "requires ffmpeg and a VA-API capable Linux host"]
+        fn decodes_ffmpeg_mp4_samples_to_nv12_dmabuf_frames() {
+            let _guard = VAAPI_TEST_LOCK.lock().unwrap();
+            let video = GeneratedVideo::new("stream.mp4", "mp4");
+            let (config, samples) = read_mp4_h264_samples(&video.path);
+            assert_eq!(samples.len(), TEST_FRAME_COUNT);
+
+            let mut transformer = H264AvccToAnnexB::new(config);
+            let mut decoder = test_decoder();
+            let mut frames = Vec::new();
+            for sample in samples {
+                frames.extend(decoder.decode(EncodedInputEvent::Chunk(
+                    EncodedInputChunk {
+                        data: transformer.transform(sample.bytes),
+                        pts: sample.pts,
+                        dts: Some(sample.dts),
+                        kind: MediaKind::Video(VideoCodec::H264),
+                        present: true,
+                    },
+                )));
+            }
+            frames.extend(decoder.decode(EncodedInputEvent::AuDelimiter));
+            frames.extend(decoder.flush());
+
+            assert_eq!(frames.len(), TEST_FRAME_COUNT);
+            for frame in frames {
+                assert_eq!(
+                    frame.resolution,
+                    Resolution { width: TEST_WIDTH, height: TEST_HEIGHT }
+                );
+                assert!(matches!(frame.data, FrameData::Nv12DmaBuf(_)));
+            }
+        }
+
+        fn test_decoder() -> VaapiH264Decoder {
+            let graphics_context = GraphicsContext::new(GraphicsContextOptions {
+                force_gpu: true,
+                ..Default::default()
+            })
+            .expect("failed to create WGPU graphics context");
+            VaapiH264Decoder::new_with_device(graphics_context.device, None)
+                .expect("failed to create VA-API H264 decoder")
+        }
+
+        struct GeneratedVideo {
+            path: PathBuf,
+            dir: PathBuf,
+        }
+
+        impl GeneratedVideo {
+            fn new(filename: &str, muxer: &str) -> Self {
+                let dir = std::env::temp_dir().join(format!(
+                    "smelter-vaapi-h264-{}",
+                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+                ));
+                fs::create_dir(&dir).expect("failed to create temp dir");
+                let path = dir.join(filename);
+                generate_video(&path, muxer);
+                Self { path, dir }
+            }
+        }
+
+        impl Drop for GeneratedVideo {
+            fn drop(&mut self) {
+                fs::remove_dir_all(&self.dir).ok();
+            }
+        }
+
+        fn generate_video(output: &Path, muxer: &str) {
             let input = format!("testsrc2=size={TEST_WIDTH}x{TEST_HEIGHT}:rate=5");
             let frame_count = TEST_FRAME_COUNT.to_string();
             let status = Command::new("ffmpeg")
@@ -1183,16 +1250,73 @@ mod imp {
                     "-bf",
                     "0",
                     "-f",
-                    "h264",
+                    muxer,
                 ])
-                .arg(&output)
+                .arg(output)
                 .status()
                 .expect("failed to execute ffmpeg");
             assert!(status.success(), "ffmpeg failed with status {status}");
+        }
 
-            let stream = fs::read(&output).expect("failed to read generated stream");
-            fs::remove_dir_all(&dir).ok();
-            stream
+        struct Mp4H264Sample {
+            bytes: Bytes,
+            pts: Duration,
+            dts: Duration,
+        }
+
+        fn read_mp4_h264_samples(
+            path: &Path,
+        ) -> (H264AvcDecoderConfig, Vec<Mp4H264Sample>) {
+            let file = fs::File::open(path).expect("failed to open generated MP4");
+            let size = file.metadata().expect("failed to stat generated MP4").len();
+            let mut reader =
+                mp4::Mp4Reader::read_header(file, size).expect("failed to read MP4");
+            let (track_id, sample_count, timescale, config) = {
+                let (&track_id, track, avc) = reader
+                    .tracks()
+                    .iter()
+                    .find_map(|(id, track)| {
+                        let avc = track.avc1_or_3_inner()?;
+                        (track.track_type().ok()? == mp4::TrackType::Video
+                            && track.media_type().ok()? == mp4::MediaType::H264)
+                            .then_some((id, track, avc))
+                    })
+                    .expect("generated MP4 has no H264 video track");
+                let config = H264AvcDecoderConfig {
+                    nalu_length_size: avc.avcc.length_size_minus_one as usize + 1,
+                    spss: avc
+                        .avcc
+                        .sequence_parameter_sets
+                        .iter()
+                        .map(|nalu| Bytes::copy_from_slice(&nalu.bytes))
+                        .collect(),
+                    ppss: avc
+                        .avcc
+                        .picture_parameter_sets
+                        .iter()
+                        .map(|nalu| Bytes::copy_from_slice(&nalu.bytes))
+                        .collect(),
+                };
+                (track_id, track.sample_count(), track.timescale(), config)
+            };
+
+            let samples = (1..=sample_count)
+                .map(|index| {
+                    let sample = reader
+                        .read_sample(track_id, index)
+                        .expect("failed to read MP4 sample")
+                        .expect("missing MP4 sample");
+                    let dts = Duration::from_secs_f64(
+                        sample.start_time as f64 / timescale as f64,
+                    );
+                    let pts = Duration::from_secs_f64(
+                        (sample.start_time as f64 + sample.rendering_offset as f64)
+                            / timescale as f64,
+                    );
+                    Mp4H264Sample { bytes: sample.bytes, pts, dts }
+                })
+                .collect();
+            (config, samples)
         }
     }
 }
