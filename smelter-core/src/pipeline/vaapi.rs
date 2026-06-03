@@ -18,6 +18,7 @@ use smelter_render::{
 };
 
 pub(crate) const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
+const DEFAULT_DRM_RENDER_NODE: &str = "/dev/dri/renderD128";
 const VA_EXPORT_SURFACE_READ_WRITE: u32 = 0x0003;
 const VA_EXPORT_SURFACE_COMPOSED_LAYERS: u32 = 0x0008;
 
@@ -101,15 +102,16 @@ impl ExternalBufferDescriptor for VaapiDmaBufFrame {
 }
 
 pub(crate) fn open_display() -> Result<Rc<Display>, String> {
-    for path in vaapi_drm_paths() {
-        match Display::open_drm_display(&path) {
+    let paths = vaapi_drm_paths();
+    for path in &paths {
+        match Display::open_drm_display(path) {
             Ok(display) => return Ok(display),
             Err(err) => {
                 tracing::error!("Failed to open VA-API DRM display {path}: {err}")
             }
         }
     }
-    Display::open().ok_or_else(|| "no usable DRM display found".into())
+    Err(format!("no usable DRM display found in {}", paths.join(", ")))
 }
 
 pub(crate) fn export_surface_as_frame(
@@ -200,15 +202,16 @@ unsafe impl Send for RawVaapiDisplay {}
 
 impl RawVaapiDisplay {
     fn open() -> Result<Self, String> {
-        for path in vaapi_drm_paths() {
-            match Self::open_drm(&path) {
+        let paths = vaapi_drm_paths();
+        for path in &paths {
+            match Self::open_drm(path) {
                 Ok(display) => return Ok(display),
                 Err(err) => {
                     tracing::error!("Failed to open raw VA-API DRM display {path}: {err}")
                 }
             }
         }
-        Err("no usable DRM display found".into())
+        Err(format!("no usable DRM display found in {}", paths.join(", ")))
     }
 
     fn open_drm(path: impl AsRef<Path>) -> Result<Self, String> {
@@ -393,10 +396,55 @@ impl ExportedVaSurface {
     }
 }
 
-fn vaapi_drm_paths() -> impl Iterator<Item = String> {
-    std::env::var("SMELTER_VAAPI_DRM_DEVICE")
+fn vaapi_drm_paths() -> Vec<String> {
+    vaapi_drm_paths_from(
+        std::env::var("SMELTER_VAAPI_DRM_DEVICE").ok().filter(|path| !path.is_empty()),
+        discover_drm_render_nodes(),
+    )
+}
+
+fn discover_drm_render_nodes() -> Vec<String> {
+    let mut paths = std::fs::read_dir("/dev/dri")
+        .ok()
         .into_iter()
-        .chain(std::iter::once("/dev/dri/renderD128".to_string()))
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let index = entry
+                .file_name()
+                .to_str()?
+                .strip_prefix("renderD")?
+                .parse::<u32>()
+                .ok()?;
+            let path = entry.path().to_str()?.to_string();
+            Some((index, path))
+        })
+        .collect::<Vec<_>>();
+
+    paths.sort_by_key(|(index, _)| *index);
+    paths.into_iter().map(|(_, path)| path).collect()
+}
+
+fn vaapi_drm_paths_from(
+    configured: Option<String>,
+    discovered: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Some(path) = configured {
+        push_unique_drm_path(&mut paths, path);
+    }
+    for path in discovered {
+        push_unique_drm_path(&mut paths, path);
+    }
+    if paths.is_empty() {
+        paths.push(DEFAULT_DRM_RENDER_NODE.to_string());
+    }
+    paths
+}
+
+fn push_unique_drm_path(paths: &mut Vec<String>, path: String) {
+    if !path.is_empty() && !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
 }
 
 fn checked_va_array_count(name: &str, count: u32) -> Result<usize, String> {
@@ -433,6 +481,23 @@ mod tests {
     use super::*;
 
     static VAAPI_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn drm_paths_keep_configured_device_first() {
+        let paths = vaapi_drm_paths_from(
+            Some("/dev/dri/renderD129".into()),
+            ["/dev/dri/renderD128".into(), "/dev/dri/renderD129".into()],
+        );
+
+        assert_eq!(paths, vec!["/dev/dri/renderD129", "/dev/dri/renderD128"]);
+    }
+
+    #[test]
+    fn drm_paths_use_default_when_no_render_nodes_are_discovered() {
+        let paths = vaapi_drm_paths_from(None, []);
+
+        assert_eq!(paths, vec![DEFAULT_DRM_RENDER_NODE]);
+    }
 
     #[test]
     #[ignore = "requires a VA-API capable Linux host"]
