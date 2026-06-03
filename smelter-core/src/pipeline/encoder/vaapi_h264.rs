@@ -493,19 +493,28 @@ mod imp {
         ) -> Result<Bytes, String> {
             let mapped = MappedCodedBuffer::new(coded_buffer)
                 .map_err(|err| format!("failed to map VA-API coded buffer: {err}"))?;
-            let mut out = Vec::new();
+            let slice_len = mapped.iter().map(|segment| segment.buf.len()).sum::<usize>();
+            if slice_len == 0 {
+                return Err("VA-API encoder returned empty coded data".into());
+            }
+            let starts_with_three_byte_code = mapped
+                .iter()
+                .flat_map(|segment| segment.buf.iter().copied())
+                .take(3)
+                .eq([0, 0, 1]);
+            let parameter_sets_len =
+                is_keyframe.then_some(self.parameter_sets.len()).unwrap_or_default();
+            let mut out = Vec::with_capacity(
+                parameter_sets_len + slice_len + starts_with_three_byte_code as usize,
+            );
             if is_keyframe {
                 out.extend_from_slice(&self.parameter_sets);
             }
-            let slice_start = out.len();
+            if starts_with_three_byte_code {
+                out.push(0);
+            }
             for segment in mapped.iter() {
                 out.extend_from_slice(segment.buf);
-            }
-            if out.len() == slice_start {
-                return Err("VA-API encoder returned empty coded data".into());
-            }
-            if out[slice_start..].starts_with(&[0, 0, 1]) {
-                out.insert(slice_start, 0);
             }
             Ok(out.into())
         }
