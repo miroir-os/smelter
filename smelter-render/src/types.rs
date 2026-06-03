@@ -49,6 +49,7 @@ pub struct DmaBufFrame {
     objects: Vec<DmaBufObject>,
     layers: Vec<DmaBufLayer>,
     texture: Arc<wgpu::Texture>,
+    // Keeps external surface memory alive for imported DMA-BUF frames.
     _owner: Option<Arc<dyn DmaBufFrameOwner>>,
 }
 

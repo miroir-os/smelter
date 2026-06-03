@@ -49,7 +49,7 @@ impl VaapiDmaBufFrame {
                 vec![self],
             )
             .map_err(|err| format!("Failed to import DMA-BUF into VA-API: {err}"))?;
-        Ok(surfaces.pop().expect("VA-API returned no imported surface"))
+        surfaces.pop().ok_or_else(|| "VA-API returned no imported surface".to_string())
     }
 
     fn layer(&self) -> &DmaBufLayer {
@@ -393,11 +393,10 @@ impl ExportedVaSurface {
     }
 }
 
-fn vaapi_drm_paths() -> Vec<String> {
+fn vaapi_drm_paths() -> impl Iterator<Item = String> {
     std::env::var("SMELTER_VAAPI_DRM_DEVICE")
         .into_iter()
         .chain(std::iter::once("/dev/dri/renderD128".to_string()))
-        .collect()
 }
 
 fn checked_va_array_count(name: &str, count: u32) -> Result<usize, String> {

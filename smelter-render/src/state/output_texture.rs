@@ -359,7 +359,7 @@ pub fn import_nv12_dmabuf_texture_with_owner(
         objects,
         layers,
         owner,
-        false,
+        Nv12DmaBufImportUsage::Sampled,
     )
 }
 
@@ -381,8 +381,32 @@ pub fn import_renderable_nv12_dmabuf_texture_with_owner(
         objects,
         layers,
         owner,
-        true,
+        Nv12DmaBufImportUsage::RenderAttachment,
     )
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum Nv12DmaBufImportUsage {
+    Sampled,
+    RenderAttachment,
+}
+
+#[cfg(target_os = "linux")]
+impl Nv12DmaBufImportUsage {
+    fn image_usage(self) -> vk::ImageUsageFlags {
+        let usage = vk::ImageUsageFlags::SAMPLED
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::TRANSFER_SRC;
+        match self {
+            Self::Sampled => usage,
+            Self::RenderAttachment => usage | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+        }
+    }
+
+    fn render_attachment(self) -> bool {
+        matches!(self, Self::RenderAttachment)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -394,7 +418,7 @@ fn import_nv12_dmabuf_texture_inner(
     objects: Vec<DmaBufObject>,
     layers: Vec<DmaBufLayer>,
     owner: Option<Arc<dyn DmaBufFrameOwner>>,
-    render_attachment: bool,
+    import_usage: Nv12DmaBufImportUsage,
 ) -> Result<Arc<DmaBufFrame>, String> {
     const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
     if fourcc != DRM_FORMAT_NV12 {
@@ -436,12 +460,6 @@ fn import_nv12_dmabuf_texture_inner(
         let mut drm_info = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
             .drm_format_modifier(modifier)
             .plane_layouts(&plane_layouts);
-        let mut usage = vk::ImageUsageFlags::SAMPLED
-            | vk::ImageUsageFlags::TRANSFER_DST
-            | vk::ImageUsageFlags::TRANSFER_SRC;
-        if render_attachment {
-            usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
-        }
 
         let create_info = vk::ImageCreateInfo::default()
             .flags(
@@ -455,7 +473,7 @@ fn import_nv12_dmabuf_texture_inner(
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-            .usage(usage)
+            .usage(import_usage.image_usage())
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .push_next(&mut external_info)
@@ -502,7 +520,7 @@ fn import_nv12_dmabuf_texture_inner(
             vk_device,
             Resolution { width: width as usize, height: height as usize },
             "imported nv12 dma-buf texture",
-            render_attachment,
+            import_usage.render_attachment(),
         ));
 
         Ok(Arc::new(DmaBufFrame::new_with_owner(
