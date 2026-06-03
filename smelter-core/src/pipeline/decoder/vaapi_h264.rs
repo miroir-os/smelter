@@ -53,6 +53,7 @@ mod imp {
         prelude::*,
     };
 
+    const DECODE_SURFACE_ALLOCATION_BATCH: usize = 4;
     const RETAINED_SURFACE_COUNT: usize = 64;
 
     pub struct VaapiH264Decoder {
@@ -470,18 +471,25 @@ mod imp {
             if let Some(surface) = self.free_surfaces.pop() {
                 return Ok(surface);
             }
-            self.display
+
+            let mut surfaces = self
+                .display
                 .create_surfaces(
                     VA_RT_FORMAT_YUV420,
                     Some(VA_FOURCC_NV12),
                     resolution.width as u32,
                     resolution.height as u32,
                     Some(UsageHint::USAGE_HINT_DECODER | UsageHint::USAGE_HINT_EXPORT),
-                    vec![()],
+                    vec![(); DECODE_SURFACE_ALLOCATION_BATCH],
                 )
-                .map_err(|err| format!("failed to create VA-API decode surface: {err}"))?
+                .map_err(|err| {
+                    format!("failed to create VA-API decode surfaces: {err}")
+                })?;
+            let surface = surfaces
                 .pop()
-                .ok_or_else(|| "VA-API returned no decode surface".to_string())
+                .ok_or_else(|| "VA-API returned no decode surface".to_string())?;
+            self.free_surfaces.extend(surfaces);
+            Ok(surface)
         }
 
         fn frame_from_surface(
