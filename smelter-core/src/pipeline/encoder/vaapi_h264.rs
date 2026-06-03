@@ -4,12 +4,12 @@ mod imp {
 
     use bytes::Bytes;
     use libva::{
-        Buffer, BufferType, Config, Context, Display, EncCodedBuffer, EncMiscParameter,
+        BufferType, Config, Context, Display, EncCodedBuffer, EncMiscParameter,
         EncMiscParameterFrameRate, EncMiscParameterRateControl, EncPictureParameter,
         EncPictureParameterBufferH264, EncSequenceParameter,
         EncSequenceParameterBufferH264, EncSliceParameter, EncSliceParameterBufferH264,
         H264EncFrameCropOffsets, H264EncPicFields, H264EncSeqFields, H264VuiFields,
-        MappedCodedBuffer, Picture, PictureH264, RcFlags, Surface, UsageHint,
+        MappedCodedBuffer, Picture, PictureH264, PictureNew, RcFlags, Surface, UsageHint,
         VA_FOURCC_NV12, VA_INVALID_ID, VA_PICTURE_H264_INVALID,
         VA_PICTURE_H264_SHORT_TERM_REFERENCE, VA_RC_CBR, VA_RT_FORMAT_YUV420,
         VAConfigAttrib, VAConfigAttribType, VAEntrypoint, VAProfile,
@@ -237,14 +237,10 @@ mod imp {
                 .context
                 .create_enc_coded(self.coded_buffer_size())
                 .map_err(|err| format!("failed to create VA-API coded buffer: {err}"))?;
-            let buffers =
-                self.create_buffers(&coded_buffer, &reconstructed, is_keyframe)?;
 
             let mut picture =
                 Picture::new(duration_micros(pts), Rc::clone(&self.context), input);
-            for buffer in buffers {
-                picture.add_buffer(buffer);
-            }
+            self.add_buffers(&mut picture, &coded_buffer, &reconstructed, is_keyframe)?;
 
             let picture = picture
                 .begin()
@@ -269,26 +265,27 @@ mod imp {
             Ok(EncodedVaapiFrame { data, pts, is_keyframe })
         }
 
-        fn create_buffers(
+        fn add_buffers(
             &self,
+            picture: &mut Picture<PictureNew, Surface<VaapiDmaBufFrame>>,
             coded_buffer: &EncCodedBuffer,
             reconstructed: &Surface<()>,
             is_keyframe: bool,
-        ) -> Result<Vec<Buffer>, String> {
-            [
+        ) -> Result<(), String> {
+            for buffer in [
                 self.sequence_parameter(),
                 self.picture_parameter(coded_buffer, reconstructed, is_keyframe),
                 self.slice_parameter(is_keyframe),
                 self.rate_control_parameter(),
                 self.framerate_parameter(),
-            ]
-            .into_iter()
-            .map(|buffer| {
-                self.context
+            ] {
+                let buffer = self
+                    .context
                     .create_buffer(buffer)
-                    .map_err(|err| format!("failed to create VA-API buffer: {err}"))
-            })
-            .collect()
+                    .map_err(|err| format!("failed to create VA-API buffer: {err}"))?;
+                picture.add_buffer(buffer);
+            }
+            Ok(())
         }
 
         fn sequence_parameter(&self) -> BufferType {

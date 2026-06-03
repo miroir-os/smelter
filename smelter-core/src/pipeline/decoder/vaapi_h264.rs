@@ -8,8 +8,8 @@ mod imp {
     };
 
     use libva::{
-        Buffer, BufferType, Config, Context, Display, H264PicFields, H264SeqFields,
-        IQMatrix, IQMatrixBufferH264, Picture, PictureH264, PictureParameter,
+        BufferType, Config, Context, Display, H264PicFields, H264SeqFields, IQMatrix,
+        IQMatrixBufferH264, Picture, PictureH264, PictureNew, PictureParameter,
         PictureParameterBufferH264, SliceParameter, SliceParameterBufferH264, Surface,
         UsageHint, VA_FOURCC_NV12, VA_INVALID_ID, VA_PICTURE_H264_INVALID,
         VA_PICTURE_H264_LONG_TERM_REFERENCE, VA_PICTURE_H264_SHORT_TERM_REFERENCE,
@@ -254,12 +254,10 @@ mod imp {
             let surface = self.take_surface(coded_resolution)?;
             let sps = self.sps.get(&sps_id).expect("SPS existence checked");
             let pps = self.pps.get(&pps_id).expect("PPS existence checked");
-            let buffers =
-                self.create_buffers(&context, &surface, decode_info, sps, pps)?;
-            let mut picture = Picture::new(pts.unwrap_or_default(), context, surface);
-            for buffer in buffers {
-                picture.add_buffer(buffer);
-            }
+            let surface_id = surface.id();
+            let mut picture =
+                Picture::new(pts.unwrap_or_default(), Rc::clone(&context), surface);
+            self.add_buffers(&mut picture, &context, surface_id, decode_info, sps, pps)?;
 
             let picture = picture
                 .begin()
@@ -284,30 +282,30 @@ mod imp {
             Ok(frame)
         }
 
-        fn create_buffers(
+        fn add_buffers(
             &self,
+            picture: &mut Picture<PictureNew, Surface<()>>,
             context: &Rc<Context>,
-            surface: &Surface<()>,
+            surface_id: libva::VASurfaceID,
             decode_info: DecodeInformation,
             sps: &SeqParameterSet,
             pps: &PicParameterSet,
-        ) -> Result<Vec<Buffer>, String> {
+        ) -> Result<(), String> {
             let picture_parameter =
-                self.picture_parameter(surface.id(), &decode_info, sps, pps)?;
+                self.picture_parameter(surface_id, &decode_info, sps, pps)?;
             let slice_parameter = self.slice_parameter(&decode_info, sps, pps)?;
-            [
+            for buffer in [
                 picture_parameter,
                 iq_matrix_parameter(sps, pps),
                 slice_parameter,
                 BufferType::SliceData(decode_info.slice_data),
-            ]
-            .into_iter()
-            .map(|buffer| {
-                context
+            ] {
+                let buffer = context
                     .create_buffer(buffer)
-                    .map_err(|err| format!("failed to create VA-API buffer: {err}"))
-            })
-            .collect()
+                    .map_err(|err| format!("failed to create VA-API buffer: {err}"))?;
+                picture.add_buffer(buffer);
+            }
+            Ok(())
         }
 
         fn picture_parameter(
