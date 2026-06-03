@@ -10,7 +10,7 @@ default = []
 decklink = ["dep:decklink"]
 web-renderer = ["smelter-render/web-renderer"]
 vk-video = []
-vaapi = ["dep:cros-codecs"]
+vaapi = ["dep:cros-codecs", "dep:libva"]
 
 [dependencies]
 smelter-render = { workspace = true }
@@ -50,6 +50,7 @@ audioadapter-buffers = "2.0.0"
 audioadapter = "2.0.0"
 async-trait = "0.1.89"
 cros-codecs = { version = "0.0.6", features = ["backend", "vaapi"], optional = true }
+libva = { package = "cros-libva", version = "0.0.12", optional = true }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 decklink = { path = "../decklink", optional = true }

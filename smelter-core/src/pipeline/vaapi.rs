@@ -1,15 +1,15 @@
 use std::{cell::RefCell, os::fd::AsRawFd, rc::Rc, sync::Arc};
 
 use cros_codecs::{
-    Fourcc, FrameLayout, PlaneLayout,
+    Fourcc,
     backend::vaapi::surface_pool::{PooledVaSurface, VaSurfacePool},
     decoder::FramePool,
-    libva::{
-        Display, ExternalBufferDescriptor, MemoryType, Surface, UsageHint,
-        VADRMPRIMESurfaceDescriptor, VADRMPRIMESurfaceDescriptorLayer,
-        VADRMPRIMESurfaceDescriptorObject,
-    },
     video_frame::{ReadMapping, VideoFrame, WriteMapping},
+};
+use libva::{
+    Display, ExternalBufferDescriptor, MemoryType, Surface, UsageHint,
+    VADRMPRIMESurfaceDescriptor, VADRMPRIMESurfaceDescriptorLayer,
+    VADRMPRIMESurfaceDescriptorObject,
 };
 use smelter_render::{DmaBufFrame, DmaBufLayer};
 
@@ -66,7 +66,7 @@ impl VideoFrame for VaapiManagedFrame {
             let pool = pool.get_or_insert_with(|| {
                 VaSurfacePool::new(
                     Rc::clone(display),
-                    cros_codecs::libva::VA_RT_FORMAT_YUV420,
+                    libva::VA_RT_FORMAT_YUV420,
                     Some(UsageHint::USAGE_HINT_DECODER),
                     self.resolution,
                 )
@@ -95,29 +95,29 @@ impl VaapiDmaBufFrame {
         Self(frame)
     }
 
-    pub(crate) fn layout(&self) -> FrameLayout {
-        let layer = self.layer();
-        FrameLayout {
-            format: (Fourcc::from(self.0.fourcc()), self.modifier()),
-            size: self.resolution(),
-            planes: layer
-                .planes
-                .iter()
-                .map(|plane| PlaneLayout {
-                    buffer_index: plane.object_index,
-                    offset: plane.offset as usize,
-                    stride: plane.pitch as usize,
-                })
-                .collect(),
-        }
+    pub(crate) fn cache_key(frame: &Arc<DmaBufFrame>) -> usize {
+        Arc::as_ptr(frame) as usize
+    }
+
+    pub(crate) fn import_surface(
+        self,
+        display: &Rc<Display>,
+    ) -> Result<Surface<Self>, String> {
+        let mut surfaces = display
+            .create_surfaces(
+                libva::VA_RT_FORMAT_YUV420,
+                Some(self.0.fourcc()),
+                self.0.width(),
+                self.0.height(),
+                Some(UsageHint::USAGE_HINT_ENCODER),
+                vec![self],
+            )
+            .map_err(|err| format!("Failed to import DMA-BUF into VA-API: {err}"))?;
+        Ok(surfaces.pop().expect("VA-API returned no imported surface"))
     }
 
     fn layer(&self) -> &DmaBufLayer {
         &self.0.layers()[0]
-    }
-
-    fn modifier(&self) -> u64 {
-        self.0.objects()[0].modifier
     }
 }
 
@@ -161,59 +161,6 @@ impl ExternalBufferDescriptor for VaapiDmaBufFrame {
             num_layers: 1,
             layers,
         }
-    }
-}
-
-impl VideoFrame for VaapiDmaBufFrame {
-    type MemDescriptor = VaapiDmaBufFrame;
-    type NativeHandle = Surface<VaapiDmaBufFrame>;
-
-    fn fourcc(&self) -> Fourcc {
-        Fourcc::from(self.0.fourcc())
-    }
-
-    fn resolution(&self) -> cros_codecs::Resolution {
-        cros_codecs::Resolution { width: self.0.width(), height: self.0.height() }
-    }
-
-    fn get_plane_size(&self) -> Vec<usize> {
-        let layer = self.layer();
-        layer
-            .planes
-            .iter()
-            .map(|plane| {
-                (self.0.objects()[plane.object_index].size - plane.offset) as usize
-            })
-            .collect()
-    }
-
-    fn get_plane_pitch(&self) -> Vec<usize> {
-        self.layer().planes.iter().map(|plane| plane.pitch as usize).collect()
-    }
-
-    fn map<'a>(&'a self) -> Result<Box<dyn ReadMapping<'a> + 'a>, String> {
-        Err("VA-API DMA-BUF frames are not CPU-readable".into())
-    }
-
-    fn map_mut<'a>(&'a mut self) -> Result<Box<dyn WriteMapping<'a> + 'a>, String> {
-        Err("VA-API DMA-BUF frames are not CPU-writable".into())
-    }
-
-    fn to_native_handle(
-        &self,
-        display: &Rc<Display>,
-    ) -> Result<Self::NativeHandle, String> {
-        let mut surfaces = display
-            .create_surfaces(
-                cros_codecs::libva::VA_RT_FORMAT_YUV420,
-                Some(self.0.fourcc()),
-                self.0.width(),
-                self.0.height(),
-                Some(UsageHint::USAGE_HINT_DECODER | UsageHint::USAGE_HINT_ENCODER),
-                vec![self.clone()],
-            )
-            .map_err(|err| format!("Failed to import DMA-BUF into VA-API: {err}"))?;
-        Ok(surfaces.pop().expect("VA-API returned no imported surface"))
     }
 }
 
