@@ -161,10 +161,6 @@ pub(crate) struct VaapiEncoderInputAllocator {
 }
 
 impl VaapiEncoderInputAllocator {
-    pub(crate) fn new() -> Result<Self, String> {
-        Ok(Self { display: RawVaapiDisplayOwner::open()? })
-    }
-
     fn from_raw_display(display: RawVaapiDisplay) -> Self {
         Self { display: RawVaapiDisplayOwner::new(display) }
     }
@@ -191,10 +187,6 @@ struct RawVaapiDisplayOwner(Arc<Mutex<RawVaapiDisplay>>);
 impl RawVaapiDisplayOwner {
     fn new(display: RawVaapiDisplay) -> Self {
         Self(Arc::new(Mutex::new(display)))
-    }
-
-    fn open() -> Result<Self, String> {
-        Ok(Self::new(RawVaapiDisplay::open()?))
     }
 
     fn lock(&self) -> MutexGuard<'_, RawVaapiDisplay> {
@@ -240,19 +232,6 @@ struct RawVaapiDisplay {
 unsafe impl Send for RawVaapiDisplay {}
 
 impl RawVaapiDisplay {
-    fn open() -> Result<Self, String> {
-        let paths = vaapi_drm_paths();
-        for path in &paths {
-            match Self::open_drm(path) {
-                Ok(display) => return Ok(display),
-                Err(err) => {
-                    tracing::error!("Failed to open raw VA-API DRM display {path}: {err}")
-                }
-            }
-        }
-        Err(no_usable_drm_display_error(&paths))
-    }
-
     fn open_drm(path: impl AsRef<Path>) -> Result<Self, String> {
         let file = File::options()
             .read(true)
@@ -551,11 +530,12 @@ mod tests {
             ..Default::default()
         })
         .expect("failed to create WGPU graphics context");
-        let allocator =
-            VaapiEncoderInputAllocator::new().expect("failed to create allocator");
+        let encoder_display =
+            open_encoder_display().expect("failed to open VA-API encoder display");
         let resolution = Resolution { width: 64, height: 64 };
 
-        let frame = allocator
+        let frame = encoder_display
+            .input_allocator
             .allocate(&graphics_context.device, resolution)
             .expect("failed to allocate VA-owned encoder input frame");
 
