@@ -14,8 +14,8 @@ review:
   through Vulkan-owned export surfaces.
 - The render-output ring is normal render-graph state, not shared concurrent state.
 
-The old cros-codecs dependency and vendored patch tree are gone. The remaining
-dependency is `cros-libva`, used as the VA binding for typed buffers and safe surface
+The old codec wrapper dependency and vendored patch tree are gone. The remaining
+VA dependency is `cros-libva`, used as the binding for typed buffers and safe surface
 lifetime where it fits. Raw VA calls stay isolated in `pipeline::vaapi` for the one
 operation the wrapper does not expose in the shape we need: exporting VA-owned encoder
 input surfaces with write access and a retained owner.
