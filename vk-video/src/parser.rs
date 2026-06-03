@@ -3,9 +3,9 @@ mod nalu_parser;
 mod nalu_splitter;
 
 #[cfg(vulkan)]
-pub(crate) mod decoder_instructions;
+pub mod decoder_instructions;
 #[cfg(vulkan)]
-pub(crate) mod reference_manager;
+pub mod reference_manager;
 
 pub mod h264 {
     use super::au_splitter::AUSplitter;

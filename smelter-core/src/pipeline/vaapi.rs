@@ -1,89 +1,11 @@
-use std::{cell::RefCell, os::fd::AsRawFd, rc::Rc, sync::Arc};
+use std::{os::fd::AsRawFd, rc::Rc, sync::Arc};
 
-use cros_codecs::{
-    Fourcc,
-    backend::vaapi::surface_pool::{PooledVaSurface, VaSurfacePool},
-    decoder::FramePool,
-    video_frame::{ReadMapping, VideoFrame, WriteMapping},
-};
 use libva::{
     Display, ExternalBufferDescriptor, MemoryType, Surface, UsageHint,
     VADRMPRIMESurfaceDescriptor, VADRMPRIMESurfaceDescriptorLayer,
     VADRMPRIMESurfaceDescriptorObject,
 };
 use smelter_render::{DmaBufFrame, DmaBufLayer};
-
-#[derive(Debug)]
-pub(crate) struct VaapiManagedFrame {
-    resolution: cros_codecs::Resolution,
-}
-
-impl VaapiManagedFrame {
-    pub(crate) fn new(resolution: cros_codecs::Resolution) -> Self {
-        Self { resolution }
-    }
-}
-
-impl VideoFrame for VaapiManagedFrame {
-    type MemDescriptor = ();
-    type NativeHandle = PooledVaSurface<()>;
-
-    fn fourcc(&self) -> Fourcc {
-        Fourcc::from(b"NV12")
-    }
-
-    fn resolution(&self) -> cros_codecs::Resolution {
-        self.resolution
-    }
-
-    fn get_plane_size(&self) -> Vec<usize> {
-        let y = self.resolution.width as usize * self.resolution.height as usize;
-        vec![y, y / 2]
-    }
-
-    fn get_plane_pitch(&self) -> Vec<usize> {
-        vec![self.resolution.width as usize; 2]
-    }
-
-    fn map<'a>(&'a self) -> Result<Box<dyn ReadMapping<'a> + 'a>, String> {
-        Err("VA-API managed frames are not CPU-readable".into())
-    }
-
-    fn map_mut<'a>(&'a mut self) -> Result<Box<dyn WriteMapping<'a> + 'a>, String> {
-        Err("VA-API managed frames are not CPU-writable".into())
-    }
-
-    fn to_native_handle(
-        &self,
-        display: &Rc<Display>,
-    ) -> Result<Self::NativeHandle, String> {
-        thread_local! {
-            static MANAGED_SURFACE_POOL: RefCell<Option<VaSurfacePool<()>>> =
-                const { RefCell::new(None) };
-        }
-
-        MANAGED_SURFACE_POOL.with_borrow_mut(|pool| {
-            let pool = pool.get_or_insert_with(|| {
-                VaSurfacePool::new(
-                    Rc::clone(display),
-                    libva::VA_RT_FORMAT_YUV420,
-                    Some(UsageHint::USAGE_HINT_DECODER),
-                    self.resolution,
-                )
-            });
-            pool.set_coded_resolution(self.resolution);
-            if pool.num_free_frames() == 0 {
-                pool.add_frames(vec![(); VAAPI_MANAGED_SURFACE_BATCH]).map_err(
-                    |err| format!("Failed to create VA-API managed surfaces: {err}"),
-                )?;
-            }
-            pool.get_surface()
-                .ok_or_else(|| "VA-API managed surface pool returned no surface".into())
-        })
-    }
-}
-
-const VAAPI_MANAGED_SURFACE_BATCH: usize = 8;
 
 #[derive(Debug, Clone)]
 pub(crate) struct VaapiDmaBufFrame(Arc<DmaBufFrame>);
