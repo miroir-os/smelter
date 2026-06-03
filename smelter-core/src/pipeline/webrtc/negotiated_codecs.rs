@@ -40,8 +40,11 @@ fn h264_decoder_info(
     track_codecs: &[RTCRtpCodecParameters],
     video_preferences: &[VideoDecoderOptions],
 ) -> Option<VideoDecoderOptions> {
-    const H264_OPTIONS: [VideoDecoderOptions; 2] =
-        [VideoDecoderOptions::VulkanH264, VideoDecoderOptions::FfmpegH264];
+    const H264_OPTIONS: [VideoDecoderOptions; 3] = [
+        VideoDecoderOptions::VaapiH264,
+        VideoDecoderOptions::VulkanH264,
+        VideoDecoderOptions::FfmpegH264,
+    ];
     let preferred_decoder =
         *video_preferences.iter().find(|option| H264_OPTIONS.contains(option))?;
     let h264_negotiated = track_codecs.iter().any(|codec| {

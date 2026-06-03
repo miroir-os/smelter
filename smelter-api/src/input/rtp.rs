@@ -80,4 +80,7 @@ pub enum RtpVideoDecoderOptions {
     /// Hardware decoder. Requires GPU that supports Vulkan Video decoding.
     /// Requires vk-video feature.
     VulkanH264,
+
+    /// Hardware decoder based on VA-API.
+    VaapiH264,
 }

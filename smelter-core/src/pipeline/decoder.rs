@@ -21,6 +21,7 @@ mod ffmpeg_utils;
 pub mod ffmpeg_h264;
 pub mod ffmpeg_vp8;
 pub mod ffmpeg_vp9;
+pub mod vaapi_h264;
 
 #[cfg(feature = "vk-video")]
 pub mod vulkan_h264;

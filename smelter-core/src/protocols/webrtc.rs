@@ -36,6 +36,7 @@ pub enum WebrtcVideoDecoderOptions {
     FfmpegVp8,
     FfmpegVp9,
     VulkanH264,
+    VaapiH264,
     Any,
 }
 

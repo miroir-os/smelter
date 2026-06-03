@@ -33,6 +33,7 @@ pub enum VideoDecoderOptions {
     FfmpegVp8,
     FfmpegVp9,
     VulkanH264,
+    VaapiH264,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

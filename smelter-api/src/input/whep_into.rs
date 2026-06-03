@@ -63,6 +63,7 @@ impl From<WhepVideoDecoderOptions> for core::WebrtcVideoDecoderOptions {
             WhepVideoDecoderOptions::FfmpegVp8 => core::WebrtcVideoDecoderOptions::FfmpegVp8,
             WhepVideoDecoderOptions::FfmpegVp9 => core::WebrtcVideoDecoderOptions::FfmpegVp9,
             WhepVideoDecoderOptions::VulkanH264 => core::WebrtcVideoDecoderOptions::VulkanH264,
+            WhepVideoDecoderOptions::VaapiH264 => core::WebrtcVideoDecoderOptions::VaapiH264,
             WhepVideoDecoderOptions::Any => core::WebrtcVideoDecoderOptions::Any,
         }
     }

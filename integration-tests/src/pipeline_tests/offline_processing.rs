@@ -18,10 +18,30 @@ use crate::{
 #[test]
 pub fn offline_processing() -> Result<()> {
     const OUTPUT_FILE: &str = "/tmp/offline_processing_output.mp4";
-    if Path::new(OUTPUT_FILE).exists() {
-        fs::remove_file(OUTPUT_FILE)?;
-    };
+    run_offline_processing(OUTPUT_FILE, None, true)
+}
 
+#[cfg(feature = "vaapi")]
+#[test]
+pub fn offline_processing_vaapi_h264() -> Result<()> {
+    const OUTPUT_FILE: &str = "/tmp/offline_processing_vaapi_h264_output.mp4";
+    run_offline_processing(
+        OUTPUT_FILE,
+        Some(json!({
+            "h264": "vaapi_h264"
+        })),
+        false,
+    )
+}
+
+fn run_offline_processing(
+    output_file: &str,
+    decoder_map: Option<serde_json::Value>,
+    check_bit_rate: bool,
+) -> Result<()> {
+    if Path::new(output_file).exists() {
+        fs::remove_file(output_file)?;
+    };
     let mut config = read_config();
     config.ahead_of_time_processing = true;
     config.never_drop_output_frames = true;
@@ -29,21 +49,23 @@ pub fn offline_processing() -> Result<()> {
     let (msg_sender, msg_receiver) = crossbeam_channel::unbounded();
     start_server_msg_listener(instance.api_port, msg_sender);
 
-    instance.send_request(
-        "input/input_1/register",
-        json!({
-            "type": "mp4",
-            "url": BUNNY_H264_URL,
-            "offset_ms": 0,
-            "required": true
-        }),
-    )?;
+    let mut input = json!({
+        "type": "mp4",
+        "url": BUNNY_H264_URL,
+        "offset_ms": 0,
+        "required": true
+    });
+    if let Some(decoder_map) = decoder_map {
+        input["decoder_map"] = decoder_map;
+    }
+
+    instance.send_request("input/input_1/register", input)?;
 
     instance.send_request(
         "output/output_1/register",
         json!({
             "type": "mp4",
-            "path": OUTPUT_FILE,
+            "path": output_file,
             "video": {
                 "resolution": {
                     "width": 640,
@@ -105,7 +127,7 @@ pub fn offline_processing() -> Result<()> {
     }
 
     let command_output = Command::new("ffprobe")
-        .args(["-v", "error", "-show_format", OUTPUT_FILE])
+        .args(["-v", "error", "-show_format", output_file])
         .output()
         .map_err(|e| anyhow!("Invalid mp4 file. FFprobe error: {}", e))?;
 
@@ -122,7 +144,7 @@ pub fn offline_processing() -> Result<()> {
     if !(1.9..=2.1).contains(&duration) {
         return Err(anyhow!("Invalid duration: {}", duration));
     }
-    if !(860_000..=940_000).contains(&bit_rate) {
+    if check_bit_rate && !(860_000..=940_000).contains(&bit_rate) {
         return Err(anyhow!("Invalid bit rate: {}", bit_rate));
     }
 

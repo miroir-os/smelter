@@ -18,7 +18,7 @@ use crate::{
             decoder_thread_audio::{AudioDecoderThread, AudioDecoderThreadOptions},
             decoder_thread_video::{VideoDecoderThread, VideoDecoderThreadOptions},
             fdk_aac::FdkAacDecoder,
-            ffmpeg_h264, vulkan_h264,
+            ffmpeg_h264, vaapi_h264, vulkan_h264,
         },
         rtmp::rtmp_input::state::RtmpInputState,
         utils::{H264AvcDecoderConfig, H264AvccToAnnexB, input_buffer::InputBuffer},
@@ -175,6 +175,11 @@ impl RtmpConnectionState {
             .map_err(RtmpConnectionError::InitH264Decoder)?,
             VideoDecoderOptions::VulkanH264 => VideoDecoderThread::<
                 vulkan_h264::VulkanH264Decoder,
+                _,
+            >::spawn(input_ref, options)
+            .map_err(RtmpConnectionError::InitH264Decoder)?,
+            VideoDecoderOptions::VaapiH264 => VideoDecoderThread::<
+                vaapi_h264::VaapiH264Decoder,
                 _,
             >::spawn(input_ref, options)
             .map_err(RtmpConnectionError::InitH264Decoder)?,

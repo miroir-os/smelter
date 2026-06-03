@@ -10,6 +10,7 @@ license-file = "../LICENSE"
 default = ["web-renderer"]
 update-snapshots = []
 decklink = ["smelter/decklink"]
+vaapi = ["smelter/vaapi", "smelter-core/vaapi"]
 web-renderer = [
     "dep:libcef",
     "smelter-render/web-renderer",

@@ -48,6 +48,7 @@ pub(super) fn resolve_video_preferences(
                     vec![]
                 }
             }
+            WebrtcVideoDecoderOptions::VaapiH264 => vec![VideoDecoderOptions::VaapiH264],
             WebrtcVideoDecoderOptions::FfmpegVp8 => vec![VideoDecoderOptions::FfmpegVp8],
             WebrtcVideoDecoderOptions::FfmpegVp9 => vec![VideoDecoderOptions::FfmpegVp9],
             WebrtcVideoDecoderOptions::Any => {
@@ -86,9 +87,9 @@ fn params_from_video_preferences(
     video_preferences
         .iter()
         .flat_map(|pref| match pref {
-            VideoDecoderOptions::FfmpegH264 | VideoDecoderOptions::VulkanH264 => {
-                h264_codec_params()
-            }
+            VideoDecoderOptions::FfmpegH264
+            | VideoDecoderOptions::VulkanH264
+            | VideoDecoderOptions::VaapiH264 => h264_codec_params(),
             VideoDecoderOptions::FfmpegVp8 => vp8_codec_params(),
             VideoDecoderOptions::FfmpegVp9 => vp9_codec_params(),
         })

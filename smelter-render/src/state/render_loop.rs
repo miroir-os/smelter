@@ -13,9 +13,7 @@ use crate::{
 };
 
 use super::{
-    input_texture::InputTexture,
-    node_texture::NodeTexture,
-    output_texture::{OutputTexture, export_nv12_dmabuf_texture},
+    input_texture::InputTexture, node_texture::NodeTexture, output_texture::OutputTexture,
 };
 
 pub(super) fn populate_inputs(
@@ -53,6 +51,7 @@ where
         output_id: OutputId,
         pending_download: PlanarYuvPendingDownload<'a, F, wgpu::BufferAsyncError>,
         resolution: Resolution,
+        variant: PlanarYuvVariant,
     },
     CompleteFrame {
         output_id: OutputId,
@@ -66,20 +65,23 @@ pub(super) fn read_outputs(
     pts: Duration,
 ) -> HashMap<OutputId, Frame> {
     let mut partial_textures = Vec::with_capacity(scene.outputs.len());
-    for (output_id, output) in &scene.outputs {
+    for (output_id, output) in &mut scene.outputs {
         match output.root.output_texture(&scene.inputs).state() {
-            Some(node) => match &output.output_texture {
+            Some(node) => match &mut output.output_texture {
                 OutputTexture::PlanarYuvTextures(yuv_output) => {
                     ctx.wgpu_ctx.format.rgba_to_yuv.convert(
                         ctx.wgpu_ctx,
                         node.output_texture_bind_group(),
                         yuv_output.yuv_textures(),
                     );
+                    let resolution = yuv_output.resolution();
+                    let variant = yuv_output.yuv_textures().variant();
                     let pending_download = yuv_output.start_download(ctx.wgpu_ctx);
                     partial_textures.push(PartialOutputFrame::PendingYuvDownload {
                         output_id: output_id.clone(),
                         pending_download,
-                        resolution: yuv_output.resolution(),
+                        resolution,
+                        variant,
                     });
                 }
                 OutputTexture::Rgba8UnormWgpuTexture { .. } => {
@@ -130,25 +132,19 @@ pub(super) fn read_outputs(
                         frame,
                     })
                 }
-                OutputTexture::Nv12DmaBuf { resolution } => {
-                    let frame = export_nv12_dmabuf_texture(ctx.wgpu_ctx, *resolution);
-                    let texture = NV12Texture::new(ctx.wgpu_ctx, *resolution);
+                OutputTexture::Nv12DmaBuf(output) => {
+                    let resolution = output.resolution();
+                    let (texture, frame) = output.next_frame();
                     ctx.wgpu_ctx.format.rgba_to_nv12.convert(
                         ctx.wgpu_ctx,
                         node.output_texture_bind_group(),
-                        &texture,
-                    );
-                    copy_texture(
-                        ctx.wgpu_ctx,
-                        texture.texture(),
-                        frame.texture(),
-                        *resolution,
+                        texture,
                     );
 
                     partial_textures.push(PartialOutputFrame::CompleteFrame {
                         output_id: output_id.clone(),
                         frame: Frame {
-                            resolution: *resolution,
+                            resolution,
                             data: FrameData::Nv12DmaBuf(frame),
                             pts,
                         },
@@ -156,17 +152,20 @@ pub(super) fn read_outputs(
                 }
             },
             // fallback if root node in render graph is empty
-            None => match &output.output_texture {
+            None => match &mut output.output_texture {
                 OutputTexture::PlanarYuvTextures(yuv_output) => {
                     yuv_output
                         .yuv_textures()
                         .fill_with_color(ctx.wgpu_ctx, RGBColor::BLACK);
 
+                    let resolution = yuv_output.resolution();
+                    let variant = yuv_output.yuv_textures().variant();
                     let pending_download = yuv_output.start_download(ctx.wgpu_ctx);
                     partial_textures.push(PartialOutputFrame::PendingYuvDownload {
                         output_id: output_id.clone(),
                         pending_download,
-                        resolution: yuv_output.resolution(),
+                        resolution,
+                        variant,
                     });
                 }
                 OutputTexture::Rgba8UnormWgpuTexture { resolution } => {
@@ -209,21 +208,15 @@ pub(super) fn read_outputs(
                         },
                     });
                 }
-                OutputTexture::Nv12DmaBuf { resolution } => {
-                    let frame = export_nv12_dmabuf_texture(ctx.wgpu_ctx, *resolution);
-                    let texture = NV12Texture::new(ctx.wgpu_ctx, *resolution);
+                OutputTexture::Nv12DmaBuf(output) => {
+                    let resolution = output.resolution();
+                    let (texture, frame) = output.next_frame();
                     texture.fill_with_color(ctx.wgpu_ctx, RGBColor::BLACK);
-                    copy_texture(
-                        ctx.wgpu_ctx,
-                        texture.texture(),
-                        frame.texture(),
-                        *resolution,
-                    );
                     partial_textures.push(PartialOutputFrame::CompleteFrame {
                         output_id: output_id.clone(),
                         frame: Frame {
                             data: FrameData::Nv12DmaBuf(frame),
-                            resolution: *resolution,
+                            resolution,
                             pts,
                         },
                     });
@@ -245,6 +238,7 @@ pub(super) fn read_outputs(
                 output_id,
                 pending_download,
                 resolution,
+                variant,
             } => {
                 let yuv_planes = match pending_download.wait() {
                     Ok(data) => data,
@@ -254,28 +248,11 @@ pub(super) fn read_outputs(
                     }
                 };
 
-                let Some(output) = &scene.outputs.get(&output_id) else {
-                    error!("Output_id {} not found", output_id);
-                    continue;
-                };
-                let data = match &output.output_texture {
-                    OutputTexture::PlanarYuvTextures(planar_yuv_output) => {
-                        match planar_yuv_output.yuv_textures().variant() {
-                            PlanarYuvVariant::YUV420 => {
-                                FrameData::PlanarYuv420(yuv_planes)
-                            }
-                            PlanarYuvVariant::YUV422 => {
-                                FrameData::PlanarYuv422(yuv_planes)
-                            }
-                            PlanarYuvVariant::YUV444 => {
-                                FrameData::PlanarYuv444(yuv_planes)
-                            }
-                            PlanarYuvVariant::YUVJ420 => {
-                                FrameData::PlanarYuvJ420(yuv_planes)
-                            }
-                        }
-                    }
-                    _ => FrameData::PlanarYuv420(yuv_planes),
+                let data = match variant {
+                    PlanarYuvVariant::YUV420 => FrameData::PlanarYuv420(yuv_planes),
+                    PlanarYuvVariant::YUV422 => FrameData::PlanarYuv422(yuv_planes),
+                    PlanarYuvVariant::YUV444 => FrameData::PlanarYuv444(yuv_planes),
+                    PlanarYuvVariant::YUVJ420 => FrameData::PlanarYuvJ420(yuv_planes),
                 };
                 let frame = Frame { data, resolution, pts };
                 result.insert(output_id.clone(), frame);
@@ -287,28 +264,6 @@ pub(super) fn read_outputs(
         }
     }
     result
-}
-
-fn copy_texture(
-    ctx: &crate::wgpu::WgpuCtx,
-    source: &wgpu::Texture,
-    destination: &wgpu::Texture,
-    resolution: Resolution,
-) {
-    let mut encoder =
-        ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("NV12 DMA-BUF staging copy encoder"),
-        });
-    encoder.copy_texture_to_texture(
-        source.as_image_copy(),
-        destination.as_image_copy(),
-        wgpu::Extent3d {
-            width: resolution.width as u32,
-            height: resolution.height as u32,
-            depth_or_array_layers: 1,
-        },
-    );
-    ctx.queue.submit(Some(encoder.finish()));
 }
 
 pub(super) fn run_transforms(

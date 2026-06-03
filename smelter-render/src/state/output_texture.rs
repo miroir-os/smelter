@@ -1,7 +1,7 @@
 use std::{io::Write, sync::Arc};
 
 #[cfg(target_os = "linux")]
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, FromRawFd, IntoRawFd, OwnedFd};
 
 #[cfg(target_os = "linux")]
 use ash::vk;
@@ -12,24 +12,24 @@ use tracing::{error, info, warn};
 use wgpu::hal::api::Vulkan as VkApi;
 use wgpu::{Buffer, BufferAsyncError};
 
+#[cfg(target_os = "linux")]
+use crate::DmaBufPlane;
 use crate::{
-    DmaBufFrame, OutputFrameFormat, Resolution,
+    DmaBufFrame, DmaBufLayer, DmaBufObject, OutputFrameFormat, Resolution,
     wgpu::{
         WgpuCtx,
         texture::{
-            PlanarYuvPendingDownload, PlanarYuvTextures, PlanarYuvVariant,
+            NV12Texture, PlanarYuvPendingDownload, PlanarYuvTextures, PlanarYuvVariant,
             utils::pad_to_256,
         },
     },
 };
-#[cfg(target_os = "linux")]
-use crate::{DmaBufLayer, DmaBufObject, DmaBufPlane};
 
 pub enum OutputTexture {
     PlanarYuvTextures(Box<PlanarYuvOutput>),
     Rgba8UnormWgpuTexture { resolution: Resolution },
     Nv12WgpuTexture { resolution: Resolution },
-    Nv12DmaBuf { resolution: Resolution },
+    Nv12DmaBuf(Box<Nv12DmaBufOutput>),
 }
 
 impl OutputTexture {
@@ -74,26 +74,63 @@ impl OutputTexture {
             OutputFrameFormat::Nv12WgpuTexture => Self::Nv12WgpuTexture { resolution },
             OutputFrameFormat::Nv12DmaBuf => {
                 info!(?resolution, "creating zero-copy NV12 DMA-BUF output texture");
-                Self::Nv12DmaBuf { resolution }
+                Self::Nv12DmaBuf(Box::new(Nv12DmaBufOutput::new(ctx, resolution)))
             }
         }
     }
 }
 
+pub struct Nv12DmaBufOutput {
+    frames: Vec<PooledNv12DmaBufFrame>,
+    next_index: usize,
+    resolution: Resolution,
+}
+
+struct PooledNv12DmaBufFrame {
+    dmabuf: Arc<DmaBufFrame>,
+    texture: NV12Texture,
+}
+
+impl Nv12DmaBufOutput {
+    const POOL_SIZE: usize = 16;
+
+    fn new(ctx: &WgpuCtx, resolution: Resolution) -> Self {
+        let frames = (0..Self::POOL_SIZE)
+            .map(|_| {
+                let dmabuf = export_nv12_dmabuf_texture(&ctx.device, resolution);
+                let texture = NV12Texture::from_wgpu_texture(dmabuf.texture_arc())
+                    .expect("exported DMA-BUF frame must be an NV12 texture");
+                PooledNv12DmaBufFrame { dmabuf, texture }
+            })
+            .collect();
+        Self { frames, next_index: 0, resolution }
+    }
+
+    pub fn resolution(&self) -> Resolution {
+        self.resolution
+    }
+
+    pub fn next_frame(&mut self) -> (&NV12Texture, Arc<DmaBufFrame>) {
+        let index = self.next_index;
+        self.next_index = (self.next_index + 1) % self.frames.len();
+        let frame = &self.frames[index];
+        (&frame.texture, Arc::clone(&frame.dmabuf))
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub fn export_nv12_dmabuf_texture(
-    ctx: &WgpuCtx,
+    wgpu_device: &wgpu::Device,
     resolution: Resolution,
 ) -> Arc<DmaBufFrame> {
     const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
 
     unsafe {
-        let hal_device_guard = ctx
-            .device
+        let hal_device_guard = wgpu_device
             .as_hal::<VkApi>()
             .expect("NV12 DMA-BUF output requires a Vulkan wgpu device");
         let hal_device = &*hal_device_guard;
-        let device = hal_device.raw_device().clone();
+        let vk_device = hal_device.raw_device().clone();
         let instance = hal_device.shared_instance().raw_instance();
         let physical_device = hal_device.raw_physical_device();
         let size = vk::Extent3D {
@@ -122,6 +159,7 @@ pub fn export_nv12_dmabuf_texture(
             .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
             .usage(
                 vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::COLOR_ATTACHMENT
                     | vk::ImageUsageFlags::TRANSFER_DST
                     | vk::ImageUsageFlags::TRANSFER_SRC,
             )
@@ -130,10 +168,10 @@ pub fn export_nv12_dmabuf_texture(
             .push_next(&mut external_info)
             .push_next(&mut drm_info);
 
-        let image = device
+        let image = vk_device
             .create_image(&create_info, None)
             .expect("failed to create exportable NV12 Vulkan image");
-        let mem_requirements = device.get_image_memory_requirements(image);
+        let mem_requirements = vk_device.get_image_memory_requirements(image);
         let memory_type_index =
             find_memory_type_index(instance, physical_device, &mem_requirements);
         let mut export_info = vk::ExportMemoryAllocateInfo::default()
@@ -144,15 +182,15 @@ pub fn export_nv12_dmabuf_texture(
             .memory_type_index(memory_type_index)
             .push_next(&mut export_info)
             .push_next(&mut dedicated_info);
-        let memory = device
+        let memory = vk_device
             .allocate_memory(&allocate_info, None)
             .expect("failed to allocate exportable NV12 Vulkan memory");
-        device
+        vk_device
             .bind_image_memory(image, memory, 0)
             .expect("failed to bind exportable NV12 Vulkan memory");
 
         let external_memory_fd =
-            ash::khr::external_memory_fd::Device::new(instance, &device);
+            ash::khr::external_memory_fd::Device::new(instance, &vk_device);
         let fd_info = vk::MemoryGetFdInfoKHR::default()
             .memory(memory)
             .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
@@ -162,11 +200,16 @@ pub fn export_nv12_dmabuf_texture(
                 .expect("failed to export NV12 DMA-BUF fd"),
         ));
 
-        let plane0 = image_plane_layout(&device, image, vk::ImageAspectFlags::PLANE_0);
-        let plane1 = image_plane_layout(&device, image, vk::ImageAspectFlags::PLANE_1);
-
+        let plane0 = image_plane_layout(&vk_device, image, vk::ImageAspectFlags::PLANE_0);
+        let plane1 = image_plane_layout(&vk_device, image, vk::ImageAspectFlags::PLANE_1);
         let texture = Arc::new(wrap_nv12_image_as_wgpu_texture(
-            ctx, image, memory, device, resolution,
+            wgpu_device,
+            image,
+            memory,
+            vk_device,
+            resolution,
+            "nv12 dma-buf output texture",
+            true,
         ));
 
         Arc::new(DmaBufFrame::new(
@@ -213,9 +256,141 @@ pub fn export_nv12_dmabuf_texture(
     }
 }
 
+#[cfg(target_os = "linux")]
+pub fn import_nv12_dmabuf_texture(
+    wgpu_device: &wgpu::Device,
+    fourcc: u32,
+    width: u32,
+    height: u32,
+    objects: Vec<DmaBufObject>,
+    layers: Vec<DmaBufLayer>,
+) -> Result<Arc<DmaBufFrame>, String> {
+    const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
+    if fourcc != DRM_FORMAT_NV12 {
+        return Err(format!("expected NV12 DMA-BUF, got fourcc {fourcc}"));
+    }
+    if objects.len() != 1 || layers.len() != 1 {
+        return Err(
+            "only single-object single-layer NV12 DMA-BUF imports are supported".into()
+        );
+    }
+    if layers[0].planes.len() != 2 {
+        return Err("NV12 DMA-BUF import requires exactly two planes".into());
+    }
+
+    unsafe {
+        let hal_device_guard = wgpu_device
+            .as_hal::<VkApi>()
+            .expect("NV12 DMA-BUF import requires a Vulkan wgpu device");
+        let hal_device = &*hal_device_guard;
+        let vk_device = hal_device.raw_device().clone();
+        let instance = hal_device.shared_instance().raw_instance();
+        let physical_device = hal_device.raw_physical_device();
+        let size = vk::Extent3D { width, height, depth: 1 };
+        let modifier = objects[0].modifier;
+        let plane_layouts = layers[0]
+            .planes
+            .iter()
+            .map(|plane| vk::SubresourceLayout {
+                offset: plane.offset as u64,
+                size: objects[plane.object_index].size as u64 - plane.offset as u64,
+                row_pitch: plane.pitch as u64,
+                array_pitch: 0,
+                depth_pitch: 0,
+            })
+            .collect::<Vec<_>>();
+
+        let mut external_info = vk::ExternalMemoryImageCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        let mut drm_info = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+            .drm_format_modifier(modifier)
+            .plane_layouts(&plane_layouts);
+        let create_info = vk::ImageCreateInfo::default()
+            .flags(
+                vk::ImageCreateFlags::MUTABLE_FORMAT
+                    | vk::ImageCreateFlags::EXTENDED_USAGE,
+            )
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+            .extent(size)
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+            .usage(
+                vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_DST
+                    | vk::ImageUsageFlags::TRANSFER_SRC,
+            )
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .push_next(&mut external_info)
+            .push_next(&mut drm_info);
+
+        let image = vk_device.create_image(&create_info, None).map_err(|err| {
+            format!("failed to create imported NV12 Vulkan image: {err}")
+        })?;
+        let mem_requirements = vk_device.get_image_memory_requirements(image);
+        let memory_type_index =
+            find_memory_type_index(instance, physical_device, &mem_requirements);
+        let import_fd = objects[0]
+            .fd
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|err| format!("failed to duplicate DMA-BUF fd: {err}"))?
+            .into_raw_fd();
+        let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+            .fd(import_fd);
+        let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::default().image(image);
+        let allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_requirements.size)
+            .memory_type_index(memory_type_index)
+            .push_next(&mut import_info)
+            .push_next(&mut dedicated_info);
+        let memory = match vk_device.allocate_memory(&allocate_info, None) {
+            Ok(memory) => memory,
+            Err(err) => {
+                vk_device.destroy_image(image, None);
+                return Err(format!("failed to import NV12 DMA-BUF memory: {err}"));
+            }
+        };
+        if let Err(err) = vk_device.bind_image_memory(image, memory, 0) {
+            vk_device.destroy_image(image, None);
+            vk_device.free_memory(memory, None);
+            return Err(format!("failed to bind imported NV12 DMA-BUF memory: {err}"));
+        }
+
+        let texture = Arc::new(wrap_nv12_image_as_wgpu_texture(
+            wgpu_device,
+            image,
+            memory,
+            vk_device,
+            Resolution { width: width as usize, height: height as usize },
+            "imported nv12 dma-buf texture",
+            false,
+        ));
+
+        Ok(Arc::new(DmaBufFrame::new(texture, fourcc, width, height, objects, layers)))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
+pub fn import_nv12_dmabuf_texture(
+    _device: &wgpu::Device,
+    _fourcc: u32,
+    _width: u32,
+    _height: u32,
+    _objects: Vec<DmaBufObject>,
+    _layers: Vec<DmaBufLayer>,
+) -> Result<Arc<DmaBufFrame>, String> {
+    unreachable!("NV12 DMA-BUF import is only available on Linux")
+}
+
 #[cfg(not(target_os = "linux"))]
 pub fn export_nv12_dmabuf_texture(
-    _ctx: &WgpuCtx,
+    _device: &wgpu::Device,
     _resolution: Resolution,
 ) -> Arc<DmaBufFrame> {
     unreachable!("NV12 DMA-BUF output is only available on Linux")
@@ -223,22 +398,31 @@ pub fn export_nv12_dmabuf_texture(
 
 #[cfg(target_os = "linux")]
 unsafe fn wrap_nv12_image_as_wgpu_texture(
-    ctx: &WgpuCtx,
+    wgpu_device: &wgpu::Device,
     image: vk::Image,
     memory: vk::DeviceMemory,
     device: ash::Device,
     resolution: Resolution,
+    label: &'static str,
+    render_attachment: bool,
 ) -> wgpu::Texture {
     let hal_device_guard = unsafe {
-        ctx.device
+        wgpu_device
             .as_hal::<VkApi>()
             .expect("NV12 DMA-BUF output requires a Vulkan wgpu device")
     };
     let hal_texture = unsafe {
+        let mut hal_usage = wgpu::TextureUses::RESOURCE
+            | wgpu::TextureUses::COPY_DST
+            | wgpu::TextureUses::COPY_SRC;
+        if render_attachment {
+            hal_usage |= wgpu::TextureUses::COLOR_TARGET;
+        }
+
         (*hal_device_guard).texture_from_raw(
             image,
             &wgpu::hal::TextureDescriptor {
-                label: Some("nv12 dma-buf output texture"),
+                label: Some(label),
                 size: wgpu::Extent3d {
                     width: resolution.width as u32,
                     height: resolution.height as u32,
@@ -248,9 +432,7 @@ unsafe fn wrap_nv12_image_as_wgpu_texture(
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::NV12,
-                usage: wgpu::TextureUses::RESOURCE
-                    | wgpu::TextureUses::COPY_DST
-                    | wgpu::TextureUses::COPY_SRC,
+                usage: hal_usage,
                 memory_flags: wgpu::hal::MemoryFlags::empty(),
                 view_formats: vec![
                     wgpu::TextureFormat::R8Unorm,
@@ -266,10 +448,17 @@ unsafe fn wrap_nv12_image_as_wgpu_texture(
     };
 
     unsafe {
-        ctx.device.create_texture_from_hal::<VkApi>(
+        let mut wgpu_usage = wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC;
+        if render_attachment {
+            wgpu_usage |= wgpu::TextureUsages::RENDER_ATTACHMENT;
+        }
+
+        wgpu_device.create_texture_from_hal::<VkApi>(
             hal_texture,
             &wgpu::TextureDescriptor {
-                label: Some("nv12 dma-buf output texture"),
+                label: Some(label),
                 size: wgpu::Extent3d {
                     width: resolution.width as u32,
                     height: resolution.height as u32,
@@ -279,9 +468,7 @@ unsafe fn wrap_nv12_image_as_wgpu_texture(
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::NV12,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::COPY_SRC,
+                usage: wgpu_usage,
                 view_formats: &[
                     wgpu::TextureFormat::R8Unorm,
                     wgpu::TextureFormat::Rg8Unorm,
@@ -335,12 +522,18 @@ fn select_nv12_modifier(
         let required = vk::FormatFeatureFlags2::SAMPLED_IMAGE
             | vk::FormatFeatureFlags2::TRANSFER_DST
             | vk::FormatFeatureFlags2::TRANSFER_SRC;
+        let supports_nv12_export = |modifier: &vk::DrmFormatModifierProperties2EXT| {
+            modifier.drm_format_modifier_plane_count == 2
+                && modifier.drm_format_modifier_tiling_features.contains(required)
+        };
+
         modifiers
-            .into_iter()
+            .iter()
             .find(|modifier| {
-                modifier.drm_format_modifier_plane_count == 2
-                    && modifier.drm_format_modifier_tiling_features.contains(required)
+                supports_nv12_export(modifier) && modifier.drm_format_modifier != 0
             })
+            .or_else(|| modifiers.iter().find(|modifier| supports_nv12_export(modifier)))
+            .copied()
             .expect("no exportable NV12 DRM modifier with transfer support available")
             .drm_format_modifier
     }

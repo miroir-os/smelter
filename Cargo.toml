@@ -29,6 +29,7 @@ default = ["web-renderer"]
 update-snapshots = []
 decklink = ["smelter-api/decklink"]
 web-renderer = ["dep:libcef", "smelter-api/web-renderer"]
+vaapi = ["smelter-core/vaapi"]
 
 [workspace.dependencies]
 smelter = { path = ".", default-features = false }
@@ -130,6 +131,9 @@ required-features = ["web-renderer"]
 todo = "warn"
 uninlined_format_args = "warn"
 enum_variant_names = "allow"
+
+[patch.crates-io]
+cros-codecs = { path = "third-party/cros-codecs" }
 
 [lints]
 workspace = true

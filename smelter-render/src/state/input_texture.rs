@@ -217,11 +217,16 @@ impl InputTexture {
                     }
                 };
             }
-            FrameData::Nv12DmaBuf(_) => {
-                unreachable!(
-                    "DMA-BUF frames are encoder outputs, not render graph inputs"
-                );
-            }
+            FrameData::Nv12DmaBuf(frame) => match &mut self.0 {
+                Some(InputTextureState::Nv12(input)) => {
+                    input.update(ctx, frame.texture_arc()).unwrap();
+                }
+                state => {
+                    *state = Some(InputTextureState::Nv12(
+                        NV12Input::new_from_texture(ctx, frame.texture_arc()).unwrap(),
+                    ));
+                }
+            },
             FrameData::Bgra(data) => {
                 match &mut self.0 {
                     Some(InputTextureState::Bgra(input)) => {

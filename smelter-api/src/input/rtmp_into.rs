@@ -31,6 +31,7 @@ impl TryFrom<RtmpInput> for core::RegisterInputOptions {
             .map(|decoder| match decoder {
                 RtmpVideoDecoderOptions::FfmpegH264 => Ok(core::VideoDecoderOptions::FfmpegH264),
                 RtmpVideoDecoderOptions::VulkanH264 => Ok(core::VideoDecoderOptions::VulkanH264),
+                RtmpVideoDecoderOptions::VaapiH264 => Ok(core::VideoDecoderOptions::VaapiH264),
             })
             .transpose()?;
 

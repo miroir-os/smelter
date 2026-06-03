@@ -37,6 +37,7 @@ pub(crate) fn resolve_video_preferences(
                     vec![]
                 }
             }
+            WebrtcVideoDecoderOptions::VaapiH264 => vec![VideoDecoderOptions::VaapiH264],
             WebrtcVideoDecoderOptions::FfmpegVp8 => vec![VideoDecoderOptions::FfmpegVp8],
             WebrtcVideoDecoderOptions::FfmpegVp9 => vec![VideoDecoderOptions::FfmpegVp9],
             WebrtcVideoDecoderOptions::Any => {
@@ -57,7 +58,9 @@ pub(crate) fn resolve_video_preferences(
     let mut video_codecs_params: Vec<RTCRtpCodecParameters> = Vec::new();
     for pref in &video_preferences {
         match pref {
-            VideoDecoderOptions::FfmpegH264 | VideoDecoderOptions::VulkanH264 => {
+            VideoDecoderOptions::FfmpegH264
+            | VideoDecoderOptions::VulkanH264
+            | VideoDecoderOptions::VaapiH264 => {
                 video_codecs_params.extend(h264_codec_params());
             }
             VideoDecoderOptions::FfmpegVp8 => {

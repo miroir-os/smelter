@@ -19,7 +19,8 @@ use crate::{
         decoder::{
             fdk_aac::FdkAacDecoder, ffmpeg_h264::FfmpegH264Decoder,
             ffmpeg_vp8::FfmpegVp8Decoder, ffmpeg_vp9::FfmpegVp9Decoder,
-            libopus::OpusDecoder, vulkan_h264::VulkanH264Decoder,
+            libopus::OpusDecoder, vaapi_h264::VaapiH264Decoder,
+            vulkan_h264::VulkanH264Decoder,
         },
         input::Input,
         rtp::{
@@ -169,6 +170,10 @@ impl RtpInput {
                     (ctx.clone(), DepayloaderOptions::H264, sender),
                 )?
             }
+            VideoDecoderOptions::VaapiH264 => RtpVideoThread::<VaapiH264Decoder>::spawn(
+                input_ref.clone(),
+                (ctx.clone(), DepayloaderOptions::H264, sender),
+            )?,
         };
         Ok((Some(handle), Some(receiver)))
     }

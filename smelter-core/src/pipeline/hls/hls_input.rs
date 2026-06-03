@@ -28,7 +28,7 @@ use crate::{
             DecoderThreadHandle,
             decoder_thread_audio::{AudioDecoderThread, AudioDecoderThreadOptions},
             decoder_thread_video::{VideoDecoderThread, VideoDecoderThreadOptions},
-            fdk_aac, ffmpeg_h264, vulkan_h264,
+            fdk_aac, ffmpeg_h264, vaapi_h264, vulkan_h264,
         },
         input::Input,
         utils::{
@@ -189,6 +189,12 @@ impl HlsInput {
                     ));
                 }
                 VideoDecoderThread::<vulkan_h264::VulkanH264Decoder, _>::spawn(
+                    input_ref,
+                    decoder_thread_options,
+                )?
+            }
+            VideoDecoderOptions::VaapiH264 => {
+                VideoDecoderThread::<vaapi_h264::VaapiH264Decoder, _>::spawn(
                     input_ref,
                     decoder_thread_options,
                 )?

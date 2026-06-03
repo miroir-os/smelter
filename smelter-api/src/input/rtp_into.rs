@@ -70,6 +70,7 @@ impl TryFrom<RtpInput> for core::RegisterInputOptions {
                         RtpVideoDecoderOptions::FfmpegVp8 => core::VideoDecoderOptions::FfmpegVp8,
                         RtpVideoDecoderOptions::FfmpegVp9 => core::VideoDecoderOptions::FfmpegVp9,
                         RtpVideoDecoderOptions::VulkanH264 => core::VideoDecoderOptions::VulkanH264,
+                        RtpVideoDecoderOptions::VaapiH264 => core::VideoDecoderOptions::VaapiH264,
                     };
                     Ok(options)
                 })

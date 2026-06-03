@@ -27,6 +27,9 @@ mod encoder;
 
 mod ffmpeg_utils;
 
+#[cfg(feature = "vaapi")]
+mod vaapi;
+
 #[cfg(feature = "decklink")]
 mod decklink;
 

@@ -30,6 +30,7 @@ impl TryFrom<HlsInput> for core::RegisterInputOptions {
             .map(|decoder| match decoder {
                 HlsVideoDecoderOptions::FfmpegH264 => Ok(core::VideoDecoderOptions::FfmpegH264),
                 HlsVideoDecoderOptions::VulkanH264 => Ok(core::VideoDecoderOptions::VulkanH264),
+                HlsVideoDecoderOptions::VaapiH264 => Ok(core::VideoDecoderOptions::VaapiH264),
             })
             .transpose()?;
 

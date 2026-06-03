@@ -271,6 +271,9 @@ pub enum DecoderInitError {
     )]
     VulkanContextRequiredForVulkanDecoder,
 
+    #[error("VA-API H264 decoder is unavailable: {0}")]
+    VaapiH264DecoderUnavailable(String),
+
     #[error(transparent)]
     OpusError(#[from] opus::Error),
 

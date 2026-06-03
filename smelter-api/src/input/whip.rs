@@ -50,5 +50,8 @@ pub enum WhipVideoDecoderOptions {
     /// Requires vk-video feature.
     VulkanH264,
 
+    /// Hardware decoder based on VA-API.
+    VaapiH264,
+
     Any,
 }

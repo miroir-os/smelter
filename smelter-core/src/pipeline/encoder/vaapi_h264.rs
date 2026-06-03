@@ -1,9 +1,9 @@
 #[cfg(feature = "vaapi")]
 mod imp {
-    use std::{os::fd::AsRawFd, rc::Rc, sync::Arc, time::Duration};
+    use std::{rc::Rc, sync::Arc, time::Duration};
 
     use cros_codecs::{
-        BlockingMode, Fourcc, FrameLayout, PlaneLayout,
+        BlockingMode, Fourcc,
         backend::vaapi::encoder::VaapiBackend,
         codec::h264::{
             parser::{Level, Pps, PpsBuilder, Profile, Sps, SpsBuilder},
@@ -14,14 +14,9 @@ mod imp {
             VideoEncoder as CrosVideoEncoder, h264::EncoderConfig,
             stateless::h264::StatelessEncoder as CrosH264Encoder,
         },
-        libva::{
-            Display, ExternalBufferDescriptor, MemoryType, Surface, UsageHint,
-            VADRMPRIMESurfaceDescriptor, VADRMPRIMESurfaceDescriptorLayer,
-            VADRMPRIMESurfaceDescriptorObject,
-        },
-        video_frame::{ReadMapping, VideoFrame, WriteMapping},
+        libva::Surface,
     };
-    use smelter_render::{DmaBufFrame, DmaBufLayer, FrameData, OutputFrameFormat};
+    use smelter_render::{FrameData, OutputFrameFormat};
     use tracing::{error, info};
 
     use crate::{
@@ -31,6 +26,7 @@ mod imp {
                 utils::{bitrate_from_resolution_framerate, gop_size_from_ms_framerate},
             },
             utils::{annexb_to_avcc, build_avc_decoder_config},
+            vaapi::{VaapiDmaBufFrame, open_display},
         },
         prelude::*,
     };
@@ -56,7 +52,8 @@ mod imp {
         ) -> Result<(Self, VideoEncoderConfig), EncoderInitError> {
             info!("Initializing VA-API H264 encoder");
 
-            let display = open_display()?;
+            let display =
+                open_display().map_err(EncoderInitError::VaapiH264EncoderUnavailable)?;
             let framerate = ctx.output_framerate;
             let gop_size =
                 gop_size_from_ms_framerate(options.keyframe_interval, framerate)
@@ -187,149 +184,6 @@ mod imp {
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct VaapiDmaBufFrame(Arc<DmaBufFrame>);
-
-    impl VaapiDmaBufFrame {
-        fn new(frame: Arc<DmaBufFrame>) -> Self {
-            assert_eq!(frame.fourcc, u32::from_le_bytes(*b"NV12"));
-            assert_eq!(frame.layers().len(), 1);
-            Self(frame)
-        }
-
-        fn layer(&self) -> &DmaBufLayer {
-            &self.0.layers()[0]
-        }
-
-        fn layout(&self) -> FrameLayout {
-            let layer = self.layer();
-            FrameLayout {
-                format: (Fourcc::from(self.0.fourcc), self.modifier()),
-                size: cros_codecs::Resolution {
-                    width: self.0.width,
-                    height: self.0.height,
-                },
-                planes: layer
-                    .planes
-                    .iter()
-                    .map(|plane| PlaneLayout {
-                        buffer_index: plane.object_index,
-                        offset: plane.offset as usize,
-                        stride: plane.pitch as usize,
-                    })
-                    .collect(),
-            }
-        }
-
-        fn modifier(&self) -> u64 {
-            self.0.objects()[0].modifier
-        }
-    }
-
-    impl ExternalBufferDescriptor for VaapiDmaBufFrame {
-        const MEMORY_TYPE: MemoryType = MemoryType::DrmPrime2;
-        type DescriptorAttribute = VADRMPRIMESurfaceDescriptor;
-
-        fn va_surface_attribute(&mut self) -> Self::DescriptorAttribute {
-            let layer = self.layer();
-            let mut objects =
-                std::array::from_fn(|_| VADRMPRIMESurfaceDescriptorObject::default());
-            for (dst, object) in objects.iter_mut().zip(self.0.objects()) {
-                *dst = VADRMPRIMESurfaceDescriptorObject {
-                    fd: object.fd.as_ref().as_raw_fd(),
-                    size: object.size,
-                    drm_format_modifier: object.modifier,
-                };
-            }
-
-            let layers = [
-                VADRMPRIMESurfaceDescriptorLayer {
-                    drm_format: layer.drm_format,
-                    num_planes: layer.planes.len() as u32,
-                    object_index: fixed_u32(
-                        layer.planes.iter().map(|plane| plane.object_index as u32),
-                    ),
-                    offset: fixed_u32(layer.planes.iter().map(|plane| plane.offset)),
-                    pitch: fixed_u32(layer.planes.iter().map(|plane| plane.pitch)),
-                },
-                Default::default(),
-                Default::default(),
-                Default::default(),
-            ];
-
-            VADRMPRIMESurfaceDescriptor {
-                fourcc: self.0.fourcc,
-                width: self.0.width,
-                height: self.0.height,
-                num_objects: self.0.objects().len() as u32,
-                objects,
-                num_layers: 1,
-                layers,
-            }
-        }
-    }
-
-    impl VideoFrame for VaapiDmaBufFrame {
-        type MemDescriptor = VaapiDmaBufFrame;
-        type NativeHandle = Surface<VaapiDmaBufFrame>;
-
-        fn fourcc(&self) -> Fourcc {
-            Fourcc::from(self.0.fourcc)
-        }
-
-        fn resolution(&self) -> cros_codecs::Resolution {
-            cros_codecs::Resolution { width: self.0.width, height: self.0.height }
-        }
-
-        fn get_plane_size(&self) -> Vec<usize> {
-            let layer = self.layer();
-            layer
-                .planes
-                .iter()
-                .map(|plane| {
-                    (self.0.objects()[plane.object_index].size - plane.offset) as usize
-                })
-                .collect()
-        }
-
-        fn get_plane_pitch(&self) -> Vec<usize> {
-            self.layer().planes.iter().map(|plane| plane.pitch as usize).collect()
-        }
-
-        fn map<'a>(&'a self) -> Result<Box<dyn ReadMapping<'a> + 'a>, String> {
-            Err("VA-API DMA-BUF frames are not CPU-readable".into())
-        }
-
-        fn map_mut<'a>(&'a mut self) -> Result<Box<dyn WriteMapping<'a> + 'a>, String> {
-            Err("VA-API DMA-BUF frames are not CPU-writable".into())
-        }
-
-        fn to_native_handle(
-            &self,
-            display: &Rc<Display>,
-        ) -> Result<Self::NativeHandle, String> {
-            let mut surfaces = display
-                .create_surfaces(
-                    cros_codecs::libva::VA_RT_FORMAT_YUV420,
-                    Some(self.0.fourcc),
-                    self.0.width,
-                    self.0.height,
-                    Some(UsageHint::USAGE_HINT_ENCODER),
-                    vec![self.clone()],
-                )
-                .map_err(|err| format!("Failed to import DMA-BUF into VA-API: {err}"))?;
-            Ok(surfaces.pop().expect("VA-API returned no imported surface"))
-        }
-    }
-
-    fn fixed_u32(values: impl IntoIterator<Item = u32>) -> [u32; 4] {
-        let mut out = [0; 4];
-        for (dst, value) in out.iter_mut().zip(values) {
-            *dst = value;
-        }
-        out
-    }
-
     fn duration_micros(duration: Duration) -> u64 {
         duration.as_micros().try_into().unwrap_or(u64::MAX)
     }
@@ -369,21 +223,6 @@ mod imp {
         Synthesizer::<Sps, &mut Vec<u8>>::synthesize(3, &sps, &mut headers, true).ok()?;
         Synthesizer::<Pps, &mut Vec<u8>>::synthesize(3, &pps, &mut headers, true).ok()?;
         build_avc_decoder_config(&headers)
-    }
-
-    fn open_display() -> Result<Rc<Display>, EncoderInitError> {
-        let configured = std::env::var("SMELTER_VAAPI_DRM_DEVICE").ok();
-        for path in configured.as_deref().into_iter().chain(["/dev/dri/renderD128"]) {
-            match Display::open_drm_display(path) {
-                Ok(display) => return Ok(display),
-                Err(err) => error!("Failed to open VA-API DRM display {path}: {err}"),
-            }
-        }
-        Display::open().ok_or_else(|| {
-            EncoderInitError::VaapiH264EncoderUnavailable(
-                "no usable DRM display found".into(),
-            )
-        })
     }
 
     fn contains_idr(data: &[u8]) -> bool {

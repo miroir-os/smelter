@@ -43,9 +43,9 @@ pub enum FrameData {
 
 #[derive(Clone)]
 pub struct DmaBufFrame {
-    pub fourcc: u32,
-    pub width: u32,
-    pub height: u32,
+    fourcc: u32,
+    width: u32,
+    height: u32,
     objects: Vec<DmaBufObject>,
     layers: Vec<DmaBufLayer>,
     texture: Arc<wgpu::Texture>,
@@ -88,8 +88,24 @@ impl DmaBufFrame {
         Self { fourcc, width, height, objects, layers, texture }
     }
 
-    pub(crate) fn texture(&self) -> &wgpu::Texture {
-        &self.texture
+    pub(crate) fn texture_arc(&self) -> Arc<wgpu::Texture> {
+        Arc::clone(&self.texture)
+    }
+
+    pub fn fourcc(&self) -> u32 {
+        self.fourcc
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn resolution(&self) -> Resolution {
+        Resolution { width: self.width as usize, height: self.height as usize }
     }
 
     pub fn objects(&self) -> &[DmaBufObject] {
