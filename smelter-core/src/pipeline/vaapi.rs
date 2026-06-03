@@ -345,18 +345,13 @@ impl ExportedVaSurface {
             .layers
             .into_iter()
             .map(|layer| {
-                let plane_count =
-                    checked_va_array_count("DRM PRIME layer plane", layer.num_planes)?;
-                Ok(DmaBufLayer {
-                    drm_format: layer.drm_format,
-                    planes: (0..plane_count)
-                        .map(|index| DmaBufPlane {
-                            object_index: layer.object_index[index] as usize,
-                            offset: layer.offset[index],
-                            pitch: layer.pitch[index],
-                        })
-                        .collect(),
-                })
+                dmabuf_layer_from_prime_parts(
+                    layer.drm_format,
+                    layer.num_planes,
+                    layer.object_index.map(|index| index as usize),
+                    layer.offset,
+                    layer.pitch,
+                )
             })
             .collect::<Result<Vec<_>, String>>()?;
 
@@ -387,18 +382,13 @@ impl ExportedVaSurface {
         let layers = (0..layer_count)
             .map(|index| {
                 let layer = descriptor.layers[index];
-                let plane_count =
-                    checked_va_array_count("DRM PRIME layer plane", layer.num_planes)?;
-                Ok(DmaBufLayer {
-                    drm_format: layer.drm_format,
-                    planes: (0..plane_count)
-                        .map(|index| DmaBufPlane {
-                            object_index: layer.object_index[index] as usize,
-                            offset: layer.offset[index],
-                            pitch: layer.pitch[index],
-                        })
-                        .collect(),
-                })
+                dmabuf_layer_from_prime_parts(
+                    layer.drm_format,
+                    layer.num_planes,
+                    layer.object_index.map(|index| index as usize),
+                    layer.offset,
+                    layer.pitch,
+                )
             })
             .collect::<Result<Vec<_>, String>>()?;
 
@@ -442,6 +432,26 @@ impl ExportedVaSurface {
             owner,
         )
     }
+}
+
+fn dmabuf_layer_from_prime_parts(
+    drm_format: u32,
+    num_planes: u32,
+    object_index: [usize; 4],
+    offset: [u32; 4],
+    pitch: [u32; 4],
+) -> Result<DmaBufLayer, String> {
+    let plane_count = checked_va_array_count("DRM PRIME layer plane", num_planes)?;
+    Ok(DmaBufLayer {
+        drm_format,
+        planes: (0..plane_count)
+            .map(|index| DmaBufPlane {
+                object_index: object_index[index],
+                offset: offset[index],
+                pitch: pitch[index],
+            })
+            .collect(),
+    })
 }
 
 fn vaapi_drm_paths() -> Vec<String> {
