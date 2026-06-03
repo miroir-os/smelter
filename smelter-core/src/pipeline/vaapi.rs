@@ -172,13 +172,33 @@ impl DmaBufAllocator for VaapiEncoderInputAllocator {
         device: &wgpu::Device,
         resolution: Resolution,
     ) -> Result<Arc<DmaBufFrame>, String> {
-        let surface =
-            Arc::new(self.display.create_nv12_encoder_input_surface(resolution)?);
-        let descriptor = surface.export_for_write()?;
-        let owner: Arc<dyn DmaBufFrameOwner> = surface;
-        ExportedVaSurface::from_raw_prime(descriptor)?
-            .import_renderable(device, Some(owner))
+        self.allocate_pool(device, resolution, 1)?
+            .pop()
+            .ok_or_else(|| "VA-API returned no encoder input frame".to_string())
     }
+
+    fn allocate_pool(
+        &self,
+        device: &wgpu::Device,
+        resolution: Resolution,
+        count: usize,
+    ) -> Result<Vec<Arc<DmaBufFrame>>, String> {
+        self.display
+            .create_nv12_encoder_input_surfaces(resolution, count)?
+            .into_iter()
+            .map(|surface| import_encoder_input_surface(device, surface))
+            .collect()
+    }
+}
+
+fn import_encoder_input_surface(
+    device: &wgpu::Device,
+    surface: VaapiOwnedSurface,
+) -> Result<Arc<DmaBufFrame>, String> {
+    let surface = Arc::new(surface);
+    let descriptor = surface.export_for_write()?;
+    let owner: Arc<dyn DmaBufFrameOwner> = surface;
+    ExportedVaSurface::from_raw_prime(descriptor)?.import_renderable(device, Some(owner))
 }
 
 #[derive(Clone)]
@@ -193,10 +213,14 @@ impl RawVaapiDisplayOwner {
         self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn create_nv12_encoder_input_surface(
+    fn create_nv12_encoder_input_surfaces(
         &self,
         resolution: Resolution,
-    ) -> Result<VaapiOwnedSurface, String> {
+        count: usize,
+    ) -> Result<Vec<VaapiOwnedSurface>, String> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
         let display = self.lock();
         let mut attrs = [
             libva::VASurfaceAttrib::new_usage_hint(
@@ -204,21 +228,27 @@ impl RawVaapiDisplayOwner {
             ),
             libva::VASurfaceAttrib::new_pixel_format(libva::VA_FOURCC_NV12),
         ];
-        let mut surface_id: VASurfaceID = 0;
+        let mut surface_ids = vec![0; count];
+        let surface_count = count
+            .try_into()
+            .map_err(|_| format!("VA-API surface count {count} exceeds u32"))?;
         check_va_status("vaCreateSurfaces", unsafe {
             libva::vaCreateSurfaces(
                 display.handle,
                 libva::VA_RT_FORMAT_YUV420,
                 resolution.width as u32,
                 resolution.height as u32,
-                &mut surface_id,
-                1,
+                surface_ids.as_mut_ptr(),
+                surface_count,
                 attrs.as_mut_ptr(),
                 attrs.len() as u32,
             )
         })?;
 
-        Ok(VaapiOwnedSurface { display: self.clone(), id: surface_id })
+        Ok(surface_ids
+            .into_iter()
+            .map(|id| VaapiOwnedSurface { display: self.clone(), id })
+            .collect())
     }
 }
 
@@ -538,10 +568,17 @@ mod tests {
             .input_allocator
             .allocate(&graphics_context.device, resolution)
             .expect("failed to allocate VA-owned encoder input frame");
+        let pooled_frames = encoder_display
+            .input_allocator
+            .allocate_pool(&graphics_context.device, resolution, 2)
+            .expect("failed to allocate VA-owned encoder input frame pool");
 
-        assert_eq!(frame.fourcc(), DRM_FORMAT_NV12);
-        assert_eq!(frame.resolution(), resolution);
-        assert_eq!(frame.layers().len(), 1);
-        assert_eq!(frame.layers()[0].planes.len(), 2);
+        assert_eq!(pooled_frames.len(), 2);
+        for frame in std::iter::once(frame).chain(pooled_frames) {
+            assert_eq!(frame.fourcc(), DRM_FORMAT_NV12);
+            assert_eq!(frame.resolution(), resolution);
+            assert_eq!(frame.layers().len(), 1);
+            assert_eq!(frame.layers()[0].planes.len(), 2);
+        }
     }
 }

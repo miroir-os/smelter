@@ -183,6 +183,15 @@ pub trait DmaBufAllocator: Send + Sync {
         device: &wgpu::Device,
         resolution: Resolution,
     ) -> Result<Arc<DmaBufFrame>, String>;
+
+    fn allocate_pool(
+        &self,
+        device: &wgpu::Device,
+        resolution: Resolution,
+        count: usize,
+    ) -> Result<Vec<Arc<DmaBufFrame>>, String> {
+        (0..count).map(|_| self.allocate(device, resolution)).collect()
+    }
 }
 
 #[derive(Clone)]

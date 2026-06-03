@@ -136,14 +136,17 @@ impl Nv12DmaBufOutput {
         resolution: Resolution,
         allocator: Option<Arc<dyn DmaBufAllocator>>,
     ) -> Result<Self, CreateOutputTextureError> {
-        let frames = (0..Self::POOL_SIZE)
-            .map(|_| {
-                let dmabuf = match allocator.as_ref() {
-                    Some(allocator) => allocator
-                        .allocate(&ctx.device, resolution)
-                        .map_err(CreateOutputTextureError::DmaBufAllocation)?,
-                    None => export_nv12_dmabuf_texture(&ctx.device, resolution),
-                };
+        let dmabufs = match allocator.as_ref() {
+            Some(allocator) => allocator
+                .allocate_pool(&ctx.device, resolution, Self::POOL_SIZE)
+                .map_err(CreateOutputTextureError::DmaBufAllocation)?,
+            None => (0..Self::POOL_SIZE)
+                .map(|_| export_nv12_dmabuf_texture(&ctx.device, resolution))
+                .collect(),
+        };
+        let frames = dmabufs
+            .into_iter()
+            .map(|dmabuf| {
                 validate_nv12_dmabuf(&dmabuf, resolution)?;
                 let texture = NV12Texture::from_wgpu_texture(dmabuf.texture_arc())
                     .map_err(|_| CreateOutputTextureError::InvalidDmaBufTexture)?;
