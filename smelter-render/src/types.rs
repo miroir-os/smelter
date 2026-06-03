@@ -49,6 +49,7 @@ pub struct DmaBufFrame {
     objects: Vec<DmaBufObject>,
     layers: Vec<DmaBufLayer>,
     texture: Arc<wgpu::Texture>,
+    _owner: Option<Arc<dyn DmaBufFrameOwner>>,
 }
 
 impl DmaBufFrame {
@@ -60,6 +61,19 @@ impl DmaBufFrame {
         height: u32,
         objects: Vec<DmaBufObject>,
         layers: Vec<DmaBufLayer>,
+    ) -> Self {
+        Self::new_with_owner(texture, fourcc, width, height, objects, layers, None)
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn new_with_owner(
+        texture: Arc<wgpu::Texture>,
+        fourcc: u32,
+        width: u32,
+        height: u32,
+        objects: Vec<DmaBufObject>,
+        layers: Vec<DmaBufLayer>,
+        owner: Option<Arc<dyn DmaBufFrameOwner>>,
     ) -> Self {
         assert!(
             !objects.is_empty() && objects.len() <= 4,
@@ -85,7 +99,7 @@ impl DmaBufFrame {
                 );
             }
         }
-        Self { fourcc, width, height, objects, layers, texture }
+        Self { fourcc, width, height, objects, layers, texture, _owner: owner }
     }
 
     pub(crate) fn texture_arc(&self) -> Arc<wgpu::Texture> {
@@ -156,6 +170,18 @@ pub struct DmaBufPlane {
     pub object_index: usize,
     pub offset: u32,
     pub pitch: u32,
+}
+
+pub trait DmaBufFrameOwner: Send + Sync {}
+
+impl<T: Send + Sync> DmaBufFrameOwner for T {}
+
+pub trait DmaBufAllocator: Send + Sync {
+    fn allocate(
+        &self,
+        device: &wgpu::Device,
+        resolution: Resolution,
+    ) -> Result<Arc<DmaBufFrame>, String>;
 }
 
 #[derive(Clone)]
@@ -285,7 +311,7 @@ impl From<wgpu::Extent3d> for Resolution {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub enum OutputFrameFormat {
     PlanarYuv420Bytes,
     PlanarYuv422Bytes,
@@ -293,4 +319,19 @@ pub enum OutputFrameFormat {
     RgbaWgpuTexture,
     Nv12WgpuTexture,
     Nv12DmaBuf,
+    Nv12DmaBufWithAllocator(Arc<dyn DmaBufAllocator>),
+}
+
+impl fmt::Debug for OutputFrameFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PlanarYuv420Bytes => f.write_str("PlanarYuv420Bytes"),
+            Self::PlanarYuv422Bytes => f.write_str("PlanarYuv422Bytes"),
+            Self::PlanarYuv444Bytes => f.write_str("PlanarYuv444Bytes"),
+            Self::RgbaWgpuTexture => f.write_str("RgbaWgpuTexture"),
+            Self::Nv12WgpuTexture => f.write_str("Nv12WgpuTexture"),
+            Self::Nv12DmaBuf => f.write_str("Nv12DmaBuf"),
+            Self::Nv12DmaBufWithAllocator(_) => f.write_str("Nv12DmaBufWithAllocator"),
+        }
+    }
 }

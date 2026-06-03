@@ -8,18 +8,15 @@ mod imp {
     };
 
     use libva::{
-        Buffer, BufferType, Config, Context, Display, DrmPrimeSurfaceDescriptor,
-        H264PicFields, H264SeqFields, IQMatrix, IQMatrixBufferH264, Picture, PictureH264,
-        PictureParameter, PictureParameterBufferH264, SliceParameter,
-        SliceParameterBufferH264, Surface, UsageHint, VA_FOURCC_NV12, VA_INVALID_ID,
-        VA_PICTURE_H264_INVALID, VA_PICTURE_H264_LONG_TERM_REFERENCE,
-        VA_PICTURE_H264_SHORT_TERM_REFERENCE, VA_RT_FORMAT_YUV420,
-        VA_SLICE_DATA_FLAG_ALL, VAConfigAttrib, VAConfigAttribType, VAEntrypoint,
-        VAProfile,
+        Buffer, BufferType, Config, Context, Display, H264PicFields, H264SeqFields,
+        IQMatrix, IQMatrixBufferH264, Picture, PictureH264, PictureParameter,
+        PictureParameterBufferH264, SliceParameter, SliceParameterBufferH264, Surface,
+        UsageHint, VA_FOURCC_NV12, VA_INVALID_ID, VA_PICTURE_H264_INVALID,
+        VA_PICTURE_H264_LONG_TERM_REFERENCE, VA_PICTURE_H264_SHORT_TERM_REFERENCE,
+        VA_RT_FORMAT_YUV420, VA_SLICE_DATA_FLAG_ALL, VAConfigAttrib, VAConfigAttribType,
+        VAEntrypoint, VAProfile,
     };
-    use smelter_render::{
-        DmaBufFrame, DmaBufLayer, DmaBufObject, DmaBufPlane, Frame, FrameData, Resolution,
-    };
+    use smelter_render::{DmaBufFrame, Frame, FrameData, Resolution};
     use tracing::{debug, info, trace, warn};
     use vk_video::{
         parameters::MissedFrameHandling,
@@ -51,7 +48,7 @@ mod imp {
                 EncodedInputEvent, KeyframeRequestSender, VideoDecoder,
                 VideoDecoderInstance,
             },
-            vaapi::open_display,
+            vaapi::{export_surface_as_frame, open_display},
         },
         prelude::*,
     };
@@ -479,7 +476,7 @@ mod imp {
                     Some(VA_FOURCC_NV12),
                     resolution.width as u32,
                     resolution.height as u32,
-                    Some(UsageHint::USAGE_HINT_DECODER),
+                    Some(UsageHint::USAGE_HINT_DECODER | UsageHint::USAGE_HINT_EXPORT),
                     vec![()],
                 )
                 .map_err(|err| format!("failed to create VA-API decode surface: {err}"))?
@@ -509,10 +506,7 @@ mod imp {
                 return Ok(Arc::clone(dmabuf));
             }
 
-            let descriptor = surface
-                .export_prime()
-                .map_err(|err| format!("failed to export VA surface: {err}"))?;
-            let dmabuf = import_vaapi_frame(&self.device, descriptor)?;
+            let dmabuf = export_surface_as_frame(&self.device, surface)?;
             self.imported_frames.insert(surface.id(), Arc::clone(&dmabuf));
             Ok(dmabuf)
         }
@@ -1049,41 +1043,6 @@ mod imp {
         std::array::from_fn(|_| {
             PictureH264::new(VA_INVALID_ID, 0, VA_PICTURE_H264_INVALID, 0, 0)
         })
-    }
-
-    fn import_vaapi_frame(
-        device: &wgpu::Device,
-        descriptor: DrmPrimeSurfaceDescriptor,
-    ) -> Result<Arc<DmaBufFrame>, String> {
-        let fourcc = descriptor.fourcc;
-        let width = descriptor.width;
-        let height = descriptor.height;
-        let objects = descriptor
-            .objects
-            .into_iter()
-            .map(|object| DmaBufObject {
-                fd: Arc::new(object.fd),
-                size: object.size,
-                modifier: object.drm_format_modifier,
-            })
-            .collect::<Vec<_>>();
-        let layers = descriptor
-            .layers
-            .into_iter()
-            .map(|layer| DmaBufLayer {
-                drm_format: layer.drm_format,
-                planes: (0..layer.num_planes as usize)
-                    .map(|index| DmaBufPlane {
-                        object_index: layer.object_index[index] as usize,
-                        offset: layer.offset[index],
-                        pitch: layer.pitch[index],
-                    })
-                    .collect(),
-            })
-            .collect::<Vec<_>>();
-        smelter_render::import_nv12_dmabuf_texture(
-            device, fourcc, width, height, objects, layers,
-        )
     }
 
     fn duration_micros(duration: Duration) -> u64 {

@@ -24,7 +24,7 @@ mod imp {
                 utils::{bitrate_from_resolution_framerate, gop_size_from_ms_framerate},
             },
             utils::{annexb_to_avcc, build_avc_decoder_config, h264_main_parameter_sets},
-            vaapi::{VaapiDmaBufFrame, open_display},
+            vaapi::{VaapiDmaBufFrame, VaapiEncoderInputAllocator, open_display},
         },
         prelude::*,
     };
@@ -52,6 +52,10 @@ mod imp {
 
             let display =
                 open_display().map_err(EncoderInitError::VaapiH264EncoderUnavailable)?;
+            let input_allocator = Arc::new(
+                VaapiEncoderInputAllocator::new()
+                    .map_err(EncoderInitError::VaapiH264EncoderUnavailable)?,
+            );
             let framerate = ctx.output_framerate;
             let gop_size =
                 gop_size_from_ms_framerate(options.keyframe_interval, framerate)
@@ -93,7 +97,9 @@ mod imp {
                 Self { encoder, bitstream_format: options.bitstream_format },
                 VideoEncoderConfig {
                     resolution: options.resolution,
-                    output_format: OutputFrameFormat::Nv12DmaBuf,
+                    output_format: OutputFrameFormat::Nv12DmaBufWithAllocator(
+                        input_allocator,
+                    ),
                     extradata,
                 },
             ))

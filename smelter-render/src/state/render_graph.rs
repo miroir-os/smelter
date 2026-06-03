@@ -52,7 +52,7 @@ impl RenderGraph {
                 ctx.wgpu_ctx,
                 output.resolution,
                 output_format,
-            ),
+            )?,
         };
 
         scope.pop()?;

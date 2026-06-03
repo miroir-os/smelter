@@ -16,7 +16,11 @@ pub use state::Renderer;
 pub use state::RendererOptions;
 pub use state::RendererSpec;
 #[cfg(target_os = "linux")]
-pub use state::output_texture::{export_nv12_dmabuf_texture, import_nv12_dmabuf_texture};
+pub use state::output_texture::{
+    export_nv12_dmabuf_texture, import_nv12_dmabuf_texture,
+    import_nv12_dmabuf_texture_with_owner,
+    import_renderable_nv12_dmabuf_texture_with_owner,
+};
 
 pub use wgpu::{WgpuFeatures, required_wgpu_features, set_required_wgpu_limits};
 

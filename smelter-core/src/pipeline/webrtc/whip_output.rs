@@ -339,7 +339,7 @@ impl Output for WhipOutput {
     fn video(&self) -> Option<OutputVideo<'_>> {
         self.video.as_ref().map(|video| OutputVideo {
             resolution: video.config.resolution,
-            frame_format: video.config.output_format,
+            frame_format: video.config.output_format.clone(),
             frame_sender: &video.frame_sender,
             keyframe_request_sender: &video.keyframe_request_sender,
         })

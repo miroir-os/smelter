@@ -523,6 +523,9 @@ impl From<&UpdateSceneError> for PipelineErrorInfo {
     fn from(err: &UpdateSceneError) -> Self {
         match err {
             UpdateSceneError::WgpuError(err) => err.into(),
+            UpdateSceneError::OutputTexture(_) => {
+                PipelineErrorInfo::new(OUTPUT_ERROR, ErrorType::ServerError)
+            }
             UpdateSceneError::OutputNotRegistered(_) => {
                 PipelineErrorInfo::new(OUTPUT_STREAM_NOT_FOUND, ErrorType::UserError)
             }

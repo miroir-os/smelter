@@ -38,11 +38,6 @@ fn sps_rbsp(
     bits.bits(0, 8);
     bits.bits(H264_LEVEL_4_0.into(), 8);
     bits.ue(0);
-    bits.ue(1);
-    bits.ue(0);
-    bits.ue(0);
-    bits.bit(false);
-    bits.bit(false);
     bits.ue(LOG2_MAX_FRAME_NUM_MINUS4);
     bits.ue(0);
     bits.ue(LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4);
@@ -198,5 +193,18 @@ mod tests {
         );
         assert!(parameter_sets.starts_with(&[0, 0, 0, 1, 0x67]));
         assert!(parameter_sets.windows(5).any(|window| window == [0, 0, 0, 1, 0x68]));
+    }
+
+    #[test]
+    fn main_profile_sps_matches_1080p_ntsc_timing() {
+        let parameter_sets = h264_main_parameter_sets(
+            Resolution { width: 1920, height: 1080 },
+            Framerate { num: 30_000, den: 1001 },
+        );
+        let expected_sps = [
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x4d, 0x00, 0x28, 0x8d, 0x8d, 0x40, 0x3c, 0x01,
+            0x13, 0xf2, 0xe0, 0x22, 0x00, 0x00, 0x07, 0xd2, 0x00, 0x01, 0xd4, 0xc1, 0x08,
+        ];
+        assert!(parameter_sets.starts_with(&expected_sps));
     }
 }

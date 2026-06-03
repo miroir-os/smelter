@@ -23,7 +23,7 @@ pub(crate) struct PipelineOutput {
     pub audio_end_condition: Option<PipelineOutputEndConditionState>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct OutputVideo<'a> {
     pub resolution: Resolution,
     pub frame_format: OutputFrameFormat,
