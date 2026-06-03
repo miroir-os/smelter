@@ -32,6 +32,7 @@ mod imp {
     const H264_LEVEL_4_0: u8 = 40;
     const LOG2_MAX_FRAME_NUM_MINUS4: u32 = 12;
     const LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4: u32 = 12;
+    const RECONSTRUCTED_SURFACE_ALLOCATION_BATCH: usize = 4;
     const DEFAULT_CODED_BUFFER_SIZE: usize = 1_500_000;
 
     pub struct VaapiH264Encoder {
@@ -445,26 +446,28 @@ mod imp {
         }
 
         fn take_reconstructed_surface(&mut self) -> Result<Surface<()>, String> {
-            match self.free_reconstructed_surfaces.pop() {
-                Some(surface) => Ok(surface),
-                None => self
-                    .display
-                    .create_surfaces(
-                        VA_RT_FORMAT_YUV420,
-                        Some(VA_FOURCC_NV12),
-                        self.resolution.width as u32,
-                        self.resolution.height as u32,
-                        Some(UsageHint::USAGE_HINT_ENCODER),
-                        vec![()],
-                    )
-                    .map_err(|err| {
-                        format!("failed to create VA-API reconstructed surface: {err}")
-                    })?
-                    .pop()
-                    .ok_or_else(|| {
-                        "VA-API returned no reconstructed surface".to_string()
-                    }),
+            if let Some(surface) = self.free_reconstructed_surfaces.pop() {
+                return Ok(surface);
             }
+
+            let mut surfaces = self
+                .display
+                .create_surfaces(
+                    VA_RT_FORMAT_YUV420,
+                    Some(VA_FOURCC_NV12),
+                    self.resolution.width as u32,
+                    self.resolution.height as u32,
+                    Some(UsageHint::USAGE_HINT_ENCODER),
+                    vec![(); RECONSTRUCTED_SURFACE_ALLOCATION_BATCH],
+                )
+                .map_err(|err| {
+                    format!("failed to create VA-API reconstructed surfaces: {err}")
+                })?;
+            let surface = surfaces
+                .pop()
+                .ok_or_else(|| "VA-API returned no reconstructed surface".to_string())?;
+            self.free_reconstructed_surfaces.extend(surfaces);
+            Ok(surface)
         }
 
         fn rotate_reference(&mut self, surface: Surface<()>, encoded_keyframe: bool) {
