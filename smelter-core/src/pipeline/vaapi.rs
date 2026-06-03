@@ -3,6 +3,7 @@ use std::{
     fs::File,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     path::Path,
+    ptr::NonNull,
     rc::Rc,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -22,6 +23,9 @@ const DEFAULT_DRM_RENDER_NODE: &str = "/dev/dri/renderD128";
 const VA_EXPORT_SURFACE_READ_WRITE: u32 = 0x0003;
 const VA_EXPORT_SURFACE_COMPOSED_LAYERS: u32 = 0x0008;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct VaapiDmaBufFrameKey(NonNull<DmaBufFrame>);
+
 #[derive(Debug, Clone)]
 pub(crate) struct VaapiDmaBufFrame(Arc<DmaBufFrame>);
 
@@ -32,8 +36,8 @@ impl VaapiDmaBufFrame {
         Self(frame)
     }
 
-    pub(crate) fn cache_key(frame: &Arc<DmaBufFrame>) -> usize {
-        Arc::as_ptr(frame) as usize
+    pub(crate) fn cache_key(frame: &Arc<DmaBufFrame>) -> VaapiDmaBufFrameKey {
+        VaapiDmaBufFrameKey(NonNull::from(frame.as_ref()))
     }
 
     pub(crate) fn import_surface(

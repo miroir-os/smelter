@@ -24,7 +24,7 @@ mod imp {
                 utils::{bitrate_from_resolution_framerate, gop_size_from_ms_framerate},
             },
             utils::{annexb_to_avcc, build_avc_decoder_config, h264_main_parameter_sets},
-            vaapi::{VaapiDmaBufFrame, open_encoder_display},
+            vaapi::{VaapiDmaBufFrame, VaapiDmaBufFrameKey, open_encoder_display},
         },
         prelude::*,
     };
@@ -150,7 +150,7 @@ mod imp {
         _config: Config,
         context: Rc<Context>,
         display: Rc<Display>,
-        input_surfaces: HashMap<usize, Surface<VaapiDmaBufFrame>>,
+        input_surfaces: HashMap<VaapiDmaBufFrameKey, Surface<VaapiDmaBufFrame>>,
         free_reconstructed_surfaces: Vec<Surface<()>>,
         reference: Option<EncodedReference>,
         resolution: smelter_render::Resolution,
