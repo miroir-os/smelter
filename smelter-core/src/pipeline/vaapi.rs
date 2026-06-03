@@ -4,7 +4,7 @@ use std::{
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     path::Path,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use libva::{
@@ -124,12 +124,12 @@ pub(crate) fn export_surface_as_frame(
 }
 
 pub(crate) struct VaapiEncoderInputAllocator {
-    display: Arc<RawVaapiDisplay>,
+    display: RawVaapiDisplayOwner,
 }
 
 impl VaapiEncoderInputAllocator {
     pub(crate) fn new() -> Result<Self, String> {
-        Ok(Self { display: RawVaapiDisplay::open()? })
+        Ok(Self { display: RawVaapiDisplayOwner::open()? })
     }
 }
 
@@ -148,16 +148,58 @@ impl DmaBufAllocator for VaapiEncoderInputAllocator {
     }
 }
 
+#[derive(Clone)]
+struct RawVaapiDisplayOwner(Arc<Mutex<RawVaapiDisplay>>);
+
+impl RawVaapiDisplayOwner {
+    fn open() -> Result<Self, String> {
+        Ok(Self(Arc::new(Mutex::new(RawVaapiDisplay::open()?))))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, RawVaapiDisplay> {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn create_nv12_encoder_input_surface(
+        &self,
+        resolution: Resolution,
+    ) -> Result<VaapiOwnedSurface, String> {
+        let display = self.lock();
+        let mut attrs = [
+            libva::VASurfaceAttrib::new_usage_hint(
+                UsageHint::USAGE_HINT_ENCODER | UsageHint::USAGE_HINT_EXPORT,
+            ),
+            libva::VASurfaceAttrib::new_pixel_format(libva::VA_FOURCC_NV12),
+        ];
+        let mut surface_id: VASurfaceID = 0;
+        check_va_status("vaCreateSurfaces", unsafe {
+            libva::vaCreateSurfaces(
+                display.handle,
+                libva::VA_RT_FORMAT_YUV420,
+                resolution.width as u32,
+                resolution.height as u32,
+                &mut surface_id,
+                1,
+                attrs.as_mut_ptr(),
+                attrs.len() as u32,
+            )
+        })?;
+
+        Ok(VaapiOwnedSurface { display: self.clone(), id: surface_id })
+    }
+}
+
 struct RawVaapiDisplay {
     handle: libva::VADisplay,
     _drm_file: File,
 }
 
+// Raw VA calls are serialized by RawVaapiDisplayOwner's mutex; the display
+// and DRM fd move together.
 unsafe impl Send for RawVaapiDisplay {}
-unsafe impl Sync for RawVaapiDisplay {}
 
 impl RawVaapiDisplay {
-    fn open() -> Result<Arc<Self>, String> {
+    fn open() -> Result<Self, String> {
         for path in vaapi_drm_paths() {
             match Self::open_drm(&path) {
                 Ok(display) => return Ok(display),
@@ -169,7 +211,7 @@ impl RawVaapiDisplay {
         Err("no usable DRM display found".into())
     }
 
-    fn open_drm(path: impl AsRef<Path>) -> Result<Arc<Self>, String> {
+    fn open_drm(path: impl AsRef<Path>) -> Result<Self, String> {
         let file = File::options()
             .read(true)
             .write(true)
@@ -186,34 +228,7 @@ impl RawVaapiDisplay {
             libva::vaInitialize(display, &mut major, &mut minor)
         })?;
 
-        Ok(Arc::new(Self { handle: display, _drm_file: file }))
-    }
-
-    fn create_nv12_encoder_input_surface(
-        self: &Arc<Self>,
-        resolution: Resolution,
-    ) -> Result<VaapiOwnedSurface, String> {
-        let mut attrs = [
-            libva::VASurfaceAttrib::new_usage_hint(
-                UsageHint::USAGE_HINT_ENCODER | UsageHint::USAGE_HINT_EXPORT,
-            ),
-            libva::VASurfaceAttrib::new_pixel_format(libva::VA_FOURCC_NV12),
-        ];
-        let mut surface_id: VASurfaceID = 0;
-        check_va_status("vaCreateSurfaces", unsafe {
-            libva::vaCreateSurfaces(
-                self.handle,
-                libva::VA_RT_FORMAT_YUV420,
-                resolution.width as u32,
-                resolution.height as u32,
-                &mut surface_id,
-                1,
-                attrs.as_mut_ptr(),
-                attrs.len() as u32,
-            )
-        })?;
-
-        Ok(VaapiOwnedSurface { display: Arc::clone(self), id: surface_id })
+        Ok(Self { handle: display, _drm_file: file })
     }
 }
 
@@ -226,16 +241,17 @@ impl Drop for RawVaapiDisplay {
 }
 
 struct VaapiOwnedSurface {
-    display: Arc<RawVaapiDisplay>,
+    display: RawVaapiDisplayOwner,
     id: VASurfaceID,
 }
 
 impl VaapiOwnedSurface {
     fn export_for_write(&self) -> Result<libva::VADRMPRIMESurfaceDescriptor, String> {
+        let display = self.display.lock();
         let mut descriptor = libva::VADRMPRIMESurfaceDescriptor::default();
         check_va_status("vaExportSurfaceHandle", unsafe {
             libva::vaExportSurfaceHandle(
-                self.display.handle,
+                display.handle,
                 self.id,
                 libva::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
                 VA_EXPORT_SURFACE_READ_WRITE | VA_EXPORT_SURFACE_COMPOSED_LAYERS,
@@ -248,8 +264,9 @@ impl VaapiOwnedSurface {
 
 impl Drop for VaapiOwnedSurface {
     fn drop(&mut self) {
+        let display = self.display.lock();
         unsafe {
-            libva::vaDestroySurfaces(self.display.handle, &mut self.id, 1);
+            libva::vaDestroySurfaces(display.handle, &mut self.id, 1);
         }
     }
 }
