@@ -190,7 +190,7 @@ mod imp {
                 )
                 .map_err(|err| format!("failed to create VA-API H264 config: {err}"))?;
             let context = display
-                .create_context::<VaapiDmaBufFrame>(
+                .create_context::<()>(
                     &config,
                     resolution.width as u32,
                     resolution.height as u32,
