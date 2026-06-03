@@ -24,7 +24,7 @@ mod imp {
                 utils::{bitrate_from_resolution_framerate, gop_size_from_ms_framerate},
             },
             utils::{annexb_to_avcc, build_avc_decoder_config, h264_main_parameter_sets},
-            vaapi::{VaapiDmaBufFrame, VaapiEncoderInputAllocator, open_display},
+            vaapi::{VaapiDmaBufFrame, open_encoder_display},
         },
         prelude::*,
     };
@@ -50,12 +50,11 @@ mod imp {
         ) -> Result<(Self, VideoEncoderConfig), EncoderInitError> {
             info!("Initializing VA-API H264 encoder");
 
-            let display =
-                open_display().map_err(EncoderInitError::VaapiH264EncoderUnavailable)?;
-            let input_allocator = Arc::new(
-                VaapiEncoderInputAllocator::new()
-                    .map_err(EncoderInitError::VaapiH264EncoderUnavailable)?,
-            );
+            let encoder_display = open_encoder_display()
+                .map_err(EncoderInitError::VaapiH264EncoderUnavailable)?;
+            let display = encoder_display.display;
+            let input_allocator = encoder_display.input_allocator;
+            let input_allocator = Arc::new(input_allocator);
             let framerate = ctx.output_framerate;
             let gop_size =
                 gop_size_from_ms_framerate(options.keyframe_interval, framerate)

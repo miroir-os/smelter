@@ -111,7 +111,38 @@ pub(crate) fn open_display() -> Result<Rc<Display>, String> {
             }
         }
     }
-    Err(format!("no usable DRM display found in {}", paths.join(", ")))
+    Err(no_usable_drm_display_error(&paths))
+}
+
+pub(crate) struct VaapiEncoderDisplay {
+    pub(crate) display: Rc<Display>,
+    pub(crate) input_allocator: VaapiEncoderInputAllocator,
+}
+
+pub(crate) fn open_encoder_display() -> Result<VaapiEncoderDisplay, String> {
+    let paths = vaapi_drm_paths();
+    for path in &paths {
+        let display = match Display::open_drm_display(path) {
+            Ok(display) => display,
+            Err(err) => {
+                tracing::error!("Failed to open VA-API DRM display {path}: {err}");
+                continue;
+            }
+        };
+        let raw_display = match RawVaapiDisplay::open_drm(path) {
+            Ok(display) => display,
+            Err(err) => {
+                tracing::error!("Failed to open raw VA-API DRM display {path}: {err}");
+                continue;
+            }
+        };
+
+        return Ok(VaapiEncoderDisplay {
+            display,
+            input_allocator: VaapiEncoderInputAllocator::from_raw_display(raw_display),
+        });
+    }
+    Err(no_usable_drm_display_error(&paths))
 }
 
 pub(crate) fn export_surface_as_frame(
@@ -132,6 +163,10 @@ pub(crate) struct VaapiEncoderInputAllocator {
 impl VaapiEncoderInputAllocator {
     pub(crate) fn new() -> Result<Self, String> {
         Ok(Self { display: RawVaapiDisplayOwner::open()? })
+    }
+
+    fn from_raw_display(display: RawVaapiDisplay) -> Self {
+        Self { display: RawVaapiDisplayOwner::new(display) }
     }
 }
 
@@ -154,8 +189,12 @@ impl DmaBufAllocator for VaapiEncoderInputAllocator {
 struct RawVaapiDisplayOwner(Arc<Mutex<RawVaapiDisplay>>);
 
 impl RawVaapiDisplayOwner {
+    fn new(display: RawVaapiDisplay) -> Self {
+        Self(Arc::new(Mutex::new(display)))
+    }
+
     fn open() -> Result<Self, String> {
-        Ok(Self(Arc::new(Mutex::new(RawVaapiDisplay::open()?))))
+        Ok(Self::new(RawVaapiDisplay::open()?))
     }
 
     fn lock(&self) -> MutexGuard<'_, RawVaapiDisplay> {
@@ -211,7 +250,7 @@ impl RawVaapiDisplay {
                 }
             }
         }
-        Err(format!("no usable DRM display found in {}", paths.join(", ")))
+        Err(no_usable_drm_display_error(&paths))
     }
 
     fn open_drm(path: impl AsRef<Path>) -> Result<Self, String> {
@@ -445,6 +484,10 @@ fn push_unique_drm_path(paths: &mut Vec<String>, path: String) {
     if !path.is_empty() && !paths.iter().any(|existing| existing == &path) {
         paths.push(path);
     }
+}
+
+fn no_usable_drm_display_error(paths: &[String]) -> String {
+    format!("no usable DRM display found in {}", paths.join(", "))
 }
 
 fn checked_va_array_count(name: &str, count: u32) -> Result<usize, String> {
