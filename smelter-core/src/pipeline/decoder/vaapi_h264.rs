@@ -82,8 +82,20 @@ mod imp {
             keyframe_request_sender: Option<KeyframeRequestSender>,
         ) -> Result<Self, DecoderInitError> {
             info!("Initializing VA-API H264 decoder");
-            let display =
-                open_display().map_err(DecoderInitError::VaapiH264DecoderUnavailable)?;
+            Self::new_with_device(
+                Arc::clone(&ctx.graphics_context.device),
+                keyframe_request_sender,
+            )
+            .map_err(DecoderInitError::VaapiH264DecoderUnavailable)
+        }
+    }
+
+    impl VaapiH264Decoder {
+        fn new_with_device(
+            device: Arc<wgpu::Device>,
+            keyframe_request_sender: Option<KeyframeRequestSender>,
+        ) -> Result<Self, String> {
+            let display = open_display()?;
             Ok(Self {
                 display,
                 session: None,
@@ -95,7 +107,7 @@ mod imp {
                 imported_frames: HashMap::new(),
                 sps: HashMap::new(),
                 pps: HashMap::new(),
-                device: Arc::clone(&ctx.graphics_context.device),
+                device,
                 keyframe_request_sender,
                 drop_frames: false,
             })
@@ -1076,6 +1088,112 @@ mod imp {
 
     fn duration_micros(duration: Duration) -> u64 {
         duration.as_micros().try_into().unwrap_or(u64::MAX)
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    mod tests {
+        use std::{
+            fs,
+            process::Command,
+            time::{Duration, SystemTime, UNIX_EPOCH},
+        };
+
+        use bytes::Bytes;
+
+        use super::*;
+        use crate::graphics_context::{GraphicsContext, GraphicsContextOptions};
+
+        const TEST_WIDTH: usize = 64;
+        const TEST_HEIGHT: usize = 64;
+        const TEST_FRAME_COUNT: usize = 4;
+
+        #[test]
+        #[ignore = "requires ffmpeg and a VA-API capable Linux host"]
+        fn decodes_ffmpeg_annexb_stream_to_nv12_dmabuf_frames() {
+            let stream = generated_h264_stream();
+            let graphics_context = GraphicsContext::new(GraphicsContextOptions {
+                force_gpu: true,
+                ..Default::default()
+            })
+            .expect("failed to create WGPU graphics context");
+            let mut decoder =
+                VaapiH264Decoder::new_with_device(graphics_context.device, None)
+                    .expect("failed to create VA-API H264 decoder");
+
+            let mut frames =
+                decoder.decode(EncodedInputEvent::Chunk(EncodedInputChunk {
+                    data: Bytes::from(stream),
+                    pts: Duration::ZERO,
+                    dts: None,
+                    kind: MediaKind::Video(VideoCodec::H264),
+                    present: true,
+                }));
+            frames.extend(decoder.decode(EncodedInputEvent::AuDelimiter));
+            frames.extend(decoder.flush());
+
+            assert_eq!(frames.len(), TEST_FRAME_COUNT);
+            for frame in frames {
+                assert_eq!(
+                    frame.resolution,
+                    Resolution { width: TEST_WIDTH, height: TEST_HEIGHT }
+                );
+                let FrameData::Nv12DmaBuf(frame) = frame.data else {
+                    panic!("expected NV12 DMA-BUF frame");
+                };
+                assert_eq!(frame.fourcc(), u32::from_le_bytes(*b"NV12"));
+                assert_eq!(
+                    frame.resolution(),
+                    Resolution { width: TEST_WIDTH, height: TEST_HEIGHT }
+                );
+                assert_eq!(frame.layers().len(), 1);
+                assert_eq!(frame.layers()[0].planes.len(), 2);
+            }
+        }
+
+        fn generated_h264_stream() -> Vec<u8> {
+            let dir = std::env::temp_dir().join(format!(
+                "smelter-vaapi-h264-{}",
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            ));
+            fs::create_dir(&dir).expect("failed to create temp dir");
+            let output = dir.join("stream.h264");
+            let input = format!("testsrc2=size={TEST_WIDTH}x{TEST_HEIGHT}:rate=5");
+            let frame_count = TEST_FRAME_COUNT.to_string();
+            let status = Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &input,
+                    "-frames:v",
+                    &frame_count,
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-preset",
+                    "ultrafast",
+                    "-tune",
+                    "zerolatency",
+                    "-g",
+                    &frame_count,
+                    "-bf",
+                    "0",
+                    "-f",
+                    "h264",
+                ])
+                .arg(&output)
+                .status()
+                .expect("failed to execute ffmpeg");
+            assert!(status.success(), "ffmpeg failed with status {status}");
+
+            let stream = fs::read(&output).expect("failed to read generated stream");
+            fs::remove_dir_all(&dir).ok();
+            stream
+        }
     }
 }
 
