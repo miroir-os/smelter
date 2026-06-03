@@ -188,10 +188,10 @@ mod imp {
                     }
                     DecoderInstruction::Idr { decode_info, reference_id } => {
                         self.retain_references();
-                        self.decode_picture(&decode_info, reference_id)
+                        self.decode_picture(decode_info, reference_id)
                     }
                     DecoderInstruction::Decode { decode_info, reference_id } => {
-                        self.decode_picture(&decode_info, reference_id)
+                        self.decode_picture(decode_info, reference_id)
                     }
                     DecoderInstruction::Drop { reference_ids } => {
                         for reference_id in reference_ids {
@@ -229,7 +229,7 @@ mod imp {
 
         fn decode_picture(
             &mut self,
-            decode_info: &DecodeInformation,
+            decode_info: DecodeInformation,
             reference_id: ReferenceId,
         ) -> Result<Option<Frame>, String> {
             let session = self
@@ -239,23 +239,24 @@ mod imp {
             let context = Rc::clone(&session.context);
             let coded_resolution = session.coded_resolution;
             let display_resolution = session.display_resolution;
-            let sps = self
-                .sps
-                .get(&decode_info.sps_id)
-                .ok_or_else(|| format!("unknown SPS id {}", decode_info.sps_id))?
-                .clone();
-            let pps = self
-                .pps
-                .get(&decode_info.pps_id)
-                .ok_or_else(|| format!("unknown PPS id {}", decode_info.pps_id))?
-                .clone();
+            let sps_id = decode_info.sps_id;
+            let pps_id = decode_info.pps_id;
+            if !self.sps.contains_key(&sps_id) {
+                return Err(format!("unknown SPS id {sps_id}"));
+            }
+            if !self.pps.contains_key(&pps_id) {
+                return Err(format!("unknown PPS id {pps_id}"));
+            }
             validate_progressive(&decode_info.header)?;
+            let pts = decode_info.pts;
+            let decoded_picture = DecodedPictureInfo::from_decode_info(&decode_info);
 
             let surface = self.take_surface(coded_resolution)?;
+            let sps = self.sps.get(&sps_id).expect("SPS existence checked");
+            let pps = self.pps.get(&pps_id).expect("PPS existence checked");
             let buffers =
-                self.create_buffers(&context, &surface, decode_info, &sps, &pps)?;
-            let mut picture =
-                Picture::new(decode_info.pts.unwrap_or_default(), context, surface);
+                self.create_buffers(&context, &surface, decode_info, sps, pps)?;
+            let mut picture = Picture::new(pts.unwrap_or_default(), context, surface);
             for buffer in buffers {
                 picture.add_buffer(buffer);
             }
@@ -274,16 +275,11 @@ mod imp {
                 .map_err(|_| "VA-API picture kept a shared output surface".to_string())?;
 
             let frame = (!self.drop_frames)
-                .then(|| {
-                    self.frame_from_surface(&surface, display_resolution, decode_info.pts)
-                })
+                .then(|| self.frame_from_surface(&surface, display_resolution, pts))
                 .transpose()?;
             self.references.insert(
                 reference_id,
-                DecodedReference {
-                    surface,
-                    picture: DecodedPictureInfo::from_decode_info(decode_info),
-                },
+                DecodedReference { surface, picture: decoded_picture },
             );
             Ok(frame)
         }
@@ -292,15 +288,18 @@ mod imp {
             &self,
             context: &Rc<Context>,
             surface: &Surface<()>,
-            decode_info: &DecodeInformation,
+            decode_info: DecodeInformation,
             sps: &SeqParameterSet,
             pps: &PicParameterSet,
         ) -> Result<Vec<Buffer>, String> {
+            let picture_parameter =
+                self.picture_parameter(surface.id(), &decode_info, sps, pps)?;
+            let slice_parameter = self.slice_parameter(&decode_info, sps, pps)?;
             [
-                self.picture_parameter(surface.id(), decode_info, sps, pps)?,
+                picture_parameter,
                 iq_matrix_parameter(sps, pps),
-                self.slice_parameter(decode_info, sps, pps)?,
-                BufferType::SliceData(decode_info.slice_data.clone()),
+                slice_parameter,
+                BufferType::SliceData(decode_info.slice_data),
             ]
             .into_iter()
             .map(|buffer| {
