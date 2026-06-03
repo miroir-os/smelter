@@ -20,8 +20,6 @@ use smelter_render::{
 
 pub(crate) const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
 const DEFAULT_DRM_RENDER_NODE: &str = "/dev/dri/renderD128";
-const VA_EXPORT_SURFACE_READ_WRITE: u32 = 0x0003;
-const VA_EXPORT_SURFACE_COMPOSED_LAYERS: u32 = 0x0008;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct VaapiDmaBufFrameKey(NonNull<DmaBufFrame>);
@@ -309,7 +307,8 @@ impl VaapiOwnedSurface {
                 display.handle,
                 self.id,
                 libva::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
-                VA_EXPORT_SURFACE_READ_WRITE | VA_EXPORT_SURFACE_COMPOSED_LAYERS,
+                libva::VA_EXPORT_SURFACE_READ_WRITE
+                    | libva::VA_EXPORT_SURFACE_COMPOSED_LAYERS,
                 &mut descriptor as *mut _ as *mut c_void,
             )
         })?;
