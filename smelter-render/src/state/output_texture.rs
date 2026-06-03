@@ -46,6 +46,9 @@ pub enum CreateOutputTextureError {
     )]
     InvalidDmaBufResolution { actual: Resolution, expected: Resolution },
 
+    #[error("NV12 DMA-BUF allocator returned {actual} frames, expected {expected}")]
+    InvalidDmaBufPoolSize { actual: usize, expected: usize },
+
     #[error("NV12 DMA-BUF allocator returned a non-NV12 wgpu texture")]
     InvalidDmaBufTexture,
 }
@@ -144,6 +147,12 @@ impl Nv12DmaBufOutput {
                 .map(|_| export_nv12_dmabuf_texture(&ctx.device, resolution))
                 .collect(),
         };
+        if dmabufs.len() != Self::POOL_SIZE {
+            return Err(CreateOutputTextureError::InvalidDmaBufPoolSize {
+                actual: dmabufs.len(),
+                expected: Self::POOL_SIZE,
+            });
+        }
         let frames = dmabufs
             .into_iter()
             .map(|dmabuf| {
