@@ -55,7 +55,7 @@ impl NalReceiver {
                     Err(H264ParserError::GapsInFrameNumNotSupported)
                 } else {
                     self.parser_ctx.put_seq_param_set(parsed.clone());
-                    Ok(ParsedNalu::Sps(parsed.clone()))
+                    Ok(ParsedNalu::Sps(parsed))
                 }
             }
 
@@ -68,7 +68,7 @@ impl NalReceiver {
 
                 self.parser_ctx.put_pic_param_set(parsed.clone());
 
-                Ok(ParsedNalu::Pps(parsed.clone()))
+                Ok(ParsedNalu::Pps(parsed))
             }
 
             h264_reader::nal::UnitType::SliceLayerWithoutPartitioningNonIdr
@@ -86,15 +86,12 @@ impl NalReceiver {
 
                 let mut nal_bytes = Vec::new();
                 nal.reader().read_to_end(&mut nal_bytes).unwrap();
-                let mut rbsp_bytes = vec![0, 0, 0, 1];
-                rbsp_bytes.extend_from_slice(&nal_bytes);
                 let slice = Slice {
                     nal_header: nal.header().unwrap(),
                     header,
                     header_bit_size,
                     pps_id: pps.pic_parameter_set_id,
                     nal_bytes,
-                    rbsp_bytes,
                     sps: sps.clone(),
                     pps: pps.clone(),
                 };
@@ -169,8 +166,6 @@ pub struct Slice {
     #[derivative(Debug = "ignore")]
     pub nal_bytes: Vec<u8>,
     #[derivative(Debug = "ignore")]
-    pub rbsp_bytes: Vec<u8>,
-    #[derivative(Debug = "ignore")]
     pub sps: h264_reader::nal::sps::SeqParameterSet,
     #[derivative(Debug = "ignore")]
     pub pps: h264_reader::nal::pps::PicParameterSet,
@@ -193,25 +188,15 @@ impl<R> CountingBitReader<R> {
 
 impl<R: BitRead> BitRead for CountingBitReader<R> {
     fn read_ue(&mut self, name: &'static str) -> Result<u32, BitReaderError> {
-        let mut zero_count = 0;
-        while !self.read_bool(name)? {
-            zero_count += 1;
-            if zero_count > 31 {
-                return Err(BitReaderError::ExpGolombTooLarge(name));
-            }
-        }
-
-        if zero_count == 0 {
-            return Ok(0);
-        }
-
-        let suffix = self.read::<u32>(zero_count, name)?;
-        Ok((1 << zero_count) - 1 + suffix)
+        let value = self.inner.read_ue(name)?;
+        self.bits_read += exp_golomb_bit_len(value.into());
+        Ok(value)
     }
 
     fn read_se(&mut self, name: &'static str) -> Result<i32, BitReaderError> {
-        let value = self.read_ue(name)?;
-        Ok(if value & 1 == 0 { -((value / 2) as i32) } else { value.div_ceil(2) as i32 })
+        let value = self.inner.read_se(name)?;
+        self.bits_read += exp_golomb_bit_len(signed_exp_golomb_code_num(value));
+        Ok(value)
     }
 
     fn read_bool(&mut self, name: &'static str) -> Result<bool, BitReaderError> {
@@ -253,4 +238,13 @@ impl<R: BitRead> BitRead for CountingBitReader<R> {
     fn finish_sei_payload(self) -> Result<(), BitReaderError> {
         self.inner.finish_sei_payload()
     }
+}
+
+fn exp_golomb_bit_len(code_num: u64) -> u32 {
+    2 * (code_num + 1).ilog2() + 1
+}
+
+fn signed_exp_golomb_code_num(value: i32) -> u64 {
+    let magnitude = value.unsigned_abs() as u64;
+    if value > 0 { 2 * magnitude - 1 } else { 2 * magnitude }
 }

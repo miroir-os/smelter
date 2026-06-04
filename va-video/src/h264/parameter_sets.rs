@@ -2,27 +2,26 @@ use bytes::Bytes;
 use smelter_render::{Framerate, Resolution};
 
 const H264_PROFILE_MAIN: u8 = 77;
-const H264_LEVEL_4_0: u8 = 40;
-const LOG2_MAX_FRAME_NUM_MINUS4: u32 = 12;
-const LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4: u32 = 12;
+pub const H264_LEVEL_4_0: u8 = 40;
+pub const LOG2_MAX_FRAME_NUM_MINUS4: u32 = 12;
+pub const LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4: u32 = 12;
+const PPS_NAL: &[u8] = &[0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80];
 
-pub(crate) fn h264_main_parameter_sets(
-    resolution: Resolution,
-    framerate: Framerate,
-) -> Bytes {
-    let coded_width = align_to_macroblock(resolution.width as u32);
-    let coded_height = align_to_macroblock(resolution.height as u32);
+pub fn main_parameter_sets(resolution: Resolution, framerate: Framerate) -> Bytes {
+    let coded_width = (resolution.width as u32).next_multiple_of(16);
+    let coded_height = (resolution.height as u32).next_multiple_of(16);
     let width_mbs = coded_width / 16;
     let height_mbs = coded_height / 16;
     let crop_right = (coded_width - resolution.width as u32) / 2;
     let crop_bottom = (coded_height - resolution.height as u32) / 2;
 
     let mut out = Vec::new();
-    out.extend_from_slice(&annexb_nal(
+    append_annexb_nal(
+        &mut out,
         0x67,
         sps_rbsp(width_mbs, height_mbs, crop_right, crop_bottom, framerate),
-    ));
-    out.extend_from_slice(&annexb_nal(0x68, pps_rbsp()));
+    );
+    out.extend_from_slice(PPS_NAL);
     out.into()
 }
 
@@ -55,11 +54,6 @@ fn sps_rbsp(
         bits.ue(crop_bottom);
     }
     bits.bit(true);
-    write_vui(&mut bits, framerate);
-    bits.finish_rbsp()
-}
-
-fn write_vui(bits: &mut BitWriter, framerate: Framerate) {
     bits.bit(true);
     bits.bits(1, 8);
     bits.bit(false);
@@ -73,50 +67,7 @@ fn write_vui(bits: &mut BitWriter, framerate: Framerate) {
     bits.bit(false);
     bits.bit(false);
     bits.bit(false);
-}
-
-fn pps_rbsp() -> Vec<u8> {
-    let mut bits = BitWriter::new();
-    bits.ue(0);
-    bits.ue(0);
-    bits.bit(false);
-    bits.bit(false);
-    bits.ue(0);
-    bits.ue(0);
-    bits.ue(0);
-    bits.bit(false);
-    bits.bits(0, 2);
-    bits.se(0);
-    bits.se(0);
-    bits.se(0);
-    bits.bit(true);
-    bits.bit(false);
-    bits.bit(false);
     bits.finish_rbsp()
-}
-
-fn annexb_nal(header: u8, rbsp: Vec<u8>) -> Vec<u8> {
-    let mut out = vec![0, 0, 0, 1, header];
-    out.extend_from_slice(&escape_rbsp(&rbsp));
-    out
-}
-
-fn escape_rbsp(rbsp: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(rbsp.len());
-    let mut zero_count = 0;
-    for &byte in rbsp {
-        if zero_count >= 2 && byte <= 3 {
-            out.push(3);
-            zero_count = 0;
-        }
-        out.push(byte);
-        zero_count = if byte == 0 { zero_count + 1 } else { 0 };
-    }
-    out
-}
-
-fn align_to_macroblock(value: u32) -> u32 {
-    value.next_multiple_of(16)
 }
 
 struct BitWriter {
@@ -155,11 +106,6 @@ impl BitWriter {
         self.bits(code, bits as u8);
     }
 
-    fn se(&mut self, value: i32) {
-        let code = if value <= 0 { (-value as u32) * 2 } else { value as u32 * 2 - 1 };
-        self.ue(code);
-    }
-
     fn finish_rbsp(mut self) -> Vec<u8> {
         self.bit(true);
         while self.used != 0 {
@@ -169,15 +115,28 @@ impl BitWriter {
     }
 }
 
+fn append_annexb_nal(out: &mut Vec<u8>, header: u8, rbsp: Vec<u8>) {
+    out.extend_from_slice(&[0, 0, 0, 1, header]);
+    let mut zero_count = 0;
+    for byte in rbsp {
+        if zero_count >= 2 && byte <= 3 {
+            out.push(3);
+            zero_count = 0;
+        }
+        out.push(byte);
+        zero_count = if byte == 0 { zero_count + 1 } else { 0 };
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::pipeline::utils::build_avc_decoder_config;
+    use bytes::{BufMut, BytesMut};
 
     use super::*;
 
     #[test]
     fn parameter_sets_build_avc_config() {
-        let parameter_sets = h264_main_parameter_sets(
+        let parameter_sets = main_parameter_sets(
             Resolution { width: 1920, height: 1080 },
             Framerate { num: 30, den: 1 },
         );
@@ -187,7 +146,7 @@ mod tests {
 
     #[test]
     fn parameter_sets_use_annexb_start_codes() {
-        let parameter_sets = h264_main_parameter_sets(
+        let parameter_sets = main_parameter_sets(
             Resolution { width: 1280, height: 720 },
             Framerate { num: 60, den: 1 },
         );
@@ -197,7 +156,7 @@ mod tests {
 
     #[test]
     fn main_profile_sps_matches_1080p_ntsc_timing() {
-        let parameter_sets = h264_main_parameter_sets(
+        let parameter_sets = main_parameter_sets(
             Resolution { width: 1920, height: 1080 },
             Framerate { num: 30_000, den: 1001 },
         );
@@ -206,5 +165,54 @@ mod tests {
             0x13, 0xf2, 0xe0, 0x22, 0x00, 0x00, 0x07, 0xd2, 0x00, 0x01, 0xd4, 0xc1, 0x08,
         ];
         assert!(parameter_sets.starts_with(&expected_sps));
+    }
+
+    fn build_avc_decoder_config(data: &[u8]) -> Option<bytes::Bytes> {
+        let nalus = split_annexb_nalus(data);
+        let sps = nalus
+            .iter()
+            .find(|nalu| nalu.first().is_some_and(|byte| byte & 0x1f == 7))?;
+        let pps = nalus
+            .iter()
+            .find(|nalu| nalu.first().is_some_and(|byte| byte & 0x1f == 8))?;
+        let mut config = BytesMut::new();
+        config.put_u8(1);
+        config.extend_from_slice(&sps[1..4]);
+        config.put_u8(0xff);
+        config.put_u8(0xe1);
+        config.put_u16(sps.len() as u16);
+        config.extend_from_slice(sps);
+        config.put_u8(1);
+        config.put_u16(pps.len() as u16);
+        config.extend_from_slice(pps);
+        Some(config.freeze())
+    }
+
+    fn split_annexb_nalus(data: &[u8]) -> Vec<&[u8]> {
+        let mut nalus = Vec::new();
+        let mut start = None;
+        let mut i = 0;
+        while i + 3 <= data.len() {
+            let start_code_len = if data[i..].starts_with(&[0, 0, 1]) {
+                Some(3)
+            } else if data[i..].starts_with(&[0, 0, 0, 1]) {
+                Some(4)
+            } else {
+                None
+            };
+            if let Some(len) = start_code_len {
+                if let Some(nalu_start) = start {
+                    nalus.push(&data[nalu_start..i]);
+                }
+                start = Some(i + len);
+                i += len;
+            } else {
+                i += 1;
+            }
+        }
+        if let Some(nalu_start) = start {
+            nalus.push(&data[nalu_start..]);
+        }
+        nalus
     }
 }

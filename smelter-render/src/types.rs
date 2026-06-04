@@ -6,6 +6,8 @@ use std::{
     time::Duration,
 };
 
+pub const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RenderingMode {
     // - Leverage multiple views per texture
@@ -49,23 +51,10 @@ pub struct DmaBufFrame {
     objects: Vec<DmaBufObject>,
     layers: Vec<DmaBufLayer>,
     texture: Arc<wgpu::Texture>,
-    // Keeps external surface memory alive for imported DMA-BUF frames.
-    _owner: Option<Arc<dyn DmaBufFrameOwner>>,
+    _owner: Option<Arc<dyn Send + Sync>>,
 }
 
 impl DmaBufFrame {
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub(crate) fn new(
-        texture: Arc<wgpu::Texture>,
-        fourcc: u32,
-        width: u32,
-        height: u32,
-        objects: Vec<DmaBufObject>,
-        layers: Vec<DmaBufLayer>,
-    ) -> Self {
-        Self::new_with_owner(texture, fourcc, width, height, objects, layers, None)
-    }
-
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn new_with_owner(
         texture: Arc<wgpu::Texture>,
@@ -74,7 +63,7 @@ impl DmaBufFrame {
         height: u32,
         objects: Vec<DmaBufObject>,
         layers: Vec<DmaBufLayer>,
-        owner: Option<Arc<dyn DmaBufFrameOwner>>,
+        owner: Option<Arc<dyn Send + Sync>>,
     ) -> Self {
         assert!(
             !objects.is_empty() && objects.len() <= 4,
@@ -105,6 +94,10 @@ impl DmaBufFrame {
 
     pub(crate) fn texture_arc(&self) -> Arc<wgpu::Texture> {
         Arc::clone(&self.texture)
+    }
+
+    pub fn texture(&self) -> &wgpu::Texture {
+        &self.texture
     }
 
     pub fn fourcc(&self) -> u32 {
@@ -171,27 +164,6 @@ pub struct DmaBufPlane {
     pub object_index: usize,
     pub offset: u32,
     pub pitch: u32,
-}
-
-pub trait DmaBufFrameOwner: Send + Sync {}
-
-impl<T: Send + Sync> DmaBufFrameOwner for T {}
-
-pub trait DmaBufAllocator: Send + Sync {
-    fn allocate(
-        &self,
-        device: &wgpu::Device,
-        resolution: Resolution,
-    ) -> Result<Arc<DmaBufFrame>, String>;
-
-    fn allocate_pool(
-        &self,
-        device: &wgpu::Device,
-        resolution: Resolution,
-        count: usize,
-    ) -> Result<Vec<Arc<DmaBufFrame>>, String> {
-        (0..count).map(|_| self.allocate(device, resolution)).collect()
-    }
 }
 
 #[derive(Clone)]
@@ -329,7 +301,6 @@ pub enum OutputFrameFormat {
     RgbaWgpuTexture,
     Nv12WgpuTexture,
     Nv12DmaBuf,
-    Nv12DmaBufWithAllocator(Arc<dyn DmaBufAllocator>),
 }
 
 impl fmt::Debug for OutputFrameFormat {
@@ -341,7 +312,6 @@ impl fmt::Debug for OutputFrameFormat {
             Self::RgbaWgpuTexture => f.write_str("RgbaWgpuTexture"),
             Self::Nv12WgpuTexture => f.write_str("Nv12WgpuTexture"),
             Self::Nv12DmaBuf => f.write_str("Nv12DmaBuf"),
-            Self::Nv12DmaBufWithAllocator(_) => f.write_str("Nv12DmaBufWithAllocator"),
         }
     }
 }

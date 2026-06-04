@@ -1,0 +1,21 @@
+[package]
+name = "va-video"
+version = "0.1.0"
+edition = "2024"
+license-file = "../LICENSE"
+description = "VA-API video coding helpers with wgpu DMA-BUF integration."
+
+[dependencies]
+bytes = { workspace = true }
+libva = { package = "cros-libva", version = "0.0.12" }
+smelter-render = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+vk-video = { workspace = true }
+wgpu = { workspace = true }
+
+[dev-dependencies]
+pollster = { workspace = true }
+
+[lints]
+workspace = true

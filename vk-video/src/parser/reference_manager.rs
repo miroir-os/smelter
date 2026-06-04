@@ -34,7 +34,7 @@ pub enum ReferenceManagementError {
 }
 
 #[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ReferenceId(pub usize);
+pub struct ReferenceId(usize);
 
 #[derive(Debug, Clone, Copy)]
 enum BFrameReferenceListKind {
@@ -130,7 +130,7 @@ impl ReferenceContext {
 
     pub(crate) fn put_picture(
         &mut self,
-        mut slices: Vec<(Slice, Option<u64>)>,
+        slices: Vec<(Slice, Option<u64>)>,
     ) -> Result<Vec<DecoderInstruction>, ReferenceManagementError> {
         let header = slices.last().unwrap().0.header.clone();
         let sps = slices.last().unwrap().0.sps.clone();
@@ -147,24 +147,23 @@ impl ReferenceContext {
             self.verify_frame_num(&sps, &header)?;
         }
 
-        // maybe this should be done in a different place, but if you think about it, there's not
-        // really that many places to put this code in
         let mut rbsp_bytes = Vec::new();
         let mut slice_indices = Vec::new();
         let mut slice_data = Vec::new();
         let mut slice_data_indices = Vec::new();
         let mut slice_headers = Vec::new();
         let mut slice_header_bit_sizes = Vec::new();
-        for (slice, _) in &mut slices {
-            if slice.rbsp_bytes.is_empty() {
+        for (mut slice, _) in slices {
+            if slice.nal_bytes.is_empty() {
                 continue;
             }
             slice_indices.push(rbsp_bytes.len());
             slice_data_indices.push(slice_data.len());
-            slice_headers.push(slice.header.clone());
+            slice_headers.push(slice.header);
             slice_header_bit_sizes.push(slice.header_bit_size);
+            rbsp_bytes.extend_from_slice(&[0, 0, 0, 1]);
+            rbsp_bytes.extend_from_slice(&slice.nal_bytes);
             slice_data.append(&mut slice.nal_bytes);
-            rbsp_bytes.append(&mut slice.rbsp_bytes);
         }
 
         let decode_info = self.decode_information_for_frame(
@@ -180,7 +179,7 @@ impl ReferenceContext {
             pts,
         )?;
 
-        let decoder_instructions = match &header.clone().dec_ref_pic_marking {
+        let decoder_instructions = match header.dec_ref_pic_marking.as_ref() {
             Some(DecRefPicMarking::Idr { long_term_reference_flag, .. }) => self
                 .reference_picture_marking_process_idr(
                     header.clone(),
@@ -529,6 +528,7 @@ impl ReferenceContext {
                             &header,
                             &mut reference_list_l0,
                             ref_pic_list_modification_l0,
+                            num_ref_idx_l0_active as usize,
                         )?;
                     }
 
@@ -569,13 +569,15 @@ impl ReferenceContext {
                             &header,
                             &mut reference_list_l0,
                             ref_pic_list_modification_l0,
+                            num_ref_idx_l0_active as usize,
                         )?;
 
                         self.modify_reference_picture_list(
                             sps,
                             &header,
                             &mut reference_list_l1,
-                            ref_pic_list_modification_l1
+                            ref_pic_list_modification_l1,
+                            num_ref_idx_l1_active as usize,
                         )?;
                     }
 
@@ -902,6 +904,7 @@ impl ReferenceContext {
         header: &SliceHeader,
         reference_list: &mut Vec<ReferencePictureInfo>,
         ref_pic_list_modifications: &[ModificationOfPicNums],
+        num_ref_idx_active: usize,
     ) -> Result<(), ReferenceManagementError> {
         // 0 is Subtract, 1 is Add, 2 is LongTermRef
         let mut refIdxLX = 0;
@@ -917,6 +920,7 @@ impl ReferenceContext {
                         ref_pic_list_modification,
                         &mut refIdxLX,
                         &mut picNumLXPred,
+                        num_ref_idx_active,
                     )?;
                 }
 
@@ -925,6 +929,7 @@ impl ReferenceContext {
                         reference_list,
                         *long_term_pic_num,
                         &mut refIdxLX,
+                        num_ref_idx_active,
                     )?;
                 }
             }
@@ -939,6 +944,7 @@ impl ReferenceContext {
         reference_list: &mut Vec<ReferencePictureInfo>,
         picture_to_shift: u32,
         refIdxLX: &mut usize,
+        num_ref_idx_active: usize,
     ) -> Result<(), ReferenceManagementError> {
         let shifted_picture_idx = reference_list
             .iter()
@@ -958,9 +964,15 @@ impl ReferenceContext {
             ));
         }
 
-        let shifted_picture = reference_list.remove(shifted_picture_idx);
-        reference_list.insert(*refIdxLX, shifted_picture);
-        *refIdxLX += 1;
+        let LongTermPicNum = reference_list[shifted_picture_idx].LongTermPicNum;
+        let shifted_picture = reference_list[shifted_picture_idx];
+        insert_modified_reference(
+            reference_list,
+            shifted_picture,
+            refIdxLX,
+            num_ref_idx_active,
+            |picture| picture.LongTermPicNum != LongTermPicNum,
+        )?;
 
         Ok(())
     }
@@ -974,6 +986,7 @@ impl ReferenceContext {
         ref_pic_list_modification: &ModificationOfPicNums,
         refIdxLX: &mut usize,
         picNumLXPred: &mut i64,
+        num_ref_idx_active: usize,
     ) -> Result<(), ReferenceManagementError> {
         let picNumLXNoWrap = match *ref_pic_list_modification {
             ModificationOfPicNums::Subtract(abs_diff_pic_num_minus_1) => {
@@ -1003,7 +1016,7 @@ impl ReferenceContext {
             picNumLXNoWrap
         };
 
-        let mut shifted_picture_idx = reference_list
+        let shifted_picture_idx = reference_list
             .iter()
             .enumerate()
             .find(|(_, picture_info)| decode_picture_numbers_for_short_term_ref(picture_info.FrameNum.into(), header.frame_num.into(), sps).PicNum == picNumLX)
@@ -1025,19 +1038,61 @@ impl ReferenceContext {
         }
 
         let shifted_picture_info = reference_list[shifted_picture_idx];
-        if *refIdxLX <= reference_list.len() {
-            reference_list.insert(*refIdxLX, shifted_picture_info);
-            shifted_picture_idx = if *refIdxLX <= shifted_picture_idx {
-                shifted_picture_idx + 1
-            } else {
-                shifted_picture_idx
-            };
-        }
-        *refIdxLX += 1;
-        reference_list.remove(shifted_picture_idx);
+        insert_modified_reference(
+            reference_list,
+            shifted_picture_info,
+            refIdxLX,
+            num_ref_idx_active,
+            |picture| {
+                decode_picture_numbers_for_short_term_ref(
+                    picture.FrameNum.into(),
+                    header.frame_num.into(),
+                    sps,
+                )
+                .PicNum
+                    != picNumLX
+            },
+        )?;
 
         Ok(())
     }
+}
+
+#[allow(non_snake_case)]
+fn insert_modified_reference(
+    reference_list: &mut Vec<ReferencePictureInfo>,
+    reference: ReferencePictureInfo,
+    refIdxLX: &mut usize,
+    num_ref_idx_active: usize,
+    mut keep_after_insert: impl FnMut(ReferencePictureInfo) -> bool,
+) -> Result<(), ReferenceManagementError> {
+    if *refIdxLX > reference_list.len() {
+        return Err(ReferenceManagementError::IncorrectData(format!(
+            "reference list modification index {} is outside reference list length {}",
+            *refIdxLX,
+            reference_list.len()
+        )));
+    }
+
+    reference_list.insert(*refIdxLX, reference);
+    *refIdxLX += 1;
+
+    let mut write_idx = *refIdxLX;
+    for read_idx in *refIdxLX..=num_ref_idx_active {
+        if read_idx == reference_list.len() {
+            break;
+        }
+        let reference = reference_list[read_idx];
+        if keep_after_insert(reference) {
+            reference_list[write_idx] = reference;
+            write_idx += 1;
+        }
+    }
+
+    while reference_list.len() > num_ref_idx_active {
+        reference_list.pop();
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1178,6 +1233,101 @@ pub struct ReferencePictureInfo {
 impl ReferencePictureInfo {
     pub fn is_long_term(&self) -> bool {
         self.LongTermPicNum.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use h264_reader::nal::{
+        slice::{FieldPic, SliceExclusive, SliceFamily, SliceType},
+        sps::{
+            ChromaInfo, ConstraintFlags, FrameMbsFlags, PicOrderCntType, ProfileIdc,
+            SeqParamSetId, SeqParameterSet,
+        },
+    };
+
+    use super::*;
+
+    #[test]
+    fn repeated_reference_list_modifications_preserve_active_duplicates() {
+        let mut reference_list = vec![
+            long_term_reference(0, 0),
+            long_term_reference(1, 1),
+            long_term_reference(2, 2),
+        ];
+
+        ReferenceContext::default()
+            .modify_reference_picture_list(
+                &sps(),
+                &slice_header(),
+                &mut reference_list,
+                &[
+                    ModificationOfPicNums::LongTermRef(1),
+                    ModificationOfPicNums::LongTermRef(1),
+                ],
+                3,
+            )
+            .unwrap();
+
+        let reference_ids =
+            reference_list.iter().map(|picture| picture.id.0).collect::<Vec<_>>();
+        assert_eq!(reference_ids, [1, 1, 0]);
+    }
+
+    fn long_term_reference(id: usize, long_term_pic_num: u64) -> ReferencePictureInfo {
+        ReferencePictureInfo {
+            id: ReferenceId(id),
+            LongTermPicNum: Some(long_term_pic_num),
+            non_existing: false,
+            FrameNum: id as u16,
+            PicOrderCnt: [id as i32; 2],
+        }
+    }
+
+    fn sps() -> SeqParameterSet {
+        SeqParameterSet {
+            profile_idc: ProfileIdc::from(100),
+            constraint_flags: ConstraintFlags::from(0),
+            level_idc: 40,
+            seq_parameter_set_id: SeqParamSetId::from_u32(0).unwrap(),
+            chroma_info: ChromaInfo::default(),
+            log2_max_frame_num_minus4: 0,
+            pic_order_cnt: PicOrderCntType::TypeTwo,
+            max_num_ref_frames: 3,
+            gaps_in_frame_num_value_allowed_flag: false,
+            pic_width_in_mbs_minus1: 1,
+            pic_height_in_map_units_minus1: 1,
+            frame_mbs_flags: FrameMbsFlags::Frames,
+            direct_8x8_inference_flag: true,
+            frame_cropping: None,
+            vui_parameters: None,
+        }
+    }
+
+    fn slice_header() -> SliceHeader {
+        SliceHeader {
+            first_mb_in_slice: 0,
+            slice_type: SliceType {
+                family: SliceFamily::P,
+                exclusive: SliceExclusive::NonExclusive,
+            },
+            colour_plane: None,
+            frame_num: 0,
+            field_pic: FieldPic::Frame,
+            idr_pic_id: None,
+            pic_order_cnt_lsb: None,
+            redundant_pic_cnt: None,
+            direct_spatial_mv_pred_flag: None,
+            num_ref_idx_active: None,
+            ref_pic_list_modification: None,
+            pred_weight_table: None,
+            dec_ref_pic_marking: None,
+            cabac_init_idc: None,
+            slice_qp_delta: 0,
+            sp_for_switch_flag: None,
+            slice_qs: None,
+            disable_deblocking_filter_idc: 0,
+        }
     }
 }
 

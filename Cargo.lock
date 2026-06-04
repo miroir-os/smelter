@@ -4988,7 +4988,6 @@ dependencies = [
  "audioadapter-buffers",
  "axum",
  "bytes",
- "cros-libva",
  "crossbeam-channel",
  "decklink",
  "fdk-aac-sys",
@@ -5017,6 +5016,7 @@ dependencies = [
  "utoipa",
  "uuid",
  "v4l",
+ "va-video",
  "vk-video",
  "webrtc",
  "webrtc-util",
@@ -6163,6 +6163,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6779878362b9bacadc7893eac76abe69612e8837ef746573c4a5239daf11990b"
 dependencies = [
  "bindgen 0.65.1",
+]
+
+[[package]]
+name = "va-video"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cros-libva",
+ "pollster",
+ "smelter-render",
+ "thiserror 1.0.69",
+ "tracing",
+ "vk-video",
+ "wgpu",
 ]
 
 [[package]]

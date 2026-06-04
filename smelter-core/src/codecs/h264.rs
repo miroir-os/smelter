@@ -49,6 +49,7 @@ pub struct VaapiH264EncoderOptions {
     pub resolution: Resolution,
     pub bitrate: Option<VaapiH264EncoderRateControl>,
     pub keyframe_interval: Duration,
+    pub preset: VaapiH264EncoderPreset,
     pub bitstream_format: H264BitstreamFormat,
 }
 
@@ -66,6 +67,11 @@ pub enum VaapiH264EncoderRateControl {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VulkanH264EncoderPreset {
     HighQuality,
+    LowLatency,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VaapiH264EncoderPreset {
     LowLatency,
 }
 

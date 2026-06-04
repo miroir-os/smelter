@@ -4,8 +4,6 @@ mod audio_buffer;
 mod h264_annexb_to_avcc;
 mod h264_au_splitter;
 mod h264_avcc_to_annexb;
-#[cfg(any(feature = "vaapi", test))]
-mod h264_parameter_sets;
 mod initializable_thread;
 mod shutdown_condition;
 
@@ -13,7 +11,5 @@ pub(crate) use audio_buffer::AudioSamplesBuffer;
 pub(super) use h264_annexb_to_avcc::{annexb_to_avcc, build_avc_decoder_config};
 pub(super) use h264_au_splitter::H264AuSplitter;
 pub(super) use h264_avcc_to_annexb::{H264AvcDecoderConfig, H264AvccToAnnexB};
-#[cfg(feature = "vaapi")]
-pub(super) use h264_parameter_sets::h264_main_parameter_sets;
 pub(super) use initializable_thread::{InitializableThread, ThreadMetadata};
 pub(super) use shutdown_condition::ShutdownCondition;

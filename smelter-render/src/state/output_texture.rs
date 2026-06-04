@@ -15,8 +15,7 @@ use wgpu::{Buffer, BufferAsyncError};
 #[cfg(target_os = "linux")]
 use crate::DmaBufPlane;
 use crate::{
-    DmaBufAllocator, DmaBufFrame, DmaBufFrameOwner, DmaBufLayer, DmaBufObject,
-    OutputFrameFormat, Resolution,
+    DRM_FORMAT_NV12, DmaBufFrame, OutputFrameFormat, Resolution,
     wgpu::{
         WgpuCtx,
         texture::{
@@ -25,6 +24,8 @@ use crate::{
         },
     },
 };
+#[cfg(target_os = "linux")]
+use crate::{DmaBufLayer, DmaBufObject};
 
 pub enum OutputTexture {
     PlanarYuvTextures(Box<PlanarYuvOutput>),
@@ -35,21 +36,13 @@ pub enum OutputTexture {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CreateOutputTextureError {
-    #[error("Failed to allocate NV12 DMA-BUF output frame: {0}")]
-    DmaBufAllocation(String),
-
-    #[error("NV12 DMA-BUF allocator returned fourcc {0}, expected NV12")]
+    #[error("NV12 DMA-BUF output frame has fourcc {0}, expected NV12")]
     InvalidDmaBufFourcc(u32),
 
-    #[error(
-        "NV12 DMA-BUF allocator returned resolution {actual:?}, expected {expected:?}"
-    )]
+    #[error("NV12 DMA-BUF output frame has resolution {actual:?}, expected {expected:?}")]
     InvalidDmaBufResolution { actual: Resolution, expected: Resolution },
 
-    #[error("NV12 DMA-BUF allocator returned {actual} frames, expected {expected}")]
-    InvalidDmaBufPoolSize { actual: usize, expected: usize },
-
-    #[error("NV12 DMA-BUF allocator returned a non-NV12 wgpu texture")]
+    #[error("NV12 DMA-BUF output frame has a non-NV12 wgpu texture")]
     InvalidDmaBufTexture,
 }
 
@@ -59,40 +52,17 @@ impl OutputTexture {
         resolution: Resolution,
         format: OutputFrameFormat,
     ) -> Result<Self, CreateOutputTextureError> {
+        let planar_yuv = |variant| {
+            warn!(?resolution, "creating planar YUV output texture with CPU readback");
+            Ok(Self::PlanarYuvTextures(Box::new(PlanarYuvOutput::new(
+                ctx, resolution, variant,
+            ))))
+        };
+
         match format {
-            OutputFrameFormat::PlanarYuv420Bytes => {
-                warn!(
-                    ?resolution,
-                    "creating planar YUV output texture with CPU readback"
-                );
-                Ok(Self::PlanarYuvTextures(Box::new(PlanarYuvOutput::new(
-                    ctx,
-                    resolution,
-                    PlanarYuvVariant::YUV420,
-                ))))
-            }
-            OutputFrameFormat::PlanarYuv422Bytes => {
-                warn!(
-                    ?resolution,
-                    "creating planar YUV output texture with CPU readback"
-                );
-                Ok(Self::PlanarYuvTextures(Box::new(PlanarYuvOutput::new(
-                    ctx,
-                    resolution,
-                    PlanarYuvVariant::YUV422,
-                ))))
-            }
-            OutputFrameFormat::PlanarYuv444Bytes => {
-                warn!(
-                    ?resolution,
-                    "creating planar YUV output texture with CPU readback"
-                );
-                Ok(Self::PlanarYuvTextures(Box::new(PlanarYuvOutput::new(
-                    ctx,
-                    resolution,
-                    PlanarYuvVariant::YUV444,
-                ))))
-            }
+            OutputFrameFormat::PlanarYuv420Bytes => planar_yuv(PlanarYuvVariant::YUV420),
+            OutputFrameFormat::PlanarYuv422Bytes => planar_yuv(PlanarYuvVariant::YUV422),
+            OutputFrameFormat::PlanarYuv444Bytes => planar_yuv(PlanarYuvVariant::YUV444),
             OutputFrameFormat::RgbaWgpuTexture => {
                 Ok(Self::Rgba8UnormWgpuTexture { resolution })
             }
@@ -101,26 +71,14 @@ impl OutputTexture {
             }
             OutputFrameFormat::Nv12DmaBuf => {
                 info!(?resolution, "creating zero-copy NV12 DMA-BUF output texture");
-                Ok(Self::Nv12DmaBuf(Box::new(Nv12DmaBufOutput::new(
-                    ctx, resolution, None,
-                )?)))
-            }
-            OutputFrameFormat::Nv12DmaBufWithAllocator(allocator) => {
-                info!(
-                    ?resolution,
-                    "creating zero-copy NV12 DMA-BUF output texture from custom allocator"
-                );
-                Ok(Self::Nv12DmaBuf(Box::new(Nv12DmaBufOutput::new(
-                    ctx,
-                    resolution,
-                    Some(allocator),
-                )?)))
+                Ok(Self::Nv12DmaBuf(Box::new(Nv12DmaBufOutput::new(ctx, resolution)?)))
             }
         }
     }
 }
 
 pub struct Nv12DmaBufOutput {
+    device: Arc<wgpu::Device>,
     frames: Vec<PooledNv12DmaBufFrame>,
     next_index: usize,
     resolution: Resolution,
@@ -137,22 +95,10 @@ impl Nv12DmaBufOutput {
     fn new(
         ctx: &WgpuCtx,
         resolution: Resolution,
-        allocator: Option<Arc<dyn DmaBufAllocator>>,
     ) -> Result<Self, CreateOutputTextureError> {
-        let dmabufs = match allocator.as_ref() {
-            Some(allocator) => allocator
-                .allocate_pool(&ctx.device, resolution, Self::POOL_SIZE)
-                .map_err(CreateOutputTextureError::DmaBufAllocation)?,
-            None => (0..Self::POOL_SIZE)
-                .map(|_| export_nv12_dmabuf_texture(&ctx.device, resolution))
-                .collect(),
-        };
-        if dmabufs.len() != Self::POOL_SIZE {
-            return Err(CreateOutputTextureError::InvalidDmaBufPoolSize {
-                actual: dmabufs.len(),
-                expected: Self::POOL_SIZE,
-            });
-        }
+        let dmabufs = (0..Self::POOL_SIZE)
+            .map(|_| export_nv12_dmabuf_texture(&ctx.device, resolution))
+            .collect::<Vec<_>>();
         let frames = dmabufs
             .into_iter()
             .map(|dmabuf| {
@@ -162,7 +108,7 @@ impl Nv12DmaBufOutput {
                 Ok(PooledNv12DmaBufFrame { dmabuf, texture })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { frames, next_index: 0, resolution })
+        Ok(Self { device: Arc::clone(&ctx.device), frames, next_index: 0, resolution })
     }
 
     pub fn resolution(&self) -> Resolution {
@@ -170,10 +116,36 @@ impl Nv12DmaBufOutput {
     }
 
     pub fn next_frame(&mut self) -> (&NV12Texture, Arc<DmaBufFrame>) {
-        let index = self.next_index;
-        self.next_index = (self.next_index + 1) % self.frames.len();
+        let index = self.next_available_frame_index();
         let frame = &self.frames[index];
         (&frame.texture, Arc::clone(&frame.dmabuf))
+    }
+
+    fn next_available_frame_index(&mut self) -> usize {
+        for _ in 0..self.frames.len() {
+            let index = self.next_index;
+            self.next_index = (self.next_index + 1) % self.frames.len();
+            if Arc::strong_count(&self.frames[index].dmabuf) == 1 {
+                return index;
+            }
+        }
+
+        self.grow_pool();
+        self.frames.len() - 1
+    }
+
+    fn grow_pool(&mut self) {
+        let dmabuf = export_nv12_dmabuf_texture(&self.device, self.resolution);
+        validate_nv12_dmabuf(&dmabuf, self.resolution)
+            .expect("exported NV12 DMA-BUF output frame is invalid");
+        let texture = NV12Texture::from_wgpu_texture(dmabuf.texture_arc())
+            .expect("exported NV12 DMA-BUF output frame has invalid wgpu texture");
+        self.frames.push(PooledNv12DmaBufFrame { dmabuf, texture });
+        warn!(
+            pool_size = self.frames.len(),
+            resolution = ?self.resolution,
+            "grew zero-copy NV12 DMA-BUF output pool because every frame is still in flight"
+        );
     }
 }
 
@@ -181,8 +153,6 @@ fn validate_nv12_dmabuf(
     dmabuf: &DmaBufFrame,
     expected: Resolution,
 ) -> Result<(), CreateOutputTextureError> {
-    const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
-
     if dmabuf.fourcc() != DRM_FORMAT_NV12 {
         return Err(CreateOutputTextureError::InvalidDmaBufFourcc(dmabuf.fourcc()));
     }
@@ -200,8 +170,6 @@ pub fn export_nv12_dmabuf_texture(
     wgpu_device: &wgpu::Device,
     resolution: Resolution,
 ) -> Arc<DmaBufFrame> {
-    const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
-
     unsafe {
         let hal_device_guard = wgpu_device
             .as_hal::<VkApi>()
@@ -289,7 +257,7 @@ pub fn export_nv12_dmabuf_texture(
             true,
         ));
 
-        Arc::new(DmaBufFrame::new(
+        Arc::new(DmaBufFrame::new_with_owner(
             texture,
             DRM_FORMAT_NV12,
             resolution.width as u32,
@@ -329,6 +297,7 @@ pub fn export_nv12_dmabuf_texture(
                     },
                 ],
             }],
+            None,
         ))
     }
 }
@@ -341,98 +310,9 @@ pub fn import_nv12_dmabuf_texture(
     height: u32,
     objects: Vec<DmaBufObject>,
     layers: Vec<DmaBufLayer>,
-) -> Result<Arc<DmaBufFrame>, String> {
-    import_nv12_dmabuf_texture_with_owner(
-        wgpu_device,
-        fourcc,
-        width,
-        height,
-        objects,
-        layers,
-        None,
-    )
-}
-
-#[cfg(target_os = "linux")]
-pub fn import_nv12_dmabuf_texture_with_owner(
-    wgpu_device: &wgpu::Device,
-    fourcc: u32,
-    width: u32,
-    height: u32,
-    objects: Vec<DmaBufObject>,
-    layers: Vec<DmaBufLayer>,
-    owner: Option<Arc<dyn DmaBufFrameOwner>>,
-) -> Result<Arc<DmaBufFrame>, String> {
-    import_nv12_dmabuf_texture_inner(
-        wgpu_device,
-        fourcc,
-        width,
-        height,
-        objects,
-        layers,
-        owner,
-        Nv12DmaBufImportUsage::Sampled,
-    )
-}
-
-#[cfg(target_os = "linux")]
-pub fn import_renderable_nv12_dmabuf_texture_with_owner(
-    wgpu_device: &wgpu::Device,
-    fourcc: u32,
-    width: u32,
-    height: u32,
-    objects: Vec<DmaBufObject>,
-    layers: Vec<DmaBufLayer>,
-    owner: Option<Arc<dyn DmaBufFrameOwner>>,
-) -> Result<Arc<DmaBufFrame>, String> {
-    import_nv12_dmabuf_texture_inner(
-        wgpu_device,
-        fourcc,
-        width,
-        height,
-        objects,
-        layers,
-        owner,
-        Nv12DmaBufImportUsage::RenderAttachment,
-    )
-}
-
-#[cfg(target_os = "linux")]
-#[derive(Clone, Copy)]
-enum Nv12DmaBufImportUsage {
-    Sampled,
-    RenderAttachment,
-}
-
-#[cfg(target_os = "linux")]
-impl Nv12DmaBufImportUsage {
-    fn image_usage(self) -> vk::ImageUsageFlags {
-        let usage = vk::ImageUsageFlags::SAMPLED
-            | vk::ImageUsageFlags::TRANSFER_DST
-            | vk::ImageUsageFlags::TRANSFER_SRC;
-        match self {
-            Self::Sampled => usage,
-            Self::RenderAttachment => usage | vk::ImageUsageFlags::COLOR_ATTACHMENT,
-        }
-    }
-
-    fn render_attachment(self) -> bool {
-        matches!(self, Self::RenderAttachment)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn import_nv12_dmabuf_texture_inner(
-    wgpu_device: &wgpu::Device,
-    fourcc: u32,
-    width: u32,
-    height: u32,
-    objects: Vec<DmaBufObject>,
-    layers: Vec<DmaBufLayer>,
-    owner: Option<Arc<dyn DmaBufFrameOwner>>,
+    owner: Option<Arc<dyn Send + Sync>>,
     import_usage: Nv12DmaBufImportUsage,
 ) -> Result<Arc<DmaBufFrame>, String> {
-    const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
     if fourcc != DRM_FORMAT_NV12 {
         return Err(format!("expected NV12 DMA-BUF, got fourcc {fourcc}"));
     }
@@ -541,45 +421,28 @@ fn import_nv12_dmabuf_texture_inner(
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-#[allow(dead_code)]
-pub fn import_nv12_dmabuf_texture(
-    _device: &wgpu::Device,
-    _fourcc: u32,
-    _width: u32,
-    _height: u32,
-    _objects: Vec<DmaBufObject>,
-    _layers: Vec<DmaBufLayer>,
-) -> Result<Arc<DmaBufFrame>, String> {
-    unreachable!("NV12 DMA-BUF import is only available on Linux")
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+pub enum Nv12DmaBufImportUsage {
+    Sampled,
+    RenderAttachment,
 }
 
-#[cfg(not(target_os = "linux"))]
-#[allow(dead_code)]
-pub fn import_nv12_dmabuf_texture_with_owner(
-    _device: &wgpu::Device,
-    _fourcc: u32,
-    _width: u32,
-    _height: u32,
-    _objects: Vec<DmaBufObject>,
-    _layers: Vec<DmaBufLayer>,
-    _owner: Option<Arc<dyn DmaBufFrameOwner>>,
-) -> Result<Arc<DmaBufFrame>, String> {
-    unreachable!("NV12 DMA-BUF import is only available on Linux")
-}
+#[cfg(target_os = "linux")]
+impl Nv12DmaBufImportUsage {
+    fn image_usage(self) -> vk::ImageUsageFlags {
+        let usage = vk::ImageUsageFlags::SAMPLED
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::TRANSFER_SRC;
+        match self {
+            Self::Sampled => usage,
+            Self::RenderAttachment => usage | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+        }
+    }
 
-#[cfg(not(target_os = "linux"))]
-#[allow(dead_code)]
-pub fn import_renderable_nv12_dmabuf_texture_with_owner(
-    _device: &wgpu::Device,
-    _fourcc: u32,
-    _width: u32,
-    _height: u32,
-    _objects: Vec<DmaBufObject>,
-    _layers: Vec<DmaBufLayer>,
-    _owner: Option<Arc<dyn DmaBufFrameOwner>>,
-) -> Result<Arc<DmaBufFrame>, String> {
-    unreachable!("NV12 DMA-BUF import is only available on Linux")
+    fn render_attachment(self) -> bool {
+        matches!(self, Self::RenderAttachment)
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
