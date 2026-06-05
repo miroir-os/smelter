@@ -7,7 +7,8 @@ description = "VA-API video coding helpers with wgpu DMA-BUF integration."
 
 [dependencies]
 bytes = { workspace = true }
-libva = { package = "cros-libva", version = "0.0.12" }
+crossbeam-channel = { workspace = true }
+libva = { package = "cros-libva", git = "https://github.com/michael-dm/cros-libva", branch = "export-prime-options" }
 smelter-render = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

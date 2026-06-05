@@ -1072,9 +1072,8 @@ dependencies = [
 
 [[package]]
 name = "cros-libva"
-version = "0.0.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "902c9726e953b678595456bd38f95f31aaf1947c56dd9f4a2290f3f1eca4d228"
+version = "0.0.13"
+source = "git+https://github.com/michael-dm/cros-libva?branch=export-prime-options#24c9e2993dcf2eb97762db586821c6e602e71fc2"
 dependencies = [
  "bindgen 0.70.1",
  "bitflags 2.11.0",
@@ -6171,6 +6170,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "cros-libva",
+ "crossbeam-channel",
  "pollster",
  "smelter-render",
  "thiserror 1.0.69",

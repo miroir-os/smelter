@@ -46,10 +46,14 @@ mod imp {
             };
 
             let max_pending_frames = match options.preset {
+                VaapiH264EncoderPreset::HighQuality => 8,
                 VaapiH264EncoderPreset::LowLatency => 1,
             };
 
             let encoder = H264Encoder::new(H264EncoderConfig {
+                device: Arc::clone(&ctx.graphics_context.device),
+                queue: Arc::clone(&ctx.graphics_context.queue),
+                adapter_info: Some(ctx.graphics_context.adapter.get_info()),
                 resolution: options.resolution,
                 bitrate,
                 gop_size,

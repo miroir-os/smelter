@@ -26,8 +26,12 @@ mod imp {
             keyframe_request_sender: Option<KeyframeRequestSender>,
         ) -> Result<Self, DecoderInitError> {
             info!("Initializing VA-API H264 decoder");
-            let decoder = H264Decoder::new(Arc::clone(&ctx.graphics_context.device))
-                .map_err(DecoderInitError::VaapiH264DecoderUnavailable)?;
+            let adapter_info = ctx.graphics_context.adapter.get_info();
+            let decoder = H264Decoder::new(
+                Arc::clone(&ctx.graphics_context.device),
+                Some(&adapter_info),
+            )
+            .map_err(DecoderInitError::VaapiH264DecoderUnavailable)?;
             Ok(Self { decoder, keyframe_request_sender })
         }
     }

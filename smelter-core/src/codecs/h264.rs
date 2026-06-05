@@ -72,6 +72,7 @@ pub enum VulkanH264EncoderPreset {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VaapiH264EncoderPreset {
+    HighQuality,
     LowLatency,
 }
 

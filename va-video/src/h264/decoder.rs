@@ -1,11 +1,13 @@
 mod imp {
     use std::{
-        collections::{HashMap, VecDeque},
+        cmp::Ordering,
+        collections::{BinaryHeap, HashMap, HashSet},
         rc::Rc,
         sync::Arc,
         time::Duration,
     };
 
+    use crossbeam_channel::{Receiver, Sender};
     use libva::{
         BufferType, Config, Context, Display, H264PicFields, H264SeqFields, IQMatrix,
         IQMatrixBufferH264, Picture, PictureH264, PictureNew, PictureParameter,
@@ -42,11 +44,11 @@ mod imp {
     };
 
     use crate::display::{
-        export_surface_as_frame, invalid_h264_pictures, open_display, take_nv12_surface,
+        export_surface_as_frame_with_owner, invalid_h264_pictures, open_display,
+        take_nv12_surface,
     };
 
     const DECODE_SURFACE_ALLOCATION_BATCH: usize = 4;
-    const RETAINED_SURFACE_COUNT: usize = 64;
 
     pub struct H264Decoder {
         display: Rc<Display>,
@@ -55,8 +57,11 @@ mod imp {
         reference_ctx: ReferenceContext,
         references: Vec<(ReferenceId, DecodedReference)>,
         free_surfaces: Vec<Surface<()>>,
-        retained_surfaces: VecDeque<Surface<()>>,
-        imported_frames: HashMap<libva::VASurfaceID, Arc<DmaBufFrame>>,
+        waiting_output_surfaces: HashMap<libva::VASurfaceID, RetiredSurface>,
+        output_leased_surfaces: HashSet<libva::VASurfaceID>,
+        output_release_sender: Sender<libva::VASurfaceID>,
+        output_release_receiver: Receiver<libva::VASurfaceID>,
+        frame_sorter: DecodedFrameSorter,
         sps: HashMap<u8, SeqParameterSet>,
         pps: HashMap<u8, PicParameterSet>,
         device: Arc<wgpu::Device>,
@@ -69,10 +74,99 @@ mod imp {
         pub resolution: Resolution,
     }
 
+    struct DecodedOutputFrame {
+        frame: DecodedFrame,
+        pic_order_cnt: i32,
+        max_num_reorder_frames: u64,
+        is_idr: bool,
+    }
+
+    impl PartialEq for DecodedOutputFrame {
+        fn eq(&self, other: &Self) -> bool {
+            self.pic_order_cnt == other.pic_order_cnt
+        }
+    }
+
+    impl Eq for DecodedOutputFrame {}
+
+    impl PartialOrd for DecodedOutputFrame {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for DecodedOutputFrame {
+        fn cmp(&self, other: &Self) -> Ordering {
+            self.pic_order_cnt.cmp(&other.pic_order_cnt).reverse()
+        }
+    }
+
+    struct DecodedFrameSorter {
+        frames: BinaryHeap<DecodedOutputFrame>,
+    }
+
+    impl DecodedFrameSorter {
+        fn new() -> Self {
+            Self { frames: BinaryHeap::new() }
+        }
+
+        fn put(&mut self, frame: DecodedOutputFrame) -> Vec<DecodedFrame> {
+            let max_num_reorder_frames = frame.max_num_reorder_frames as usize;
+            let mut frames = Vec::new();
+
+            if frame.is_idr {
+                frames.extend(self.flush());
+                frames.push(frame.frame);
+            } else {
+                self.frames.push(frame);
+                while self.frames.len() > max_num_reorder_frames {
+                    let frame =
+                        self.frames.pop().expect("frame sorter heap cannot be empty");
+                    frames.push(frame.frame);
+                }
+            }
+
+            frames
+        }
+
+        fn flush(&mut self) -> Vec<DecodedFrame> {
+            let mut frames = Vec::with_capacity(self.frames.len());
+            while let Some(frame) = self.frames.pop() {
+                frames.push(frame.frame);
+            }
+            frames
+        }
+
+        fn clear(&mut self) {
+            self.frames.clear();
+        }
+    }
+
+    struct DecodedSurfaceLease {
+        surface_id: libva::VASurfaceID,
+        release_sender: Sender<libva::VASurfaceID>,
+    }
+
+    impl Drop for DecodedSurfaceLease {
+        fn drop(&mut self) {
+            self.release_sender.send(self.surface_id).ok();
+        }
+    }
+
+    struct RetiredSurface {
+        surface: Surface<()>,
+        reusable: bool,
+    }
+
     impl H264Decoder {
-        pub fn new(device: Arc<wgpu::Device>) -> Result<Self, String> {
+        pub fn new(
+            device: Arc<wgpu::Device>,
+            adapter_info: Option<&wgpu::AdapterInfo>,
+        ) -> Result<Self, String> {
             info!("Initializing VA-API H264 decoder");
-            let display = open_display()?;
+            let display = open_display(adapter_info)?;
+            let (output_release_sender, output_release_receiver) =
+                crossbeam_channel::unbounded();
             Ok(Self {
                 display,
                 session: None,
@@ -80,8 +174,11 @@ mod imp {
                 reference_ctx: ReferenceContext::new(MissedFrameHandling::Strict),
                 references: Vec::new(),
                 free_surfaces: Vec::new(),
-                retained_surfaces: VecDeque::with_capacity(RETAINED_SURFACE_COUNT),
-                imported_frames: HashMap::new(),
+                waiting_output_surfaces: HashMap::new(),
+                output_leased_surfaces: HashSet::new(),
+                output_release_sender,
+                output_release_receiver,
+                frame_sorter: DecodedFrameSorter::new(),
                 sps: HashMap::new(),
                 pps: HashMap::new(),
                 device,
@@ -96,6 +193,10 @@ mod imp {
             present: bool,
         ) -> Result<Vec<DecodedFrame>, String> {
             self.drop_frames = !present;
+            if !present {
+                self.frame_sorter.clear();
+                self.drain_released_output_surfaces();
+            }
             let instructions = self.parse_h264(data, pts)?;
             self.process_instructions(instructions)
         }
@@ -106,10 +207,14 @@ mod imp {
         }
 
         pub fn flush(&mut self) -> Result<Vec<DecodedFrame>, String> {
-            self.flush_frame()
+            let mut frames = self.flush_frame()?;
+            frames.extend(self.frame_sorter.flush());
+            Ok(frames)
         }
 
         pub fn mark_missed_frames(&mut self) {
+            self.frame_sorter.clear();
+            self.drain_released_output_surfaces();
             self.reference_ctx.mark_missed_frames();
         }
 
@@ -134,53 +239,63 @@ mod imp {
             &mut self,
             instructions: Vec<DecoderInstruction>,
         ) -> Result<Vec<DecodedFrame>, String> {
+            self.drain_released_output_surfaces();
             let mut frames = Vec::new();
             for instruction in instructions {
-                let frame = match instruction {
-                    DecoderInstruction::Sps(sps) => self.process_sps(sps).map(|_| None),
+                match instruction {
+                    DecoderInstruction::Sps(sps) => {
+                        frames.extend(self.process_sps(sps)?);
+                    }
                     DecoderInstruction::Pps(pps) => {
                         self.pps.insert(pps.pic_parameter_set_id.id(), pps);
-                        Ok(None)
                     }
                     DecoderInstruction::Idr { decode_info, reference_id } => {
                         self.retain_references();
-                        self.decode_picture(decode_info, reference_id)
+                        if let Some(frame) =
+                            self.decode_picture(decode_info, reference_id, true)?
+                        {
+                            frames.extend(self.frame_sorter.put(frame));
+                        }
                     }
                     DecoderInstruction::Decode { decode_info, reference_id } => {
-                        self.decode_picture(decode_info, reference_id)
+                        if let Some(frame) =
+                            self.decode_picture(decode_info, reference_id, false)?
+                        {
+                            frames.extend(self.frame_sorter.put(frame));
+                        }
                     }
                     DecoderInstruction::Drop { reference_ids } => {
                         for reference_id in reference_ids {
                             self.drop_reference(reference_id);
                         }
-                        Ok(None)
                     }
-                }?;
-                if let Some(frame) = frame {
-                    frames.push(frame);
                 }
+                self.drain_released_output_surfaces();
             }
             Ok(frames)
         }
 
-        fn process_sps(&mut self, sps: SeqParameterSet) -> Result<(), String> {
+        fn process_sps(
+            &mut self,
+            sps: SeqParameterSet,
+        ) -> Result<Vec<DecodedFrame>, String> {
             let stream = VaapiStreamInfo::from_sps(&sps)?;
+            let mut frames = Vec::new();
             if self.session.as_ref().is_none_or(|session| session.stream != stream) {
+                frames.extend(self.frame_sorter.flush());
+                self.retire_session_surfaces(false);
                 self.session = Some(VaapiDecodeSession::new(&self.display, stream)?);
-                self.references.clear();
-                self.free_surfaces.clear();
-                self.retained_surfaces.clear();
-                self.imported_frames.clear();
             }
             self.sps.insert(sps.id().id(), sps);
-            Ok(())
+            Ok(frames)
         }
 
         fn decode_picture(
             &mut self,
             decode_info: DecodeInformation,
             reference_id: ReferenceId,
-        ) -> Result<Option<DecodedFrame>, String> {
+            is_idr: bool,
+        ) -> Result<Option<DecodedOutputFrame>, String> {
             let session = self
                 .session
                 .as_ref()
@@ -188,7 +303,9 @@ mod imp {
             let context = Rc::clone(&session.context);
             let coded_resolution = session.stream.coded_resolution;
             let display_resolution = session.stream.display_resolution;
+            let max_num_reorder_frames = session.stream.max_num_reorder_frames;
             let pts = decode_info.pts;
+            let pic_order_cnt = decode_info.picture_info.PicOrderCnt_for_decoding[0];
             let decoded_picture = DecodedPictureInfo::from_decode_info(&decode_info);
 
             let surface = self.take_surface(coded_resolution)?;
@@ -220,7 +337,13 @@ mod imp {
 
             let frame = (!self.drop_frames)
                 .then(|| self.frame_from_surface(&surface, display_resolution, pts))
-                .transpose()?;
+                .transpose()?
+                .map(|frame| DecodedOutputFrame {
+                    frame,
+                    pic_order_cnt,
+                    max_num_reorder_frames,
+                    is_idr,
+                });
             self.references.push((
                 reference_id,
                 DecodedReference { surface, picture: decoded_picture },
@@ -412,6 +535,7 @@ mod imp {
             &mut self,
             resolution: Resolution,
         ) -> Result<Surface<()>, String> {
+            self.drain_released_output_surfaces();
             take_nv12_surface(
                 &self.display,
                 &mut self.free_surfaces,
@@ -440,13 +564,16 @@ mod imp {
             &mut self,
             surface: &Surface<()>,
         ) -> Result<Arc<DmaBufFrame>, String> {
-            if let Some(dmabuf) = self.imported_frames.get(&surface.id()) {
-                return Ok(Arc::clone(dmabuf));
-            }
-
-            let dmabuf = export_surface_as_frame(&self.device, surface)?;
-            self.imported_frames.insert(surface.id(), Arc::clone(&dmabuf));
-            Ok(dmabuf)
+            let surface_id = surface.id();
+            assert!(
+                self.output_leased_surfaces.insert(surface_id),
+                "decoded VA surface was exported while an output lease was still active"
+            );
+            let owner: Arc<dyn Send + Sync> = Arc::new(DecodedSurfaceLease {
+                surface_id,
+                release_sender: self.output_release_sender.clone(),
+            });
+            export_surface_as_frame_with_owner(&self.device, surface, Some(owner))
         }
 
         fn drop_reference(&mut self, reference_id: ReferenceId) {
@@ -454,22 +581,67 @@ mod imp {
                 self.references.iter().position(|(id, _)| *id == reference_id)
             {
                 let (_, reference) = self.references.remove(index);
-                self.retain_surface(reference.surface);
+                self.retire_surface(reference.surface, true);
             }
         }
 
         fn retain_references(&mut self) {
             let references = std::mem::take(&mut self.references);
             for (_, reference) in references {
-                self.retain_surface(reference.surface);
+                self.retire_surface(reference.surface, true);
             }
         }
 
-        fn retain_surface(&mut self, surface: Surface<()>) {
-            self.retained_surfaces.push_back(surface);
-            while self.retained_surfaces.len() > RETAINED_SURFACE_COUNT {
-                if let Some(surface) = self.retained_surfaces.pop_front() {
-                    self.free_surfaces.push(surface);
+        fn retire_session_surfaces(&mut self, reusable: bool) {
+            self.drain_released_output_surfaces();
+            for retired in self.waiting_output_surfaces.values_mut() {
+                retired.reusable &= reusable;
+            }
+            let references = std::mem::take(&mut self.references);
+            for (_, reference) in references {
+                self.retire_surface(reference.surface, reusable);
+            }
+            if !reusable {
+                self.free_surfaces.clear();
+            }
+        }
+
+        fn retire_surface(&mut self, surface: Surface<()>, reusable: bool) {
+            let surface_id = surface.id();
+            if self.output_leased_surfaces.contains(&surface_id) {
+                self.waiting_output_surfaces
+                    .insert(surface_id, RetiredSurface { surface, reusable });
+            } else if reusable {
+                self.free_surfaces.push(surface);
+            }
+        }
+
+        fn drain_released_output_surfaces(&mut self) {
+            while let Ok(surface_id) = self.output_release_receiver.try_recv() {
+                self.release_output_surface(surface_id);
+            }
+        }
+
+        fn release_output_surface(&mut self, surface_id: libva::VASurfaceID) {
+            if !self.output_leased_surfaces.remove(&surface_id) {
+                return;
+            }
+            if let Some(retired) = self.waiting_output_surfaces.remove(&surface_id) {
+                if retired.reusable {
+                    self.free_surfaces.push(retired.surface);
+                }
+            }
+        }
+    }
+
+    impl Drop for H264Decoder {
+        fn drop(&mut self) {
+            self.frame_sorter.clear();
+            self.retire_session_surfaces(false);
+            while !self.output_leased_surfaces.is_empty() {
+                match self.output_release_receiver.recv() {
+                    Ok(surface_id) => self.release_output_surface(surface_id),
+                    Err(_) => break,
                 }
             }
         }
@@ -520,6 +692,7 @@ mod imp {
         rt_format: u32,
         coded_resolution: Resolution,
         display_resolution: Resolution,
+        max_num_reorder_frames: u64,
     }
 
     impl VaapiStreamInfo {
@@ -547,6 +720,7 @@ mod imp {
                     width: width as usize,
                     height: height as usize,
                 },
+                max_num_reorder_frames: max_num_reorder_frames(sps)?,
             })
         }
     }
@@ -691,6 +865,46 @@ mod imp {
             (depth, format) => Err(format!(
                 "unsupported H264 VA-API surface format: {depth}-bit {format:?}"
             )),
+        }
+    }
+
+    fn max_num_reorder_frames(sps: &SeqParameterSet) -> Result<u64, String> {
+        let fallback = if [44u8, 86, 100, 110, 122, 244].contains(&sps.profile_idc.into())
+            && sps.constraint_flags.flag3()
+        {
+            0
+        } else if let Profile::Baseline = sps.profile() {
+            0
+        } else {
+            h264_level_idc_to_max_dpb_mbs(sps.level_idc)?
+                / ((sps.pic_width_in_mbs_minus1 as u64 + 1)
+                    * (sps.pic_height_in_map_units_minus1 as u64 + 1))
+        };
+
+        Ok(sps
+            .vui_parameters
+            .as_ref()
+            .and_then(|vui| vui.bitstream_restrictions.as_ref())
+            .map(|restriction| restriction.max_num_reorder_frames as u64)
+            .unwrap_or(fallback)
+            .min(16))
+    }
+
+    fn h264_level_idc_to_max_dpb_mbs(level_idc: u8) -> Result<u64, String> {
+        match level_idc {
+            10 => Ok(396),
+            11 => Ok(900),
+            12 | 13 | 20 => Ok(2_376),
+            21 => Ok(4_752),
+            22 | 30 => Ok(8_100),
+            31 => Ok(18_000),
+            32 => Ok(20_480),
+            40 | 41 => Ok(32_768),
+            42 => Ok(34_816),
+            50 => Ok(110_400),
+            51 | 52 => Ok(184_320),
+            60 | 61 | 62 => Ok(696_320),
+            _ => Err(format!("unknown H264 level_idc {level_idc}")),
         }
     }
 
@@ -972,11 +1186,23 @@ mod imp {
         #[ignore = "requires ffmpeg and a VA-API capable Linux host"]
         fn decodes_ffmpeg_annexb_stream_to_nv12_dmabuf_frames() {
             let _guard = VAAPI_TEST_LOCK.lock().unwrap();
-            let video = GeneratedVideo::new("stream.h264", "h264");
+            let video = GeneratedVideo::new("stream.h264", "h264", 0);
+            assert_decodes_like_ffmpeg(&video);
+        }
+
+        #[test]
+        #[ignore = "requires ffmpeg and a VA-API capable Linux host"]
+        fn decodes_ffmpeg_annexb_b_frames_in_display_order() {
+            let _guard = VAAPI_TEST_LOCK.lock().unwrap();
+            let video = GeneratedVideo::new("bframes.h264", "h264", 2);
+            assert_decodes_like_ffmpeg(&video);
+        }
+
+        fn assert_decodes_like_ffmpeg(video: &GeneratedVideo) {
             let stream = fs::read(&video.path).expect("failed to read generated stream");
-            let (device, queue) = crate::test_wgpu_device_and_queue();
-            let mut decoder =
-                H264Decoder::new(Arc::clone(&device)).expect("failed to create decoder");
+            let (device, queue, adapter_info) = crate::test_wgpu_device_and_queue();
+            let mut decoder = H264Decoder::new(Arc::clone(&device), Some(&adapter_info))
+                .expect("failed to create decoder");
 
             let mut frames = decoder
                 .decode_chunk(&stream, Some(0), true)
@@ -1103,14 +1329,14 @@ mod imp {
         }
 
         impl GeneratedVideo {
-            fn new(filename: &str, muxer: &str) -> Self {
+            fn new(filename: &str, muxer: &str, b_frames: usize) -> Self {
                 let dir = std::env::temp_dir().join(format!(
                     "smelter-vaapi-h264-{}",
                     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
                 ));
                 fs::create_dir(&dir).expect("failed to create temp dir");
                 let path = dir.join(filename);
-                generate_video(&path, muxer);
+                generate_video(&path, muxer, b_frames);
                 Self { path, dir }
             }
         }
@@ -1121,35 +1347,41 @@ mod imp {
             }
         }
 
-        fn generate_video(output: &Path, muxer: &str) {
+        fn generate_video(output: &Path, muxer: &str, b_frames: usize) {
             let input = format!("testsrc2=size={TEST_WIDTH}x{TEST_HEIGHT}:rate=5");
             let frame_count = TEST_FRAME_COUNT.to_string();
-            let status = Command::new("ffmpeg")
-                .args([
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    &input,
-                    "-frames:v",
-                    &frame_count,
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-preset",
-                    "ultrafast",
-                    "-tune",
-                    "zerolatency",
-                    "-g",
-                    &frame_count,
+            let mut command = Command::new("ffmpeg");
+            command.args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                &input,
+                "-frames:v",
+                &frame_count,
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-preset",
+                "veryfast",
+                "-g",
+                &frame_count,
+            ]);
+            if b_frames == 0 {
+                command.args(["-tune", "zerolatency", "-bf", "0"]);
+            } else {
+                command.args([
                     "-bf",
-                    "0",
-                    "-f",
-                    muxer,
-                ])
+                    &b_frames.to_string(),
+                    "-x264-params",
+                    "b-adapt=0:scenecut=0",
+                ]);
+            }
+            let status = command
+                .args(["-f", muxer])
                 .arg(output)
                 .status()
                 .expect("failed to execute ffmpeg");

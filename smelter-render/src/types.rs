@@ -125,6 +125,102 @@ impl DmaBufFrame {
     }
 }
 
+pub fn validate_nv12_dmabuf_frame(
+    frame: &DmaBufFrame,
+    expected_resolution: Resolution,
+) -> Result<(), String> {
+    if frame.resolution() != expected_resolution {
+        return Err(format!(
+            "expected NV12 DMA-BUF resolution {:?}, got {:?}",
+            expected_resolution,
+            frame.resolution()
+        ));
+    }
+
+    validate_nv12_dmabuf_layout(
+        frame.fourcc(),
+        frame.width(),
+        frame.height(),
+        frame.objects(),
+        frame.layers(),
+    )
+}
+
+pub fn validate_nv12_dmabuf_layout(
+    fourcc: u32,
+    width: u32,
+    height: u32,
+    objects: &[DmaBufObject],
+    layers: &[DmaBufLayer],
+) -> Result<(), String> {
+    if fourcc != DRM_FORMAT_NV12 {
+        return Err(format!(
+            "expected NV12 DMA-BUF fourcc {DRM_FORMAT_NV12}, got {fourcc}"
+        ));
+    }
+    if width == 0 || height == 0 {
+        return Err(format!("NV12 DMA-BUF has invalid size {width}x{height}"));
+    }
+    if objects.is_empty() || objects.len() > 4 {
+        return Err(format!(
+            "NV12 DMA-BUF object count {} is outside supported limit 1..=4",
+            objects.len()
+        ));
+    }
+    if layers.len() != 1 {
+        return Err(format!("NV12 DMA-BUF requires one layer, got {}", layers.len()));
+    }
+
+    let layer = &layers[0];
+    if layer.drm_format != DRM_FORMAT_NV12 {
+        return Err(format!(
+            "expected NV12 DMA-BUF layer drm format {DRM_FORMAT_NV12}, got {}",
+            layer.drm_format
+        ));
+    }
+    if layer.planes.len() != 2 {
+        return Err(format!(
+            "NV12 DMA-BUF requires two planes, got {}",
+            layer.planes.len()
+        ));
+    }
+
+    validate_nv12_plane("Y", &layer.planes[0], objects, width, height)?;
+    validate_nv12_plane("UV", &layer.planes[1], objects, width, height.div_ceil(2))
+}
+
+fn validate_nv12_plane(
+    name: &str,
+    plane: &DmaBufPlane,
+    objects: &[DmaBufObject],
+    min_pitch: u32,
+    rows: u32,
+) -> Result<(), String> {
+    let object = objects.get(plane.object_index).ok_or_else(|| {
+        format!(
+            "NV12 DMA-BUF {name} plane references object {}, but only {} objects exist",
+            plane.object_index,
+            objects.len()
+        )
+    })?;
+    if plane.pitch < min_pitch {
+        return Err(format!(
+            "NV12 DMA-BUF {name} plane pitch {} is smaller than required width {min_pitch}",
+            plane.pitch
+        ));
+    }
+    let plane_end = u64::from(plane.offset)
+        .checked_add(u64::from(plane.pitch) * u64::from(rows))
+        .ok_or_else(|| format!("NV12 DMA-BUF {name} plane byte range overflows"))?;
+    if plane_end > u64::from(object.size) {
+        return Err(format!(
+            "NV12 DMA-BUF {name} plane range {plane_end} exceeds object {} size {}",
+            plane.object_index, object.size
+        ));
+    }
+    Ok(())
+}
+
 impl fmt::Debug for DmaBufFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DMA-BUF frame")
@@ -164,6 +260,63 @@ pub struct DmaBufPlane {
     pub object_index: usize,
     pub offset: u32,
     pub pitch: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_expected_nv12_dmabuf_shape() {
+        let objects = vec![DmaBufObject { fd: dummy_fd(), size: 4096, modifier: 0 }];
+        let layers = vec![DmaBufLayer {
+            drm_format: DRM_FORMAT_NV12,
+            planes: vec![
+                DmaBufPlane { object_index: 0, offset: 0, pitch: 64 },
+                DmaBufPlane { object_index: 0, offset: 2048, pitch: 64 },
+            ],
+        }];
+
+        assert!(
+            validate_nv12_dmabuf_layout(DRM_FORMAT_NV12, 64, 64, &objects, &layers)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_too_short_nv12_plane() {
+        let objects = vec![DmaBufObject { fd: dummy_fd(), size: 128, modifier: 0 }];
+        let layers = vec![DmaBufLayer {
+            drm_format: DRM_FORMAT_NV12,
+            planes: vec![
+                DmaBufPlane { object_index: 0, offset: 0, pitch: 64 },
+                DmaBufPlane { object_index: 0, offset: 96, pitch: 64 },
+            ],
+        }];
+
+        assert!(
+            validate_nv12_dmabuf_layout(DRM_FORMAT_NV12, 64, 64, &objects, &layers)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_missing_nv12_layer_plane() {
+        let objects = vec![DmaBufObject { fd: dummy_fd(), size: 4096, modifier: 0 }];
+        let layers = vec![DmaBufLayer {
+            drm_format: DRM_FORMAT_NV12,
+            planes: vec![DmaBufPlane { object_index: 0, offset: 0, pitch: 64 }],
+        }];
+
+        assert!(
+            validate_nv12_dmabuf_layout(DRM_FORMAT_NV12, 64, 64, &objects, &layers)
+                .is_err()
+        );
+    }
+
+    fn dummy_fd() -> Arc<OwnedFd> {
+        Arc::new(std::fs::File::open("/dev/null").unwrap().into())
+    }
 }
 
 #[derive(Clone)]

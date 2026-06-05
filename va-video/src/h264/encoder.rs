@@ -1,6 +1,8 @@
 mod imp {
     use std::{
+        borrow::Borrow,
         collections::VecDeque,
+        os::fd::{AsFd, AsRawFd, OwnedFd},
         rc::Rc,
         sync::Arc,
         time::{Duration, Instant},
@@ -12,18 +14,20 @@ mod imp {
         EncMiscParameterFrameRate, EncMiscParameterRateControl, EncPictureParameter,
         EncPictureParameterBufferH264, EncSequenceParameter,
         EncSequenceParameterBufferH264, EncSliceParameter, EncSliceParameterBufferH264,
-        H264EncFrameCropOffsets, H264EncPicFields, H264EncSeqFields, H264VuiFields,
-        MappedCodedBuffer, Picture, PictureH264, PictureNew, RcFlags, Surface, UsageHint,
-        VA_INVALID_ID, VA_PICTURE_H264_SHORT_TERM_REFERENCE, VA_RC_CBR,
-        VA_RT_FORMAT_YUV420, VAConfigAttrib, VAConfigAttribType, VAEntrypoint, VAProfile,
-        VASurfaceStatus,
+        ExternalBufferDescriptor, H264EncFrameCropOffsets, H264EncPicFields,
+        H264EncSeqFields, H264VuiFields, MappedCodedBuffer, MemoryType, Picture,
+        PictureH264, PictureNew, RcFlags, Surface, UsageHint, VA_INVALID_ID,
+        VA_PICTURE_H264_SHORT_TERM_REFERENCE, VA_RC_CBR, VA_RT_FORMAT_YUV420,
+        VAConfigAttrib, VAConfigAttribType, VADRMPRIMESurfaceDescriptor, VAEntrypoint,
+        VAProfile, VASurfaceAttribType, VASurfaceStatus,
     };
-    use smelter_render::{DmaBufFrame, Framerate, Resolution};
+    use smelter_render::{
+        DmaBufFrame, Framerate, Resolution, validate_nv12_dmabuf_frame,
+    };
     use tracing::{info, warn};
 
     use crate::display::{
-        VaapiDmaBufFrame, duration_micros, invalid_h264_pictures, open_display,
-        take_nv12_surface,
+        duration_micros, invalid_h264_pictures, open_display, take_nv12_surface,
     };
 
     use super::super::parameter_sets::{
@@ -33,14 +37,35 @@ mod imp {
 
     const RECONSTRUCTED_SURFACE_ALLOCATION_BATCH: usize = 4;
     const DEFAULT_CODED_BUFFER_SIZE: usize = 1_500_000;
+    const CBR_RATE_CONTROL: VaapiRateControlConfig = VaapiRateControlConfig {
+        target_percentage: 100,
+        window_size: 1_500,
+        initial_qp: 26,
+        min_qp: 10,
+        basic_unit_size: 0,
+        max_qp: 51,
+    };
+
+    #[derive(Clone, Copy)]
+    struct VaapiRateControlConfig {
+        target_percentage: u32,
+        window_size: u32,
+        initial_qp: u32,
+        min_qp: u32,
+        basic_unit_size: u32,
+        max_qp: u32,
+    }
 
     pub struct H264Encoder {
         encoder: IntelVaapiH264Encoder,
         parameter_sets: Bytes,
     }
 
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone)]
     pub struct H264EncoderConfig {
+        pub device: Arc<wgpu::Device>,
+        pub queue: Arc<wgpu::Queue>,
+        pub adapter_info: Option<wgpu::AdapterInfo>,
         pub resolution: Resolution,
         pub bitrate: u32,
         pub gop_size: u16,
@@ -58,7 +83,7 @@ mod imp {
         pub fn new(config: H264EncoderConfig) -> Result<Self, String> {
             info!("Initializing VA-API H264 encoder");
 
-            let display = open_display()?;
+            let display = open_display(config.adapter_info.as_ref())?;
             let parameter_sets = main_parameter_sets(config.resolution, config.framerate);
 
             let encoder = IntelVaapiH264Encoder::new(
@@ -76,7 +101,7 @@ mod imp {
                 height = config.resolution.height,
                 bitrate = config.bitrate,
                 max_pending_frames = config.max_pending_frames,
-                "Initialized zero-copy VA-API H264 encoder with NV12 DMA-BUF input"
+                "Initialized VA-API H264 encoder with direct NV12 DMA-BUF input"
             );
 
             Ok(Self { encoder, parameter_sets })
@@ -104,6 +129,7 @@ mod imp {
         _config: Config,
         context: Rc<Context>,
         display: Rc<Display>,
+        free_input_surfaces: Vec<VaapiInputSurface>,
         free_reconstructed_surfaces: Vec<Surface<()>>,
         pending: VecDeque<PendingEncode>,
         retired_after_producer: Vec<Surface<()>>,
@@ -131,7 +157,7 @@ mod imp {
         ) -> Result<Self, String> {
             let profile = VAProfile::VAProfileH264Main;
             let entrypoint = h264_encode_entrypoint(&display, profile)?;
-            let config = display
+            let mut config = display
                 .create_config(
                     vec![
                         VAConfigAttrib {
@@ -147,6 +173,7 @@ mod imp {
                     entrypoint,
                 )
                 .map_err(|err| format!("failed to create VA-API H264 config: {err}"))?;
+            validate_h264_encode_surface_support(&mut config)?;
             let context = display
                 .create_context::<()>(
                     &config,
@@ -161,6 +188,7 @@ mod imp {
                 _config: config,
                 context,
                 display,
+                free_input_surfaces: Vec::new(),
                 free_reconstructed_surfaces: Vec::new(),
                 pending: VecDeque::new(),
                 retired_after_producer: Vec::new(),
@@ -207,7 +235,7 @@ mod imp {
             force_keyframe: bool,
         ) -> Result<PendingEncode, String> {
             let started_at = Instant::now();
-            let input = VaapiDmaBufFrame::new(frame).import_surface(&self.display)?;
+            let input = self.take_input_surface(frame)?;
             let is_keyframe = force_keyframe
                 || self.reference.is_none()
                 || self.frames_since_keyframe >= self.gop_size;
@@ -267,9 +295,64 @@ mod imp {
             })
         }
 
+        fn take_input_surface(
+            &mut self,
+            frame: Arc<DmaBufFrame>,
+        ) -> Result<VaapiInputSurface, String> {
+            validate_nv12_dmabuf_frame(&frame, self.resolution)?;
+            let frame_key = DmaBufFrameKey::from_frame(&frame);
+            let mut surface = match self
+                .free_input_surfaces
+                .iter()
+                .position(|surface| surface.frame_key == frame_key)
+            {
+                Some(index) => self.free_input_surfaces.swap_remove(index),
+                None => self.create_input_surface(&frame, frame_key)?,
+            };
+            surface.frame_lease = Some(frame);
+            Ok(surface)
+        }
+
+        fn create_input_surface(
+            &self,
+            frame: &Arc<DmaBufFrame>,
+            frame_key: DmaBufFrameKey,
+        ) -> Result<VaapiInputSurface, String> {
+            let descriptor = VaapiInputSurfaceDescriptor::new(frame.as_ref())?;
+            let surfaces = self
+                .display
+                .create_surfaces(
+                    libva::VA_RT_FORMAT_YUV420,
+                    Some(libva::VA_FOURCC_NV12),
+                    self.resolution.width as u32,
+                    self.resolution.height as u32,
+                    Some(UsageHint::USAGE_HINT_ENCODER),
+                    vec![descriptor],
+                )
+                .map_err(|err| {
+                    format!(
+                        "failed to import NV12 DMA-BUF as VA-API input surface: {err}"
+                    )
+                })?;
+            let surface = surfaces
+                .into_iter()
+                .next()
+                .ok_or_else(|| "VA-API returned no imported input surface".to_string())?;
+            Ok(VaapiInputSurface {
+                frame_key,
+                frame_lease: Some(Arc::clone(frame)),
+                surface,
+            })
+        }
+
+        fn release_input_surface(&mut self, mut surface: VaapiInputSurface) {
+            surface.frame_lease = None;
+            self.free_input_surfaces.push(surface);
+        }
+
         fn add_buffers(
             &self,
-            picture: &mut Picture<PictureNew, Surface<VaapiDmaBufFrame>>,
+            picture: &mut Picture<PictureNew, VaapiInputSurface>,
             coded_buffer: &EncCodedBuffer,
             reconstructed: &Surface<()>,
             is_keyframe: bool,
@@ -418,17 +501,18 @@ mod imp {
         }
 
         fn rate_control_parameter(&self) -> BufferType {
+            let rc = CBR_RATE_CONTROL;
             BufferType::EncMiscParameter(EncMiscParameter::RateControl(
                 EncMiscParameterRateControl::new(
                     self.bitrate,
-                    100,
-                    1_500,
-                    26,
-                    10,
-                    0,
+                    rc.target_percentage,
+                    rc.window_size,
+                    rc.initial_qp,
+                    rc.min_qp,
+                    rc.basic_unit_size,
                     RcFlags::new(0, 1, 0, 0, 0, 0, 0, 0, 0),
                     0,
-                    51,
+                    rc.max_qp,
                     0,
                     0,
                 ),
@@ -437,10 +521,7 @@ mod imp {
 
         fn framerate_parameter(&self) -> BufferType {
             BufferType::EncMiscParameter(EncMiscParameter::FrameRate(
-                EncMiscParameterFrameRate::new(
-                    self.framerate.num / self.framerate.den.max(1),
-                    0,
-                ),
+                EncMiscParameterFrameRate::new(rounded_framerate(self.framerate), 0),
             ))
         }
 
@@ -510,7 +591,7 @@ mod imp {
             let input = picture
                 .take_surface()
                 .map_err(|_| "VA-API picture kept a shared input surface".to_string())?;
-            drop(input);
+            self.release_input_surface(input);
 
             let map_started_at = Instant::now();
             let data =
@@ -627,8 +708,138 @@ mod imp {
         poc: u16,
     }
 
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    struct DmaBufFrameKey(usize);
+
+    impl DmaBufFrameKey {
+        fn from_frame(frame: &Arc<DmaBufFrame>) -> Self {
+            Self(Arc::as_ptr(frame) as usize)
+        }
+    }
+
+    struct VaapiInputSurfaceDescriptor {
+        fourcc: u32,
+        width: u32,
+        height: u32,
+        objects: Vec<VaapiInputSurfaceObject>,
+        layers: Vec<VaapiInputSurfaceLayer>,
+    }
+
+    struct VaapiInputSurfaceObject {
+        fd: OwnedFd,
+        size: u32,
+        modifier: u64,
+    }
+
+    struct VaapiInputSurfaceLayer {
+        drm_format: u32,
+        planes: Vec<VaapiInputSurfacePlane>,
+    }
+
+    struct VaapiInputSurfacePlane {
+        object_index: u8,
+        offset: u32,
+        pitch: u32,
+    }
+
+    impl VaapiInputSurfaceDescriptor {
+        fn new(frame: &DmaBufFrame) -> Result<Self, String> {
+            let objects = frame
+                .objects()
+                .iter()
+                .map(|object| {
+                    Ok(VaapiInputSurfaceObject {
+                        fd: object.fd.as_fd().try_clone_to_owned().map_err(|err| {
+                            format!("failed to duplicate DMA-BUF fd: {err}")
+                        })?,
+                        size: object.size,
+                        modifier: object.modifier,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let layers = frame
+                .layers()
+                .iter()
+                .map(|layer| {
+                    let planes = layer
+                        .planes
+                        .iter()
+                        .map(|plane| {
+                            Ok(VaapiInputSurfacePlane {
+                                object_index: plane.object_index.try_into().map_err(|_| {
+                                    format!(
+                                        "DMA-BUF plane object index {} does not fit VA-API",
+                                        plane.object_index
+                                    )
+                                })?,
+                                offset: plane.offset,
+                                pitch: plane.pitch,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    Ok(VaapiInputSurfaceLayer { drm_format: layer.drm_format, planes })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+
+            Ok(Self {
+                fourcc: frame.fourcc(),
+                width: frame.width(),
+                height: frame.height(),
+                objects,
+                layers,
+            })
+        }
+    }
+
+    impl ExternalBufferDescriptor for VaapiInputSurfaceDescriptor {
+        const MEMORY_TYPE: MemoryType = MemoryType::DrmPrime2;
+        type DescriptorAttribute = VADRMPRIMESurfaceDescriptor;
+
+        fn va_surface_attribute(&mut self) -> Self::DescriptorAttribute {
+            let mut descriptor = VADRMPRIMESurfaceDescriptor {
+                fourcc: self.fourcc,
+                width: self.width,
+                height: self.height,
+                num_objects: self.objects.len().try_into().unwrap(),
+                num_layers: self.layers.len().try_into().unwrap(),
+                ..Default::default()
+            };
+
+            for (index, object) in self.objects.iter().enumerate() {
+                descriptor.objects[index].fd = object.fd.as_raw_fd();
+                descriptor.objects[index].size = object.size;
+                descriptor.objects[index].drm_format_modifier = object.modifier;
+            }
+            for (layer_index, layer) in self.layers.iter().enumerate() {
+                descriptor.layers[layer_index].drm_format = layer.drm_format;
+                descriptor.layers[layer_index].num_planes =
+                    layer.planes.len().try_into().unwrap();
+                for (plane_index, plane) in layer.planes.iter().enumerate() {
+                    descriptor.layers[layer_index].object_index[plane_index] =
+                        plane.object_index.into();
+                    descriptor.layers[layer_index].offset[plane_index] = plane.offset;
+                    descriptor.layers[layer_index].pitch[plane_index] = plane.pitch;
+                }
+            }
+
+            descriptor
+        }
+    }
+
+    struct VaapiInputSurface {
+        frame_key: DmaBufFrameKey,
+        frame_lease: Option<Arc<DmaBufFrame>>,
+        surface: Surface<VaapiInputSurfaceDescriptor>,
+    }
+
+    impl Borrow<Surface<VaapiInputSurfaceDescriptor>> for VaapiInputSurface {
+        fn borrow(&self) -> &Surface<VaapiInputSurfaceDescriptor> {
+            &self.surface
+        }
+    }
+
     struct PendingEncode {
-        picture: Picture<libva::PictureEnd, Surface<VaapiDmaBufFrame>>,
+        picture: Picture<libva::PictureEnd, VaapiInputSurface>,
         coded_buffer: EncCodedBuffer,
         reconstructed_id: libva::VASurfaceID,
         retired_after_sync: Option<Surface<()>>,
@@ -674,9 +885,68 @@ mod imp {
         }
     }
 
+    fn validate_h264_encode_surface_support(config: &mut Config) -> Result<(), String> {
+        validate_config_int_attr(
+            config,
+            VASurfaceAttribType::VASurfaceAttribPixelFormat,
+            libva::VA_FOURCC_NV12 as i32,
+            "NV12 surface pixel format",
+            false,
+        )?;
+        Ok(())
+    }
+
+    fn validate_config_int_attr(
+        config: &mut Config,
+        attr_type: VASurfaceAttribType::Type,
+        required: i32,
+        label: &str,
+        bitmask: bool,
+    ) -> Result<(), String> {
+        let values =
+            config.query_surface_attributes_by_type(attr_type).map_err(|err| {
+                format!("failed to query VA-API H264 encode support for {label}: {err}")
+            })?;
+        let integers = values
+            .into_iter()
+            .map(|value| match value {
+                libva::GenericValue::Integer(value) => Ok(value),
+                other => Err(format!(
+                    "VA-API H264 encode support for {label} returned non-integer {other:?}"
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if integers.is_empty() {
+            return Err(format!(
+                "VA-API H264 encode config does not advertise support for {label}"
+            ));
+        }
+
+        let supported = integers.iter().any(|value| {
+            if bitmask { value & required == required } else { *value == required }
+        });
+        if supported {
+            Ok(())
+        } else {
+            Err(format!(
+                "VA-API H264 encode config does not support {label}; got {integers:?}"
+            ))
+        }
+    }
+
+    fn rounded_framerate(framerate: Framerate) -> u32 {
+        let den = u64::from(framerate.den.max(1));
+        let rounded = (u64::from(framerate.num) + den / 2) / den;
+        rounded.max(1).min(u64::from(u32::MAX)) as u32
+    }
+
     #[cfg(all(test, target_os = "linux"))]
     mod tests {
         use std::{
+            fs,
+            io::Write,
+            process::{Command, Stdio},
             sync::Mutex,
             thread,
             time::{Duration, Instant},
@@ -688,15 +958,26 @@ mod imp {
         const TEST_RESOLUTION: Resolution = Resolution { width: 64, height: 64 };
         const STRESS_RESOLUTION: Resolution = Resolution { width: 1280, height: 720 };
         const TEST_FRAMERATE: Framerate = Framerate { num: 30, den: 1 };
+        const WT_PREVIEW_FRAMERATE: Framerate = Framerate { num: 30_000, den: 1001 };
         const MAX_PENDING_ENCODE_FRAMES: usize = 8;
         static VAAPI_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+        #[test]
+        fn rounds_vaapi_rate_control_framerate() {
+            assert_eq!(rounded_framerate(Framerate { num: 30_000, den: 1001 }), 30);
+            assert_eq!(rounded_framerate(Framerate { num: 24_000, den: 1001 }), 24);
+            assert_eq!(rounded_framerate(Framerate { num: 25, den: 1 }), 25);
+        }
 
         #[test]
         #[ignore = "requires a VA-API capable Linux host"]
         fn encodes_exported_nv12_dmabuf_frames_to_h264() {
             let _guard = VAAPI_TEST_LOCK.lock().unwrap();
-            let device = crate::test_wgpu_device();
+            let (device, queue, adapter_info) = crate::test_wgpu_device_and_queue();
             let mut encoder = H264Encoder::new(H264EncoderConfig {
+                device: Arc::clone(&device),
+                queue: Arc::new(queue),
+                adapter_info: Some(adapter_info),
                 resolution: TEST_RESOLUTION,
                 bitrate: 500_000,
                 gop_size: 30,
@@ -735,12 +1016,77 @@ mod imp {
         }
 
         #[test]
+        #[ignore = "requires ffmpeg and a VA-API capable Linux host"]
+        fn encodes_producer_synced_wgpu_writes_to_direct_nv12_dmabuf_input() {
+            const FRAME_COUNT: usize = 24;
+            const FRAME_POOL_SIZE: usize = 3;
+            let _guard = VAAPI_TEST_LOCK.lock().unwrap();
+            let (device, queue, adapter_info) = crate::test_wgpu_device_and_queue();
+            let queue = Arc::new(queue);
+            let mut encoder = H264Encoder::new(H264EncoderConfig {
+                device: Arc::clone(&device),
+                queue: Arc::clone(&queue),
+                adapter_info: Some(adapter_info),
+                resolution: TEST_RESOLUTION,
+                bitrate: 2_000_000,
+                gop_size: 1,
+                framerate: TEST_FRAMERATE,
+                max_pending_frames: 1,
+            })
+            .expect("failed to create VA-API H264 encoder");
+            let frames = (0..FRAME_POOL_SIZE)
+                .map(|_| {
+                    smelter_render::export_nv12_dmabuf_texture(&device, TEST_RESOLUTION)
+                })
+                .collect::<Vec<_>>();
+
+            let mut encoded = Vec::new();
+            for index in 0..FRAME_COUNT {
+                let frame = Arc::clone(&frames[index % frames.len()]);
+                let luma = solid_luma_for_frame(index);
+                write_solid_nv12_frame(&queue, frame.as_ref(), luma, 128, 128);
+                queue.submit([]);
+                device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .expect("failed to wait for WGPU producer write");
+                encoded.extend(
+                    encoder
+                        .encode(frame, frame_pts(index, TEST_FRAMERATE), true)
+                        .expect("failed to encode VA-API frame after WGPU write"),
+                );
+            }
+            encoded.extend(encoder.flush().expect("failed to flush VA-API encoder"));
+            assert_eq!(encoded.len(), FRAME_COUNT);
+
+            let bitstream = encoded
+                .iter()
+                .flat_map(|frame| frame.data.iter().copied())
+                .collect::<Vec<_>>();
+            let decoded = ffmpeg_decode_h264_to_nv12(&bitstream);
+            let y_plane_len = TEST_RESOLUTION.width * TEST_RESOLUTION.height;
+            let frame_len = y_plane_len * 3 / 2;
+            assert_eq!(decoded.len(), FRAME_COUNT * frame_len);
+            for index in 0..FRAME_COUNT {
+                let frame = &decoded[index * frame_len..][..frame_len];
+                let actual_luma = average_luma(&frame[..y_plane_len]);
+                let expected_luma = solid_luma_for_frame(index);
+                assert!(
+                    actual_luma.abs_diff(expected_luma) <= 12,
+                    "decoded frame {index} luma {actual_luma} differs from expected {expected_luma}"
+                );
+            }
+        }
+
+        #[test]
         #[ignore = "requires a VA-API capable Linux host"]
         fn encodes_exported_nv12_dmabuf_frames_at_steady_30fps() {
             const FRAME_COUNT: usize = 120;
             let _guard = VAAPI_TEST_LOCK.lock().unwrap();
-            let device = crate::test_wgpu_device();
+            let (device, queue, adapter_info) = crate::test_wgpu_device_and_queue();
             let mut encoder = H264Encoder::new(H264EncoderConfig {
+                device: Arc::clone(&device),
+                queue: Arc::new(queue),
+                adapter_info: Some(adapter_info),
                 resolution: STRESS_RESOLUTION,
                 bitrate: 4_000_000,
                 gop_size: 30,
@@ -791,12 +1137,227 @@ mod imp {
             assert!(max_call_ms < 40);
         }
 
+        #[test]
+        #[ignore = "requires a VA-API capable Linux host"]
+        fn encodes_wt_preview_low_latency_without_stalls_or_memory_growth() {
+            const FRAME_COUNT: usize = 1_800;
+            const WARMUP_FRAMES: usize = 60;
+            const WT_PREVIEW_BITRATE: u32 = 6_000_000;
+            const WT_PREVIEW_GOP_SIZE: u16 = 30;
+            const MAX_RSS_GROWTH_KIB: usize = 64 * 1024;
+            let _guard = VAAPI_TEST_LOCK.lock().unwrap();
+            let (device, queue, adapter_info) = crate::test_wgpu_device_and_queue();
+            let mut encoder = H264Encoder::new(H264EncoderConfig {
+                device: Arc::clone(&device),
+                queue: Arc::new(queue),
+                adapter_info: Some(adapter_info),
+                resolution: STRESS_RESOLUTION,
+                bitrate: WT_PREVIEW_BITRATE,
+                gop_size: WT_PREVIEW_GOP_SIZE,
+                framerate: WT_PREVIEW_FRAMERATE,
+                max_pending_frames: 1,
+            })
+            .expect("failed to create WT-preview VA-API H264 encoder");
+            let frames = (0..3)
+                .map(|_| {
+                    smelter_render::export_nv12_dmabuf_texture(&device, STRESS_RESOLUTION)
+                })
+                .collect::<Vec<_>>();
+
+            let interval = WT_PREVIEW_FRAMERATE.get_interval_duration();
+            let mut encoded_frames = 0;
+            let mut keyframes = 0;
+            let mut encoded_bytes = 0usize;
+            let mut call_times = Vec::new();
+            let mut rss_after_warmup = None;
+            let mut peak_rss_kib = 0;
+            for index in 0..FRAME_COUNT {
+                let started_at = Instant::now();
+                let encoded = encoder
+                    .encode(
+                        Arc::clone(&frames[index % frames.len()]),
+                        frame_pts(index, WT_PREVIEW_FRAMERATE),
+                        false,
+                    )
+                    .expect("failed to encode WT-preview VA-API frame");
+                observe_encoded_frames(
+                    encoded,
+                    &mut encoded_frames,
+                    &mut keyframes,
+                    &mut encoded_bytes,
+                );
+                let elapsed = started_at.elapsed();
+                if index >= WARMUP_FRAMES {
+                    call_times.push(elapsed);
+                    let rss = current_rss_kib();
+                    rss_after_warmup.get_or_insert(rss);
+                    peak_rss_kib = peak_rss_kib.max(rss);
+                }
+                if elapsed < interval {
+                    thread::sleep(interval - elapsed);
+                }
+            }
+            observe_encoded_frames(
+                encoder.flush().expect("failed to flush WT-preview VA-API encoder"),
+                &mut encoded_frames,
+                &mut keyframes,
+                &mut encoded_bytes,
+            );
+
+            call_times.sort_unstable();
+            let max_call = call_times.iter().copied().max().unwrap_or_default();
+            let p99_call = percentile_duration(&call_times, 99);
+            let rss_growth_kib =
+                peak_rss_kib.saturating_sub(rss_after_warmup.unwrap_or(peak_rss_kib));
+            eprintln!(
+                "wt_low_latency frames={encoded_frames}; keyframes={keyframes}; bytes={encoded_bytes}; max_call_ms={}; p99_call_ms={}; rss_after_warmup_kib={}; peak_rss_kib={peak_rss_kib}; rss_growth_kib={rss_growth_kib}",
+                max_call.as_millis(),
+                p99_call.as_millis(),
+                rss_after_warmup.unwrap_or(0),
+            );
+
+            assert_eq!(encoded_frames, FRAME_COUNT);
+            assert!(keyframes >= 55);
+            assert!(p99_call < Duration::from_millis(15));
+            assert!(max_call < Duration::from_millis(33));
+            assert!(rss_growth_kib < MAX_RSS_GROWTH_KIB);
+        }
+
         fn contains_h264_nal(data: &[u8], nal_type: u8) -> bool {
             data.windows(5)
                 .any(|window| window[..4] == [0, 0, 0, 1] && window[4] & 0x1f == nal_type)
                 || data.windows(4).any(|window| {
                     window[..3] == [0, 0, 1] && window[3] & 0x1f == nal_type
                 })
+        }
+
+        fn observe_encoded_frames(
+            frames: Vec<EncodedFrame>,
+            encoded_frames: &mut usize,
+            keyframes: &mut usize,
+            encoded_bytes: &mut usize,
+        ) {
+            for frame in frames {
+                *encoded_frames += 1;
+                *keyframes += frame.is_keyframe as usize;
+                *encoded_bytes += frame.data.len();
+            }
+        }
+
+        fn write_solid_nv12_frame(
+            queue: &wgpu::Queue,
+            frame: &DmaBufFrame,
+            y: u8,
+            u: u8,
+            v: u8,
+        ) {
+            let width = frame.width();
+            let height = frame.height();
+            let y_plane = vec![y; (width * height) as usize];
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: frame.texture(),
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::Plane0,
+                },
+                &y_plane,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            );
+
+            let uv_width = width / 2;
+            let uv_height = height / 2;
+            let mut uv_plane = vec![0; (uv_width * uv_height * 2) as usize];
+            for pixel in uv_plane.chunks_exact_mut(2) {
+                pixel[0] = u;
+                pixel[1] = v;
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: frame.texture(),
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::Plane1,
+                },
+                &uv_plane,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width),
+                    rows_per_image: Some(uv_height),
+                },
+                wgpu::Extent3d {
+                    width: uv_width,
+                    height: uv_height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+
+        fn solid_luma_for_frame(index: usize) -> u8 {
+            32 + ((index * 41) % 192) as u8
+        }
+
+        fn average_luma(y_plane: &[u8]) -> u8 {
+            (y_plane.iter().map(|value| u64::from(*value)).sum::<u64>()
+                / y_plane.len() as u64) as u8
+        }
+
+        fn ffmpeg_decode_h264_to_nv12(bitstream: &[u8]) -> Vec<u8> {
+            let mut child = Command::new("ffmpeg")
+                .args([
+                    "-v", "error", "-f", "h264", "-i", "pipe:0", "-f", "rawvideo",
+                    "-pix_fmt", "nv12", "pipe:1",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("failed to spawn ffmpeg");
+            child
+                .stdin
+                .as_mut()
+                .expect("missing ffmpeg stdin")
+                .write_all(bitstream)
+                .expect("failed to write H264 bitstream to ffmpeg");
+            let output = child.wait_with_output().expect("failed to wait for ffmpeg");
+            assert!(
+                output.status.success(),
+                "ffmpeg decode failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.stdout
+        }
+
+        fn frame_pts(index: usize, framerate: Framerate) -> Duration {
+            Duration::from_nanos(
+                index as u64 * 1_000_000_000u64 * framerate.den as u64
+                    / framerate.num as u64,
+            )
+        }
+
+        fn percentile_duration(values: &[Duration], percentile: usize) -> Duration {
+            if values.is_empty() {
+                return Duration::ZERO;
+            }
+            let index = (values.len() - 1) * percentile / 100;
+            values[index]
+        }
+
+        fn current_rss_kib() -> usize {
+            fs::read_to_string("/proc/self/status")
+                .ok()
+                .and_then(|status| {
+                    status.lines().find_map(|line| {
+                        let value = line.strip_prefix("VmRSS:")?;
+                        value.split_whitespace().next()?.parse().ok()
+                    })
+                })
+                .unwrap_or(0)
         }
     }
 }

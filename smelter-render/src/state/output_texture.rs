@@ -14,6 +14,8 @@ use wgpu::{Buffer, BufferAsyncError};
 
 #[cfg(target_os = "linux")]
 use crate::DmaBufPlane;
+#[cfg(target_os = "linux")]
+use crate::validate_nv12_dmabuf_layout;
 use crate::{
     DRM_FORMAT_NV12, DmaBufFrame, OutputFrameFormat, Resolution,
     wgpu::{
@@ -313,16 +315,12 @@ pub fn import_nv12_dmabuf_texture(
     owner: Option<Arc<dyn Send + Sync>>,
     import_usage: Nv12DmaBufImportUsage,
 ) -> Result<Arc<DmaBufFrame>, String> {
-    if fourcc != DRM_FORMAT_NV12 {
-        return Err(format!("expected NV12 DMA-BUF, got fourcc {fourcc}"));
-    }
-    if objects.len() != 1 || layers.len() != 1 {
-        return Err(
-            "only single-object single-layer NV12 DMA-BUF imports are supported".into()
-        );
-    }
-    if layers[0].planes.len() != 2 {
-        return Err("NV12 DMA-BUF import requires exactly two planes".into());
+    validate_nv12_dmabuf_layout(fourcc, width, height, &objects, &layers)?;
+    if objects.len() != 1 {
+        return Err(format!(
+            "WGPU NV12 DMA-BUF import supports one object, got {}",
+            objects.len()
+        ));
     }
 
     unsafe {
@@ -335,6 +333,12 @@ pub fn import_nv12_dmabuf_texture(
         let physical_device = hal_device.raw_physical_device();
         let size = vk::Extent3D { width, height, depth: 1 };
         let modifier = objects[0].modifier;
+        validate_nv12_modifier_support(
+            instance,
+            physical_device,
+            modifier,
+            import_usage.required_format_features(),
+        )?;
         let plane_layouts = layers[0]
             .planes
             .iter()
@@ -442,6 +446,16 @@ impl Nv12DmaBufImportUsage {
 
     fn render_attachment(self) -> bool {
         matches!(self, Self::RenderAttachment)
+    }
+
+    fn required_format_features(self) -> vk::FormatFeatureFlags2 {
+        match self {
+            Self::Sampled | Self::RenderAttachment => {
+                vk::FormatFeatureFlags2::SAMPLED_IMAGE
+                    | vk::FormatFeatureFlags2::TRANSFER_DST
+                    | vk::FormatFeatureFlags2::TRANSFER_SRC
+            }
+        }
     }
 }
 
@@ -554,6 +568,64 @@ fn select_nv12_modifier(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
 ) -> u64 {
+    let required = Nv12DmaBufImportUsage::RenderAttachment.required_format_features();
+    let modifiers = nv12_modifier_properties(instance, physical_device);
+    modifiers
+        .iter()
+        .find(|modifier| {
+            supports_nv12_modifier(modifier, required)
+                && modifier.drm_format_modifier != 0
+        })
+        .or_else(|| {
+            modifiers.iter().find(|modifier| supports_nv12_modifier(modifier, required))
+        })
+        .copied()
+        .expect("no exportable NV12 DRM modifier with transfer support available")
+        .drm_format_modifier
+}
+
+#[cfg(target_os = "linux")]
+fn validate_nv12_modifier_support(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    modifier: u64,
+    required: vk::FormatFeatureFlags2,
+) -> Result<(), String> {
+    let modifiers = nv12_modifier_properties(instance, physical_device);
+    let Some(properties) =
+        modifiers.iter().find(|properties| properties.drm_format_modifier == modifier)
+    else {
+        return Err(format!(
+            "NV12 DMA-BUF modifier {modifier:#x} is not supported by the WGPU Vulkan device; available modifiers: {}",
+            format_nv12_modifiers(&modifiers)
+        ));
+    };
+
+    if supports_nv12_modifier(properties, required) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "NV12 DMA-BUF modifier {modifier:#x} has {:?} with {} planes, but import requires {required:?}",
+        properties.drm_format_modifier_tiling_features,
+        properties.drm_format_modifier_plane_count,
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn supports_nv12_modifier(
+    modifier: &vk::DrmFormatModifierProperties2EXT,
+    required: vk::FormatFeatureFlags2,
+) -> bool {
+    modifier.drm_format_modifier_plane_count == 2
+        && modifier.drm_format_modifier_tiling_features.contains(required)
+}
+
+#[cfg(target_os = "linux")]
+fn nv12_modifier_properties(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> Vec<vk::DrmFormatModifierProperties2EXT> {
     unsafe {
         let mut count = vk::DrmFormatModifierPropertiesList2EXT::default();
         let mut properties = vk::FormatProperties2::default().push_next(&mut count);
@@ -576,24 +648,24 @@ fn select_nv12_modifier(
             &mut properties,
         );
 
-        let required = vk::FormatFeatureFlags2::SAMPLED_IMAGE
-            | vk::FormatFeatureFlags2::TRANSFER_DST
-            | vk::FormatFeatureFlags2::TRANSFER_SRC;
-        let supports_nv12_export = |modifier: &vk::DrmFormatModifierProperties2EXT| {
-            modifier.drm_format_modifier_plane_count == 2
-                && modifier.drm_format_modifier_tiling_features.contains(required)
-        };
-
         modifiers
-            .iter()
-            .find(|modifier| {
-                supports_nv12_export(modifier) && modifier.drm_format_modifier != 0
-            })
-            .or_else(|| modifiers.iter().find(|modifier| supports_nv12_export(modifier)))
-            .copied()
-            .expect("no exportable NV12 DRM modifier with transfer support available")
-            .drm_format_modifier
     }
+}
+
+#[cfg(target_os = "linux")]
+fn format_nv12_modifiers(modifiers: &[vk::DrmFormatModifierProperties2EXT]) -> String {
+    modifiers
+        .iter()
+        .map(|modifier| {
+            format!(
+                "{:#x}({:?}, planes={})",
+                modifier.drm_format_modifier,
+                modifier.drm_format_modifier_tiling_features,
+                modifier.drm_format_modifier_plane_count,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(target_os = "linux")]
