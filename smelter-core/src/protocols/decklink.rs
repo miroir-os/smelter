@@ -1,5 +1,7 @@
 pub use decklink::PixelFormat as DeckLinkPixelFormat;
 
+use std::time::Duration;
+
 use crate::queue::QueueInputOptions;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -14,6 +16,7 @@ pub struct DeckLinkInputOptions {
     /// autodetection will be ignored.
     pub pixel_format: Option<DeckLinkPixelFormat>,
     pub queue_options: QueueInputOptions,
+    pub buffer_duration: Duration,
 }
 
 #[derive(Debug, thiserror::Error)]
