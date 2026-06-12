@@ -22,6 +22,7 @@ impl TryFrom<V4l2Input> for core::RegisterInputOptions {
                 audio_side_channel: side_channel.audio.unwrap_or(false),
                 side_channel_delay,
             },
+            buffer_duration: std::time::Duration::ZERO,
         }))
     }
 
