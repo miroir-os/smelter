@@ -1,5 +1,6 @@
 use std::{collections::VecDeque, time::Duration};
 
+use crate::queue::QueueSender;
 use crate::utils::TimedValue;
 
 /// Buffer specific duration of data before returning first timestamp
@@ -46,4 +47,31 @@ impl<T: TimedValue> InputDelayBuffer<T> {
     pub fn is_done(&self) -> bool {
         self.end && self.buffer.is_empty()
     }
+}
+
+/// Holds items until the buffer accumulates its configured span, then forwards
+/// 1-for-1 (blocking send) into the queue track sender. PTS passes through
+/// untouched: capture PTS is already `sync_point`-relative, the track's
+/// `Pts(buffer_duration)` offset does the shifting. Exits when `receiver` is
+/// dropped (capture inputs have no EOS).
+pub(crate) fn spawn_delay_repacking_thread<T: TimedValue + Send + 'static>(
+    thread_name: String,
+    receiver: crossbeam_channel::Receiver<T>,
+    mut buffer: InputDelayBuffer<T>,
+    sender: QueueSender<T>,
+) {
+    std::thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || {
+            for item in receiver.into_iter() {
+                buffer.write(item);
+                while let Some(item) = buffer.read() {
+                    if sender.send(item).is_err() {
+                        tracing::debug!("Failed to send media. Channel closed.");
+                        return;
+                    }
+                }
+            }
+        })
+        .unwrap();
 }
