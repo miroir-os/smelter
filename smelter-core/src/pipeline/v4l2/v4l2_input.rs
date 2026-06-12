@@ -11,8 +11,8 @@ use tracing::{Level, debug, error, info, span, warn};
 
 use crate::{
     pipeline::input::Input,
-    queue::{QueueInput, QueueSender, QueueTrackOffset, QueueTrackOptions},
-    utils::input_buffer::InputDelayBuffer,
+    queue::{QueueInput, QueueTrackOffset, QueueTrackOptions},
+    utils::input_buffer::{InputDelayBuffer, spawn_delay_repacking_thread},
 };
 
 use crate::prelude::*;
@@ -149,8 +149,8 @@ impl V4l2Input {
             })
             .unwrap();
 
-        spawn_repacking_thread(
-            &input_ref,
+        spawn_delay_repacking_thread(
+            format!("V4L2 repacking thread for input {input_ref}"),
             raw_receiver,
             InputDelayBuffer::new(opts.buffer_duration),
             video_sender,
@@ -169,37 +169,6 @@ impl Drop for V4l2Input {
         self.should_close
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
-}
-
-/// Drains frames from the reader thread, holds them in `InputDelayBuffer` until
-/// it accumulates `buffer_duration` of media, then forwards 1-for-1 (blocking
-/// send) into the queue's track sender. Mirrors
-/// `pipeline::channel::raw_data_input::spawn_video_repacking_thread` minus
-/// `first_pts` normalization (V4L2 frame PTS is already
-/// `sync_point.elapsed()`-relative, and the queue track's `Pts(buffer_duration)`
-/// offset queries against that timeline directly — normalizing would
-/// double-shift) and minus EOS handling (V4L2 has no end event; the repacker
-/// exits naturally when `raw_receiver` is dropped).
-fn spawn_repacking_thread(
-    input_ref: &Ref<InputId>,
-    raw_receiver: crossbeam_channel::Receiver<Frame>,
-    mut buffer: InputDelayBuffer<Frame>,
-    frame_sender: QueueSender<Frame>,
-) {
-    thread::Builder::new()
-        .name(format!("V4L2 repacking thread for input {input_ref}"))
-        .spawn(move || {
-            for frame in raw_receiver.into_iter() {
-                buffer.write(frame);
-                while let Some(frame) = buffer.read() {
-                    if frame_sender.send(frame).is_err() {
-                        debug!("Failed to send frame. Channel closed.");
-                        return;
-                    }
-                }
-            }
-        })
-        .unwrap();
 }
 
 struct V4l2DeviceConfig {

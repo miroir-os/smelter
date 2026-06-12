@@ -1,10 +1,12 @@
 use std::sync::Arc;
-use std::time::Duration;
 
+use crossbeam_channel::bounded;
+use smelter_render::Frame;
 use tracing::{Level, error, span};
 
 use crate::pipeline::input::Input;
 use crate::queue::{QueueTrackOffset, QueueTrackOptions};
+use crate::utils::input_buffer::{InputDelayBuffer, spawn_delay_repacking_thread};
 use crate::{pipeline::decklink::format::Format, queue::QueueInput};
 
 use crate::prelude::*;
@@ -23,13 +25,18 @@ const AUDIO_SAMPLE_RATE: u32 = 48_000;
 ///
 /// ## Timestamps
 ///
-/// - Register track with `QueueTrackOffset::Pts(Duration::ZERO)` which means
-///   that PTS should be relative to queue `sync_point`.
 /// - On first video/audio packet, compute offset as `sync_point.elapsed() - stream_time`.
 ///   PTS of each subsequent packet is `stream_time + offset + 40ms`.
 /// - The 40ms buffer accounts for delivery latency, value could lower for video, but
 ///   but for audio we need at least 40ms.
-/// - Never block on sending. Frames/samples are dropped if the channel is full.
+/// - The SDK callback never blocks: frames/samples are try-sent into per-track
+///   repacking threads (dropped with a warning if that channel is full).
+/// - `buffer_duration` delay is materialized by the repacking threads'
+///   `InputDelayBuffer` plus the `Pts(buffer_duration)` track offset; PTS
+///   itself is never shifted by it.
+/// - On format change the PTS offsets reset while up to `buffer_duration` of
+///   old-offset media is still draining — accepted, a format change is already
+///   a visible stream restart.
 ///
 /// ### Format detection
 /// - Initial video mode is provisional (HD720p50). `enable_format_detection` is set,
@@ -90,8 +97,32 @@ impl DeckLink {
         let (video_sender, audio_sender) = queue_input.queue_new_track(QueueTrackOptions {
             video: true,
             audio: opts.enable_audio,
-            offset: QueueTrackOffset::Pts(Duration::ZERO),
+            offset: QueueTrackOffset::Pts(opts.buffer_duration),
         });
+
+        // The SDK callback must never block, so it feeds per-track repacking
+        // threads which hold the delay buffer and do the blocking queue send.
+        let video_sender = video_sender.map(|sender| {
+            let (raw_sender, raw_receiver) = bounded::<Frame>(1000);
+            spawn_delay_repacking_thread(
+                format!("DeckLink video repacking thread for input {input_ref}"),
+                raw_receiver,
+                InputDelayBuffer::new(opts.buffer_duration),
+                sender,
+            );
+            raw_sender
+        });
+        let audio_sender = audio_sender.map(|sender| {
+            let (raw_sender, raw_receiver) = bounded::<InputAudioSamples>(1000);
+            spawn_delay_repacking_thread(
+                format!("DeckLink audio repacking thread for input {input_ref}"),
+                raw_receiver,
+                InputDelayBuffer::new(opts.buffer_duration),
+                sender,
+            );
+            raw_sender
+        });
+
         let callback = ChannelCallbackAdapter::new(
             &ctx,
             span,
