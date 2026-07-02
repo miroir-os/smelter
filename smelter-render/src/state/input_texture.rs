@@ -344,6 +344,10 @@ impl InputTexture {
                 let dst_state = dest.ensure_size(ctx, input.resolution());
                 input.encode_convert(ctx, encoder, dst_state)
             }
+            Some(InputTextureState::Bgra(input)) => {
+                let dst_state = dest.ensure_size(ctx, input.resolution());
+                input.encode_convert(ctx, encoder, dst_state)
+            }
             _ => {
                 self.convert_to_node_texture(ctx, dest);
                 false

@@ -46,7 +46,11 @@ use crate::{
     prelude::*,
 };
 
-const VIDEO_OUTPUT_BUFFER_SIZE: usize = 128;
+// QueueVideoOutput carries raw input frames. At 4K BGRA one frameset can exceed
+// 100 MiB, so a large channel becomes an accidental multi-GB raw-frame buffer
+// when rendering falls behind. Keep only a small jitter cushion and let upstream
+// capture queues apply backpressure/drop instead.
+const VIDEO_OUTPUT_BUFFER_SIZE: usize = 4;
 
 pub struct Pipeline {
     pub(super) inputs: HashMap<InputId, PipelineInput>,

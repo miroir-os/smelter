@@ -242,11 +242,13 @@ pub(super) fn read_outputs(
             {
                 stats.intermediate_4k_textures += 1;
             }
-            let texture = nv12_output.convert_lanczos_vertical_from_with_encoder(
+            let Some(texture) = nv12_output.convert_lanczos_vertical_from_with_encoder(
                 ctx.wgpu_ctx,
                 &mut nv12_encoder,
                 node.output_texture_bind_group(),
-            );
+            ) else {
+                continue;
+            };
             nv12_conversions += 1;
             let frame = Frame {
                 resolution: nv12_output.resolution(),
@@ -310,11 +312,13 @@ pub(super) fn read_outputs(
                     {
                         stats.intermediate_4k_textures += 1;
                     }
-                    let texture = nv12_output.convert_from_with_encoder(
+                    let Some(texture) = nv12_output.convert_from_with_encoder(
                         ctx.wgpu_ctx,
                         &mut nv12_encoder,
                         node.output_texture_bind_group(),
-                    );
+                    ) else {
+                        continue;
+                    };
                     nv12_conversions += 1;
                     let resolution = nv12_output.resolution();
                     let frame = Frame {
@@ -395,8 +399,11 @@ pub(super) fn read_outputs(
                 }
                 OutputTexture::Nv12WgpuTexture(nv12_output) => {
                     stats.nv12_outputs += 1;
-                    let texture =
-                        nv12_output.fill_with_color(ctx.wgpu_ctx, RGBColor::BLACK);
+                    let Some(texture) =
+                        nv12_output.fill_with_color(ctx.wgpu_ctx, RGBColor::BLACK)
+                    else {
+                        continue;
+                    };
                     let frame = Frame {
                         data: FrameData::Nv12WgpuTexture(texture),
                         resolution: nv12_output.resolution(),

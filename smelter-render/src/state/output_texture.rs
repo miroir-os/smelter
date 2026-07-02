@@ -1,8 +1,13 @@
-use std::{any::Any, cell::RefCell, io::Write, sync::Arc};
+use std::{
+    any::Any,
+    cell::{Cell, RefCell},
+    io::Write,
+    sync::Arc,
+};
 
 use bytes::BufMut;
 use crossbeam_channel::bounded;
-use tracing::error;
+use tracing::{error, warn};
 use wgpu::{Buffer, BufferAsyncError};
 
 use crate::{
@@ -22,6 +27,8 @@ pub enum OutputTexture {
     Nv12WgpuTexture(Nv12WgpuOutput),
     ExternalNv12WgpuTexture(ExternalNv12Output),
 }
+
+const MAX_NV12_WGPU_OUTPUT_TEXTURES: usize = 20;
 
 impl OutputTexture {
     pub fn new(
@@ -224,11 +231,16 @@ impl RgbaWgpuOutput {
 pub struct Nv12WgpuOutput {
     resolution: Resolution,
     textures: RefCell<Vec<NV12Texture>>,
+    exhausted_logged: Cell<bool>,
 }
 
 impl Nv12WgpuOutput {
     fn new(resolution: Resolution) -> Self {
-        Self { resolution, textures: RefCell::new(Vec::new()) }
+        Self {
+            resolution,
+            textures: RefCell::new(Vec::new()),
+            exhausted_logged: Cell::new(false),
+        }
     }
 
     pub fn convert_from_with_encoder(
@@ -236,18 +248,12 @@ impl Nv12WgpuOutput {
         ctx: &WgpuCtx,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::BindGroup,
-    ) -> Arc<wgpu::Texture> {
+    ) -> Option<Arc<wgpu::Texture>> {
         let mut textures = self.textures.borrow_mut();
-        let texture_index = match textures.iter().position(NV12Texture::is_unused) {
-            Some(index) => index,
-            None => {
-                textures.push(NV12Texture::new(ctx, self.resolution));
-                textures.len() - 1
-            }
-        };
+        let texture_index = self.acquire_texture(&mut textures, ctx)?;
         let texture = &textures[texture_index];
         ctx.format.rgba_to_nv12.encode_convert(ctx, encoder, source, texture);
-        texture.texture_arc()
+        Some(texture.texture_arc())
     }
 
     pub fn convert_lanczos_vertical_from_with_encoder(
@@ -255,42 +261,54 @@ impl Nv12WgpuOutput {
         ctx: &WgpuCtx,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::BindGroup,
-    ) -> Arc<wgpu::Texture> {
+    ) -> Option<Arc<wgpu::Texture>> {
         let mut textures = self.textures.borrow_mut();
-        let texture_index = match textures.iter().position(NV12Texture::is_unused) {
-            Some(index) => index,
-            None => {
-                textures.push(NV12Texture::new(ctx, self.resolution));
-                textures.len() - 1
-            }
-        };
+        let texture_index = self.acquire_texture(&mut textures, ctx)?;
         let texture = &textures[texture_index];
         ctx.format
             .rgba_to_nv12
             .encode_lanczos_vertical_convert(ctx, encoder, source, texture);
-        texture.texture_arc()
+        Some(texture.texture_arc())
     }
 
     pub fn fill_with_color(
         &self,
         ctx: &WgpuCtx,
         color: crate::scene::RGBColor,
-    ) -> Arc<wgpu::Texture> {
+    ) -> Option<Arc<wgpu::Texture>> {
         let mut textures = self.textures.borrow_mut();
-        let texture_index = match textures.iter().position(NV12Texture::is_unused) {
-            Some(index) => index,
-            None => {
-                textures.push(NV12Texture::new(ctx, self.resolution));
-                textures.len() - 1
-            }
-        };
+        let texture_index = self.acquire_texture(&mut textures, ctx)?;
         let texture = &textures[texture_index];
         texture.fill_with_color(ctx, color);
-        texture.texture_arc()
+        Some(texture.texture_arc())
     }
 
     pub fn resolution(&self) -> Resolution {
         self.resolution
+    }
+
+    fn acquire_texture(
+        &self,
+        textures: &mut Vec<NV12Texture>,
+        ctx: &WgpuCtx,
+    ) -> Option<usize> {
+        if let Some(index) = textures.iter().position(NV12Texture::is_unused) {
+            self.exhausted_logged.set(false);
+            return Some(index);
+        }
+        if textures.len() < MAX_NV12_WGPU_OUTPUT_TEXTURES {
+            textures.push(NV12Texture::new(ctx, self.resolution));
+            return Some(textures.len() - 1);
+        }
+        if !self.exhausted_logged.replace(true) {
+            warn!(
+                width = self.resolution.width,
+                height = self.resolution.height,
+                pool_size = textures.len(),
+                "NV12 output texture pool exhausted; dropping output frame"
+            );
+        }
+        None
     }
 }
 

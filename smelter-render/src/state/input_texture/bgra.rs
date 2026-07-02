@@ -64,6 +64,38 @@ impl BgraInput {
         }
     }
 
+    pub fn encode_convert(
+        &mut self,
+        ctx: &WgpuCtx,
+        encoder: &mut wgpu::CommandEncoder,
+        dest: &NodeTextureState,
+    ) -> bool {
+        match dest {
+            NodeTextureState::GpuOptimized { texture, .. } => {
+                ctx.format.bgra_to_rgba_linear.encode_convert(
+                    ctx,
+                    encoder,
+                    &self.bgra_bind_group,
+                    texture.linear_view(),
+                );
+                true
+            }
+            NodeTextureState::CpuOptimized { texture, .. } => {
+                ctx.format.bgra_to_rgba_linear.encode_convert(
+                    ctx,
+                    encoder,
+                    &self.bgra_bind_group,
+                    texture.view(),
+                );
+                true
+            }
+            NodeTextureState::WebGl { .. } => {
+                self.convert(ctx, dest);
+                false
+            }
+        }
+    }
+
     fn maybe_recreate(&mut self, ctx: &WgpuCtx, resolution: Resolution) {
         if resolution == self.upload_textures.resolution() {
             return;
