@@ -59,7 +59,10 @@ impl VideoSessionParameters {
                 .create_video_session_parameters_khr(&create_info, None)?
         };
 
-        Ok(Self { parameters, device: device.clone() })
+        Ok(Self {
+            parameters,
+            device: device.clone(),
+        })
     }
 
     pub(crate) fn add(
@@ -68,10 +71,9 @@ impl VideoSessionParameters {
         pps: &[vk::native::StdVideoH264PictureParameterSet],
         update_sequence_count: u32,
     ) -> Result<(), VulkanCommonError> {
-        let mut parameters_add_info =
-            vk::VideoDecodeH264SessionParametersAddInfoKHR::default()
-                .std_sp_ss(sps)
-                .std_pp_ss(pps);
+        let mut parameters_add_info = vk::VideoDecodeH264SessionParametersAddInfoKHR::default()
+            .std_sp_ss(sps)
+            .std_pp_ss(pps);
 
         let update_info = vk::VideoSessionParametersUpdateInfoKHR::default()
             .update_sequence_count(update_sequence_count)
@@ -196,7 +198,9 @@ impl VideoSession {
 impl Drop for VideoSession {
     fn drop(&mut self) {
         unsafe {
-            self.device.video_queue_ext.destroy_video_session_khr(self.session, None)
+            self.device
+                .video_queue_ext
+                .destroy_video_session_khr(self.session, None)
         };
     }
 }
@@ -207,13 +211,12 @@ impl From<ReferencePictureInfo> for vk::native::StdVideoDecodeH264ReferenceInfo 
             flags: vk::native::StdVideoDecodeH264ReferenceInfoFlags {
                 __bindgen_padding_0: [0; 3],
                 _bitfield_align_1: [],
-                _bitfield_1:
-                    vk::native::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
-                        0,
-                        0,
-                        picture_info.is_long_term().into(),
-                        picture_info.non_existing.into(),
-                    ),
+                _bitfield_1: vk::native::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
+                    0,
+                    0,
+                    picture_info.is_long_term().into(),
+                    picture_info.non_existing.into(),
+                ),
             },
             FrameNum: picture_info.FrameNum,
             PicOrderCnt: picture_info.PicOrderCnt,
@@ -228,13 +231,12 @@ impl From<PictureInfo> for vk::native::StdVideoDecodeH264ReferenceInfo {
             flags: vk::native::StdVideoDecodeH264ReferenceInfoFlags {
                 __bindgen_padding_0: [0; 3],
                 _bitfield_align_1: [],
-                _bitfield_1:
-                    vk::native::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
-                        0,
-                        0,
-                        picture_info.used_for_long_term_reference.into(),
-                        picture_info.non_existing.into(),
-                    ),
+                _bitfield_1: vk::native::StdVideoDecodeH264ReferenceInfoFlags::new_bitfield_1(
+                    0,
+                    0,
+                    picture_info.used_for_long_term_reference.into(),
+                    picture_info.non_existing.into(),
+                ),
             },
             FrameNum: picture_info.FrameNum,
             PicOrderCnt: picture_info.PicOrderCnt_as_reference_pic,
@@ -244,9 +246,15 @@ impl From<PictureInfo> for vk::native::StdVideoDecodeH264ReferenceInfo {
 }
 
 pub(crate) enum ImageWithView {
-    Single { image: Arc<Image>, image_view: ImageView },
+    Single {
+        image: Arc<Image>,
+        image_view: ImageView,
+    },
 
-    Multiple { images: Vec<Arc<Image>>, image_views: Vec<ImageView> },
+    Multiple {
+        images: Vec<Arc<Image>>,
+        image_views: Vec<ImageView>,
+    },
 }
 
 impl ImageWithView {
@@ -297,16 +305,14 @@ impl ImageWithView {
 
             ImageWithView::Multiple { images, .. } => {
                 let start_layer = subresource_range.base_array_layer as usize;
-                let end_layer =
-                    if subresource_range.layer_count == vk::REMAINING_ARRAY_LAYERS {
-                        images.len()
-                    } else {
-                        start_layer + subresource_range.layer_count as usize
-                    };
+                let end_layer = if subresource_range.layer_count == vk::REMAINING_ARRAY_LAYERS {
+                    images.len()
+                } else {
+                    start_layer + subresource_range.layer_count as usize
+                };
 
                 for image in &images[start_layer..end_layer] {
-                    let subresource_range =
-                        subresource_range.base_array_layer(0).layer_count(1);
+                    let subresource_range = subresource_range.base_array_layer(0).layer_count(1);
                     image.transition_layout(
                         command_buffer,
                         stages.clone(),
@@ -342,8 +348,8 @@ impl<'a> CodingImageBundle<'a> {
         queue_indices: Option<&[u32]>,
         layout: vk::ImageLayout,
     ) -> Result<Self, VulkanCommonError> {
-        let mut profile_list_info = vk::VideoProfileListInfoKHR::default()
-            .profiles(std::slice::from_ref(profile_info));
+        let mut profile_list_info =
+            vk::VideoProfileListInfoKHR::default().profiles(std::slice::from_ref(profile_info));
 
         let mut image_create_info = vk::ImageCreateInfo::default()
             .flags(format.image_create_flags)
@@ -368,8 +374,7 @@ impl<'a> CodingImageBundle<'a> {
                     .queue_family_indices(indices);
             }
             None => {
-                image_create_info =
-                    image_create_info.sharing_mode(vk::SharingMode::EXCLUSIVE);
+                image_create_info = image_create_info.sharing_mode(vk::SharingMode::EXCLUSIVE);
             }
         }
 
@@ -404,7 +409,9 @@ impl<'a> CodingImageBundle<'a> {
                     )
                     .map(Arc::new)
                     .and_then(|i| {
-                        vulkan_ctx.device.set_label(i.image, Some("decoding image"))?;
+                        vulkan_ctx
+                            .device
+                            .set_label(i.image, Some("decoding image"))?;
                         Ok(i)
                     })
                 })
@@ -443,7 +450,10 @@ impl<'a> CodingImageBundle<'a> {
                 )?;
             }
 
-            ImageWithView::Multiple { images, image_views }
+            ImageWithView::Multiple {
+                images,
+                image_views,
+            }
         } else {
             image_create_info = image_create_info.array_layers(array_layer_count);
             let image = Arc::new(Image::new(
@@ -452,7 +462,9 @@ impl<'a> CodingImageBundle<'a> {
                 image_tracker.clone(),
             )?);
 
-            vulkan_ctx.device.set_label(image.image, Some("decoding image"))?;
+            vulkan_ctx
+                .device
+                .set_label(image.image, Some("decoding image"))?;
 
             image_view_create_info = image_view_create_info
                 .image(image.image)
@@ -492,7 +504,10 @@ impl<'a> CodingImageBundle<'a> {
             })
             .collect();
 
-        Ok(Self { image_with_view: Arc::new(image_with_view), video_resource_info })
+        Ok(Self {
+            image_with_view: Arc::new(image_with_view),
+            video_resource_info,
+        })
     }
 
     pub(crate) fn extent(&self) -> vk::Extent3D {
@@ -539,7 +554,11 @@ impl<'a> DecodedPicturesBuffer<'a> {
             layout,
         )?;
 
-        Ok(Self { image, slot_active_bitmap: 0, len: max_dpb_slots as u8 })
+        Ok(Self {
+            image,
+            slot_active_bitmap: 0,
+            len: max_dpb_slots as u8,
+        })
     }
 
     pub(crate) fn reference_slot_info(&self) -> Vec<vk::VideoReferenceSlotInfoKHR<'_>> {
@@ -555,9 +574,7 @@ impl<'a> DecodedPicturesBuffer<'a> {
             .collect()
     }
 
-    pub(crate) fn allocate_reference_picture(
-        &mut self,
-    ) -> Result<usize, VulkanCommonError> {
+    pub(crate) fn allocate_reference_picture(&mut self) -> Result<usize, VulkanCommonError> {
         let i = self.slot_active_bitmap.trailing_ones();
 
         if i >= self.len.into() {

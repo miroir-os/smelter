@@ -6,7 +6,9 @@ use super::DecodeResult;
 
 impl<T> PartialEq for DecodeResult<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.metadata.pic_order_cnt.eq(&other.metadata.pic_order_cnt)
+        self.metadata
+            .pic_order_cnt
+            .eq(&other.metadata.pic_order_cnt)
     }
 }
 
@@ -20,7 +22,10 @@ impl<T> PartialOrd for DecodeResult<T> {
 
 impl<T> Ord for DecodeResult<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.metadata.pic_order_cnt.cmp(&other.metadata.pic_order_cnt).reverse()
+        self.metadata
+            .pic_order_cnt
+            .cmp(&other.metadata.pic_order_cnt)
+            .reverse()
     }
 }
 
@@ -43,7 +48,9 @@ pub(crate) struct FrameSorter<T> {
 
 impl<T> FrameSorter<T> {
     pub(crate) fn new() -> Self {
-        Self { frames: BinaryHeap::new() }
+        Self {
+            frames: BinaryHeap::new(),
+        }
     }
 
     pub(crate) fn put(&mut self, frame: DecodeResult<T>) -> Vec<OutputFrame<T>> {
@@ -70,10 +77,7 @@ impl<T> FrameSorter<T> {
         result
     }
 
-    pub(crate) fn put_frames(
-        &mut self,
-        frames: Vec<DecodeResult<T>>,
-    ) -> Vec<OutputFrame<T>> {
+    pub(crate) fn put_frames(&mut self, frames: Vec<DecodeResult<T>>) -> Vec<OutputFrame<T>> {
         let mut result = Vec::new();
         for unsorted_frame in frames {
             let mut sorted_frames = self.put(unsorted_frame);

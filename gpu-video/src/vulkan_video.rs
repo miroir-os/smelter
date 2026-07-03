@@ -12,13 +12,12 @@ pub mod capabilities {
 pub mod parameters {
     pub use crate::adapter::VulkanAdapterDescriptor;
     pub use crate::device::{
-        ColorRange, ColorSpace, DecoderParameters, EncoderOutputParameters,
-        EncoderParametersH264, EncoderParametersH265, MissedFrameHandling, Rational,
-        VideoParameters, VulkanDeviceDescriptor,
+        ColorRange, ColorSpace, DecoderParameters, EncoderOutputParameters, EncoderParametersH264,
+        EncoderParametersH265, MissedFrameHandling, Rational, VideoParameters,
+        VulkanDeviceDescriptor,
     };
 
-    pub type EncoderOutputParametersH264 =
-        crate::device::EncoderOutputParameters<H264Profile>;
+    pub type EncoderOutputParametersH264 = crate::device::EncoderOutputParameters<H264Profile>;
 
     pub use crate::vulkan_encoder::RateControl;
     #[cfg(feature = "transcoder")]
@@ -105,9 +104,7 @@ use ash::vk;
 pub use crate::adapter::VulkanAdapter;
 pub use crate::device::VulkanDevice;
 pub use crate::instance::VulkanInstance;
-pub use crate::parser::{
-    h264::H264ParserError, reference_manager::ReferenceManagementError,
-};
+pub use crate::parser::{h264::H264ParserError, reference_manager::ReferenceManagementError};
 pub use crate::vulkan_decoder::VulkanDecoderError;
 pub use crate::vulkan_encoder::VulkanEncoderError;
 #[cfg(feature = "transcoder")]
@@ -170,9 +167,7 @@ pub enum VulkanCommonError {
     #[error("Memory copy requested to a buffer that is not set up for receiving input")]
     UploadToImproperBuffer,
 
-    #[error(
-        "A slot in the Decoded Pictures Buffer was requested, but all slots are taken"
-    )]
+    #[error("A slot in the Decoded Pictures Buffer was requested, but all slots are taken")]
     NoFreeSlotsInDpb,
 
     #[error("DPB can have at most 32 slots, {0} was requested")]
@@ -336,8 +331,7 @@ impl BytesDecoder {
         &mut self,
         access_units: Vec<AccessUnit>,
     ) -> Result<Vec<OutputFrame<RawFrameData>>, DecoderError> {
-        let instructions =
-            compile_to_decoder_instructions(&mut self.reference_ctx, access_units)?;
+        let instructions = compile_to_decoder_instructions(&mut self.reference_ctx, access_units)?;
         let unsorted_frames = self.vulkan_decoder.decode_to_bytes(&instructions)?;
         let sorted_frames = self.frame_sorter.put_frames(unsorted_frames);
         Ok(sorted_frames)
@@ -368,11 +362,12 @@ impl BytesEncoderH265 {
     /// Useful when `inline_stream_params` is `false` and the parameters need to be
     /// sent out-of-band (e.g. in RTMP or MP4 headers).
     pub fn vps(&self) -> Result<Vec<u8>, VulkanEncoderError> {
-        self.vulkan_encoder.stream_parameters(H265WriteParametersInfo {
-            write_vps: true,
-            write_sps: false,
-            write_pps: false,
-        })
+        self.vulkan_encoder
+            .stream_parameters(H265WriteParametersInfo {
+                write_vps: true,
+                write_sps: false,
+                write_pps: false,
+            })
     }
 
     /// Retrieve encoded SPS NAL units from the video session parameters, in Annex B.
@@ -380,11 +375,12 @@ impl BytesEncoderH265 {
     /// Useful when `inline_stream_params` is `false` and the parameters need to be
     /// sent out-of-band (e.g. in RTMP or MP4 headers).
     pub fn sps(&self) -> Result<Vec<u8>, VulkanEncoderError> {
-        self.vulkan_encoder.stream_parameters(H265WriteParametersInfo {
-            write_vps: false,
-            write_sps: true,
-            write_pps: false,
-        })
+        self.vulkan_encoder
+            .stream_parameters(H265WriteParametersInfo {
+                write_vps: false,
+                write_sps: true,
+                write_pps: false,
+            })
     }
 
     /// Retrieve encoded PPS NAL units from the video session parameters, in Annex B.
@@ -392,11 +388,12 @@ impl BytesEncoderH265 {
     /// Useful when `inline_stream_params` is `false` and the parameters need to be
     /// sent out-of-band (e.g. in RTMP or MP4 headers).
     pub fn pps(&self) -> Result<Vec<u8>, VulkanEncoderError> {
-        self.vulkan_encoder.stream_parameters(H265WriteParametersInfo {
-            write_vps: false,
-            write_sps: false,
-            write_pps: true,
-        })
+        self.vulkan_encoder
+            .stream_parameters(H265WriteParametersInfo {
+                write_vps: false,
+                write_sps: false,
+                write_pps: true,
+            })
     }
 }
 
@@ -424,10 +421,11 @@ impl BytesEncoderH264 {
     /// Useful when `inline_stream_params` is `false` and the parameters need to be
     /// sent out-of-band (e.g. in RTMP or MP4 headers).
     pub fn sps(&self) -> Result<Vec<u8>, VulkanEncoderError> {
-        self.vulkan_encoder.stream_parameters(H264WriteParametersInfo {
-            write_sps: true,
-            write_pps: false,
-        })
+        self.vulkan_encoder
+            .stream_parameters(H264WriteParametersInfo {
+                write_sps: true,
+                write_pps: false,
+            })
     }
 
     /// Retrieve encoded PPS NAL units from the video session parameters, in Annex B.
@@ -435,9 +433,10 @@ impl BytesEncoderH264 {
     /// Useful when `inline_stream_params` is `false` and the parameters need to be
     /// sent out-of-band (e.g. in RTMP or MP4 headers).
     pub fn pps(&self) -> Result<Vec<u8>, VulkanEncoderError> {
-        self.vulkan_encoder.stream_parameters(H264WriteParametersInfo {
-            write_sps: false,
-            write_pps: true,
-        })
+        self.vulkan_encoder
+            .stream_parameters(H264WriteParametersInfo {
+                write_sps: false,
+                write_pps: true,
+            })
     }
 }

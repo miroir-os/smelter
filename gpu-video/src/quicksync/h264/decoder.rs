@@ -12,12 +12,11 @@ use tracing::info;
 use crate::{
     EncodedInputChunk, FrameMetadata, H264DecoderEvent, OutputFrame, VideoResolution,
     device::{ColorRange, ColorSpace},
-    dmabuf::QuickSyncDmaBufSync,
     parser::h264::{H264Parser, ParsedNalu},
     quicksync::{
         h264::{
             H264Session, H264SessionError, ImportedRgbaSurface, QUICKSYNC_ASYNC_DEPTH,
-            VplSyncQueue, init_dmabuf_sync, retry_device_busy, vpl_u16_dimension,
+            VplSyncQueue, retry_device_busy, vpl_u16_dimension,
         },
         vpl::{Component, FrameSurface, SyncWait, check_status_allow_warnings},
     },
@@ -27,7 +26,6 @@ const NO_TIMESTAMP: u64 = u64::MAX;
 
 pub struct WgpuTexturesDecoderH264 {
     decoder: QuickSyncH264Decoder,
-    sync: QuickSyncDmaBufSync,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     completed_copy: Arc<AtomicU64>,
@@ -51,11 +49,9 @@ impl WgpuTexturesDecoderH264 {
         adapter_info: &wgpu::AdapterInfo,
     ) -> Result<Self, QuickSyncH264DecoderError> {
         info!("Initializing Intel Quick Sync H264 decoder");
-        let sync = init_dmabuf_sync(&device, &queue)?;
         let decoder = QuickSyncH264Decoder::new(adapter_info)?;
         Ok(Self {
             decoder,
-            sync,
             device,
             queue,
             completed_copy: Arc::new(AtomicU64::new(0)),
@@ -71,9 +67,7 @@ impl WgpuTexturesDecoderH264 {
         self.process_event(H264DecoderEvent::DecodeChunk(frame))
     }
 
-    pub fn flush(
-        &mut self,
-    ) -> Result<Vec<OutputFrame<wgpu::Texture>>, QuickSyncH264DecoderError> {
+    pub fn flush(&mut self) -> Result<Vec<OutputFrame<wgpu::Texture>>, QuickSyncH264DecoderError> {
         self.process_event(H264DecoderEvent::Flush)
     }
 
@@ -83,21 +77,21 @@ impl WgpuTexturesDecoderH264 {
     ) -> Result<Vec<OutputFrame<wgpu::Texture>>, QuickSyncH264DecoderError> {
         let frames = match event {
             H264DecoderEvent::DecodeChunk(chunk) => self.decoder.decode(chunk),
-            H264DecoderEvent::SignalFrameEnd => {
-                self.decoder.drain_completed(SyncWait::Poll)
-            }
+            H264DecoderEvent::SignalFrameEnd => self.decoder.drain_completed(SyncWait::Poll),
             H264DecoderEvent::Flush => self.decoder.flush(),
             H264DecoderEvent::SignalDataLoss => {
                 self.decoder.reset();
                 Ok(Vec::new())
             }
             H264DecoderEvent::DecodeParsedFrame(_) => {
-                Err("Intel Quick Sync H264 decoder accepts encoded bytestream chunks"
-                    .into())
+                Err("Intel Quick Sync H264 decoder accepts encoded bytestream chunks".into())
             }
         }
         .map_err(QuickSyncH264DecoderError::Decode)?;
-        frames.into_iter().map(|frame| self.copy_frame(frame)).collect()
+        frames
+            .into_iter()
+            .map(|frame| self.copy_frame(frame))
+            .collect()
     }
 
     fn copy_frame(
@@ -146,8 +140,9 @@ impl WgpuTexturesDecoderH264 {
                 wgpu::TextureUses::COPY_SRC,
             )
             .map_err(|err| QuickSyncH264DecoderError::Decode(err.to_string()))?;
-        let mut encoder =
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Intel Quick Sync H264 decoder output copy"),
             });
         encoder.copy_texture_to_texture(
@@ -155,13 +150,9 @@ impl WgpuTexturesDecoderH264 {
             texture.as_image_copy(),
             size,
         );
-        self.sync
-            .submit_frame_read(
-                imported.frame.sync(),
-                encoder,
-                "Intel Quick Sync H264 decoder output copy",
-            )
-            .map_err(|err| QuickSyncH264DecoderError::Decode(err.to_string()))?;
+        // The VPP output was CPU-synced above and the surface stays alive in
+        // pending_copies until this copy drains, so no DMA-BUF fences needed.
+        self.queue.submit([encoder.finish()]);
 
         let serial = self.next_copy;
         self.next_copy += 1;
@@ -176,13 +167,20 @@ impl WgpuTexturesDecoderH264 {
             _decoded: data,
         });
 
-        Ok(OutputFrame { data: texture, metadata })
+        Ok(OutputFrame {
+            data: texture,
+            metadata,
+        })
     }
 
     fn retire_completed_copies(&mut self) {
         let _ = self.device.poll(wgpu::PollType::Poll);
         let completed = self.completed_copy.load(Ordering::Acquire);
-        while self.pending_copies.front().is_some_and(|copy| copy.serial <= completed) {
+        while self
+            .pending_copies
+            .front()
+            .is_some_and(|copy| copy.serial <= completed)
+        {
             self.pending_copies.pop_front();
         }
     }
@@ -331,9 +329,7 @@ impl QuickSyncH264Decoder {
                 frames.extend(self.drain_completed(SyncWait::Block)?);
             }
             match self.submit_decode(bitstream.as_deref_mut(), resolution)? {
-                DecodeSubmit::Submitted => {
-                    frames.extend(self.drain_completed(SyncWait::Poll)?)
-                }
+                DecodeSubmit::Submitted => frames.extend(self.drain_completed(SyncWait::Poll)?),
                 DecodeSubmit::NeedMoreData => break,
             }
         }
@@ -346,22 +342,22 @@ impl QuickSyncH264Decoder {
         resolution: VideoResolution,
     ) -> Result<DecodeSubmit, String> {
         loop {
-            let bitstream =
-                bitstream.as_deref_mut().map_or(std::ptr::null_mut(), |bitstream| {
+            let bitstream = bitstream
+                .as_deref_mut()
+                .map_or(std::ptr::null_mut(), |bitstream| {
                     bitstream as *mut vpl::mfxBitstream
                 });
             let mut output = std::ptr::null_mut();
             let mut syncp = std::ptr::null_mut();
-            let status =
-                retry_device_busy("MFXVideoDECODE_DecodeFrameAsync", || unsafe {
-                    vpl::MFXVideoDECODE_DecodeFrameAsync(
-                        self.quicksync.session.raw(),
-                        bitstream,
-                        std::ptr::null_mut(),
-                        &mut output,
-                        &mut syncp,
-                    )
-                })?;
+            let status = retry_device_busy("MFXVideoDECODE_DecodeFrameAsync", || unsafe {
+                vpl::MFXVideoDECODE_DecodeFrameAsync(
+                    self.quicksync.session.raw(),
+                    bitstream,
+                    std::ptr::null_mut(),
+                    &mut output,
+                    &mut syncp,
+                )
+            })?;
             match status {
                 vpl::mfxStatus_MFX_ERR_NONE => {
                     self.queue_output(syncp, output, resolution)?;
@@ -419,16 +415,10 @@ impl QuickSyncH264Decoder {
         Ok(())
     }
 
-    fn refresh_video_param(
-        &self,
-        current_resolution: VideoResolution,
-    ) -> Result<(), String> {
+    fn refresh_video_param(&self, current_resolution: VideoResolution) -> Result<(), String> {
         let mut video_param = decoder_video_param();
         check_status_allow_warnings("MFXVideoDECODE_GetVideoParam", unsafe {
-            vpl::MFXVideoDECODE_GetVideoParam(
-                self.quicksync.session.raw(),
-                &mut video_param,
-            )
+            vpl::MFXVideoDECODE_GetVideoParam(self.quicksync.session.raw(), &mut video_param)
         })
         .map_err(|err| err.to_string())?;
         let resolution = decoder_layout(&video_param)?.visible;
@@ -439,11 +429,19 @@ impl QuickSyncH264Decoder {
     }
 
     fn output_frame(pending: PendingDecode) -> OutputFrame<DecodedSurface> {
-        let PendingDecode { surface, resolution, color_space, color_range, fallback_pts } =
-            pending;
+        let PendingDecode {
+            surface,
+            resolution,
+            color_space,
+            color_range,
+            fallback_pts,
+        } = pending;
         let timestamp = surface.timestamp();
         OutputFrame {
-            data: DecodedSurface { surface, resolution },
+            data: DecodedSurface {
+                surface,
+                resolution,
+            },
             metadata: FrameMetadata {
                 pts: output_pts(timestamp, fallback_pts),
                 color_space,
@@ -468,9 +466,7 @@ impl QuickSyncH264Decoder {
             .collect())
     }
 
-    fn drain_all_completed(
-        &mut self,
-    ) -> Result<Vec<OutputFrame<DecodedSurface>>, String> {
+    fn drain_all_completed(&mut self) -> Result<Vec<OutputFrame<DecodedSurface>>, String> {
         Ok(self
             .pending
             .drain_all_completed(&self.quicksync)?
@@ -558,9 +554,8 @@ fn set_decoder_video_param_defaults(video_param: &mut vpl::mfxVideoParam) {
 }
 
 fn input_bitstream(data: &[u8], pts: Option<u64>) -> Result<vpl::mfxBitstream, String> {
-    let len = u32::try_from(data.len()).map_err(|_| {
-        format!("H264 bitstream length {} exceeds oneVPL limit", data.len())
-    })?;
+    let len = u32::try_from(data.len())
+        .map_err(|_| format!("H264 bitstream length {} exceeds oneVPL limit", data.len()))?;
     let mut bitstream = unsafe { std::mem::zeroed::<vpl::mfxBitstream>() };
     bitstream.Data = data.as_ptr() as *mut u8;
     bitstream.DataLength = len;
@@ -570,7 +565,11 @@ fn input_bitstream(data: &[u8], pts: Option<u64>) -> Result<vpl::mfxBitstream, S
 }
 
 fn output_pts(timestamp: u64, fallback_pts: Option<u64>) -> Option<u64> {
-    if timestamp == NO_TIMESTAMP { fallback_pts } else { Some(timestamp) }
+    if timestamp == NO_TIMESTAMP {
+        fallback_pts
+    } else {
+        Some(timestamp)
+    }
 }
 
 struct DecoderLayout {
@@ -597,7 +596,9 @@ fn decoder_layout(video_param: &vpl::mfxVideoParam) -> Result<DecoderLayout, Str
 
 fn coded_dimension(name: &str, coded: u16) -> Result<u32, String> {
     if coded == 0 {
-        Err(format!("Intel Quick Sync H264 decoder reported zero coded {name}"))
+        Err(format!(
+            "Intel Quick Sync H264 decoder reported zero coded {name}"
+        ))
     } else {
         Ok(u32::from(coded))
     }
@@ -606,7 +607,9 @@ fn coded_dimension(name: &str, coded: u16) -> Result<u32, String> {
 fn visible_dimension(name: &str, crop: u16, coded: u16) -> Result<u32, String> {
     let dimension = if crop == 0 { coded } else { crop };
     if dimension == 0 {
-        Err(format!("Intel Quick Sync H264 decoder reported zero visible {name}"))
+        Err(format!(
+            "Intel Quick Sync H264 decoder reported zero visible {name}"
+        ))
     } else {
         Ok(u32::from(dimension))
     }

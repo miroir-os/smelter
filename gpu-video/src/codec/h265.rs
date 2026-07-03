@@ -4,11 +4,10 @@ use ash::vk;
 
 use crate::{
     codec::{
-        Codec, CodecCapabilities, CodecSpecificDecodeCapabilities,
-        CodecSpecificEncodeCapabilities, CodecSpecificEncoderQualityLevelProperties,
+        Codec, CodecCapabilities, CodecSpecificDecodeCapabilities, CodecSpecificEncodeCapabilities,
+        CodecSpecificEncoderQualityLevelProperties,
         h265::parameters::{
-            VkH265PictureParameterSet, VkH265SequenceParameterSet,
-            VkH265VideoParameterSet,
+            VkH265PictureParameterSet, VkH265SequenceParameterSet, VkH265VideoParameterSet,
         },
     },
     device::caps::NativeEncodeH265Capabilities,

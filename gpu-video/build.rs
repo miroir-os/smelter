@@ -22,7 +22,9 @@ fn build_transcoding_shader() {
     println!("cargo:rerun-if-changed=src/vulkan_transcoder/shader.wgsl");
 
     let mut front = naga::front::wgsl::Frontend::new();
-    let parsed = front.parse(include_str!("src/vulkan_transcoder/shader.wgsl")).unwrap();
+    let parsed = front
+        .parse(include_str!("src/vulkan_transcoder/shader.wgsl"))
+        .unwrap();
     let mut validator = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::all(),
@@ -34,7 +36,10 @@ fn build_transcoding_shader() {
     let compiled = naga::back::spv::write_vec(
         &parsed,
         &module_info,
-        &naga::back::spv::Options { lang_version: (1, 6), ..Default::default() },
+        &naga::back::spv::Options {
+            lang_version: (1, 6),
+            ..Default::default()
+        },
         Some(&naga::back::spv::PipelineOptions {
             shader_stage: naga::ShaderStage::Compute,
             entry_point: "main".into(),
@@ -44,7 +49,10 @@ fn build_transcoding_shader() {
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let out_path = std::path::Path::new(&out_dir).join("transcoding_shader.spv");
-    let bytes: Vec<u8> = compiled.iter().flat_map(|word| word.to_le_bytes()).collect();
+    let bytes: Vec<u8> = compiled
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
     std::fs::write(&out_path, bytes).unwrap();
 }
 
@@ -88,7 +96,9 @@ fn build_quicksync_vpl() {
     for include_dir in libvpl.include_paths {
         builder = builder.clang_arg(format!("-I{}", include_dir.display()));
     }
-    let bindings = builder.generate().expect("failed to generate libvpl bindings");
+    let bindings = builder
+        .generate()
+        .expect("failed to generate libvpl bindings");
     std::fs::write(out_dir.join("vpl_bindings.rs"), bindings.to_string())
         .expect("failed to write libvpl bindings");
 }
@@ -110,24 +120,24 @@ fn build_quicksync_va() {
             "va_wrapper.h",
             "#include <va/va.h>\n#include <va/va_drm.h>\n#include <va/va_drmcommon.h>\n",
         )
-        .allowlist_function(
-            "va(GetDisplayDRM|Initialize|Terminate|ExportSurfaceHandle|CreateSurfaces|DestroySurfaces)",
-        )
-        // POC(dmabuf-import): VASurfaceAttrib*/VAGenericValue* added for the external
-        // NV12 dma-buf import path (vaCreateSurfaces with DRM_PRIME_2).
-        .allowlist_type(
-            "(VADisplay|VASurfaceID|VAStatus|VASurfaceAttrib.*|VAGenericValue.*|.*VADRMPRIME.*)",
-        )
+        .allowlist_function("va(GetDisplayDRM|Initialize|Terminate|ExportSurfaceHandle)")
+        .allowlist_type("(VADisplay|VASurfaceID|VAStatus|.*VADRMPRIME.*)")
         .allowlist_var(
-            "(VA_(STATUS_SUCCESS|EXPORT_SURFACE_READ_WRITE|SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2|SURFACE_ATTRIB_SETTABLE|FOURCC_NV12|RT_FORMAT_YUV420)|VASurfaceAttrib.*|VAGenericValue.*)",
+            "VA_(STATUS_SUCCESS|EXPORT_SURFACE_READ_WRITE|EXPORT_SURFACE_SEPARATE_LAYERS|SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2)",
         )
         .generate_comments(false)
         .derive_debug(false)
         .derive_default(false);
-    for include_dir in libva.include_paths.into_iter().chain(libva_drm.include_paths) {
+    for include_dir in libva
+        .include_paths
+        .into_iter()
+        .chain(libva_drm.include_paths)
+    {
         builder = builder.clang_arg(format!("-I{}", include_dir.display()));
     }
-    let bindings = builder.generate().expect("failed to generate libva bindings");
+    let bindings = builder
+        .generate()
+        .expect("failed to generate libva bindings");
     std::fs::write(out_dir.join("va_bindings.rs"), bindings.to_string())
         .expect("failed to write libva bindings");
 }

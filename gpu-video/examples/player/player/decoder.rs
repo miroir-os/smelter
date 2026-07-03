@@ -5,9 +5,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use gpu_video::{
-    EncodedInputChunk, OutputFrame, VulkanDevice, parameters::DecoderParameters,
-};
+use gpu_video::{EncodedInputChunk, OutputFrame, VulkanDevice, parameters::DecoderParameters};
 
 use super::FrameWithPts;
 
@@ -40,7 +38,10 @@ pub fn run_decoder(
             return;
         }
 
-        let frame = EncodedInputChunk { data: &buffer[..n], pts: None };
+        let frame = EncodedInputChunk {
+            data: &buffer[..n],
+            pts: None,
+        };
 
         let decoded = decoder.decode(frame).unwrap();
 

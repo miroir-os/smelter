@@ -30,7 +30,11 @@ impl Allocator {
 
         let allocator = unsafe { vk_mem::Allocator::new(allocator_create_info)? };
 
-        Ok(Self { allocator, device, _instance: instance })
+        Ok(Self {
+            allocator,
+            device,
+            _instance: instance,
+        })
     }
 }
 
@@ -53,10 +57,12 @@ impl MemoryAllocation {
         memory_requirements: &vk::MemoryRequirements,
         alloc_info: &vk_mem::AllocationCreateInfo,
     ) -> Result<Self, VulkanCommonError> {
-        let allocation =
-            unsafe { allocator.allocate_memory(memory_requirements, alloc_info)? };
+        let allocation = unsafe { allocator.allocate_memory(memory_requirements, alloc_info)? };
 
-        Ok(Self { allocation, allocator })
+        Ok(Self {
+            allocation,
+            allocator,
+        })
     }
 
     pub(crate) fn allocation_info(&self) -> vk_mem::AllocationInfo {
@@ -85,11 +91,12 @@ pub(crate) struct DecodeInputBufferPool<'a> {
 }
 
 impl<'a> DecodeInputBufferPool<'a> {
-    pub(crate) fn new(
-        allocator: Arc<Allocator>,
-        profile: Arc<H264DecodeProfileInfo<'a>>,
-    ) -> Self {
-        Self { allocator, freelist: Arc::new(Mutex::new(Vec::new())), profile }
+    pub(crate) fn new(allocator: Arc<Allocator>, profile: Arc<H264DecodeProfileInfo<'a>>) -> Self {
+        Self {
+            allocator,
+            freelist: Arc::new(Mutex::new(Vec::new())),
+            profile,
+        }
     }
 
     pub(crate) fn buffer(&mut self) -> Result<DecodeInputBuffer, VulkanDecoderError> {
@@ -121,7 +128,12 @@ impl DecodeInputBuffer {
         const INITIAL_SIZE: u64 = 1024 * 1024; // 1MiB
         let buffer = Buffer::new_decode(allocator.clone(), INITIAL_SIZE, profile)?;
 
-        Ok(Self { buffer, capacity: INITIAL_SIZE, allocator, pool_freelist })
+        Ok(Self {
+            buffer,
+            capacity: INITIAL_SIZE,
+            allocator,
+            pool_freelist,
+        })
     }
 
     /// size must be passed in here for alignment reasons
@@ -135,8 +147,7 @@ impl DecodeInputBuffer {
 
         if self.capacity < size {
             let new_capacity = size.max(2 * self.capacity);
-            self.buffer =
-                Buffer::new_decode(self.allocator.clone(), new_capacity, profile)?;
+            self.buffer = Buffer::new_decode(self.allocator.clone(), new_capacity, profile)?;
             self.capacity = new_capacity;
         }
 
@@ -227,11 +238,8 @@ impl Buffer {
         allocator: Arc<Allocator>,
         data: &[u8],
     ) -> Result<Self, VulkanCommonError> {
-        let mut result = Self::new_transfer(
-            allocator,
-            data.len() as u64,
-            TransferDirection::MemToGpu,
-        )?;
+        let mut result =
+            Self::new_transfer(allocator, data.len() as u64, TransferDirection::MemToGpu)?;
         result.copy_data_into(data)?;
 
         Ok(result)
@@ -243,9 +251,7 @@ impl Buffer {
         transfer_direction: TransferDirection,
     ) -> Result<Self, VulkanCommonError> {
         let allocation_flags = match transfer_direction {
-            TransferDirection::GpuToMem => {
-                vk_mem::AllocationCreateFlags::HOST_ACCESS_RANDOM
-            }
+            TransferDirection::GpuToMem => vk_mem::AllocationCreateFlags::HOST_ACCESS_RANDOM,
             TransferDirection::MemToGpu => {
                 vk_mem::AllocationCreateFlags::HOST_ACCESS_SEQUENTIAL_WRITE
             }
@@ -261,7 +267,12 @@ impl Buffer {
         let (buffer, allocation) =
             unsafe { allocator.create_buffer(&create_info, &allocation_create_info)? };
 
-        Ok(Self { buffer, allocation, allocator, transfer_direction })
+        Ok(Self {
+            buffer,
+            allocation,
+            allocator,
+            transfer_direction,
+        })
     }
 
     /// ## Safety
@@ -310,7 +321,10 @@ impl Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        unsafe { self.allocator.destroy_buffer(self.buffer, &mut self.allocation) }
+        unsafe {
+            self.allocator
+                .destroy_buffer(self.buffer, &mut self.allocation)
+        }
     }
 }
 
@@ -374,8 +388,10 @@ impl Image {
     ) -> Result<Self, VulkanCommonError> {
         let mut profile_list_info = vk::VideoProfileListInfoKHR::default()
             .profiles(std::slice::from_ref(&profile.profile_info));
-        let queue_indices =
-            [device.encode_queues.family_index as u32, additional_queue_index];
+        let queue_indices = [
+            device.encode_queues.family_index as u32,
+            additional_queue_index,
+        ];
         let encode_image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
@@ -384,10 +400,7 @@ impl Image {
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(
-                vk::ImageUsageFlags::TRANSFER_DST
-                    | vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR,
-            )
+            .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR)
             .sharing_mode(vk::SharingMode::CONCURRENT)
             .queue_family_indices(&queue_indices)
             .initial_layout(vk::ImageLayout::UNDEFINED)
@@ -419,15 +432,15 @@ impl Image {
         let end = if subresource_range.layer_count == vk::REMAINING_ARRAY_LAYERS {
             layout.len()
         } else {
-            subresource_range.base_array_layer as usize
-                + subresource_range.layer_count as usize
+            subresource_range.base_array_layer as usize + subresource_range.layer_count as usize
         };
 
         let mut current_old_layout = None;
         let mut current_start = None;
 
-        for (i, layout) in
-            layout[subresource_range.base_array_layer as usize..end].iter().enumerate()
+        for (i, layout) in layout[subresource_range.base_array_layer as usize..end]
+            .iter()
+            .enumerate()
         {
             let i = i + subresource_range.base_array_layer as usize;
 
@@ -448,13 +461,14 @@ impl Image {
 
                 let start = current_start.unwrap();
 
-                let barrier = barrier.old_layout(old).subresource_range(
-                    vk::ImageSubresourceRange {
-                        base_array_layer: start as u32,
-                        layer_count: (i - start) as u32,
-                        ..subresource_range
-                    },
-                );
+                let barrier =
+                    barrier
+                        .old_layout(old)
+                        .subresource_range(vk::ImageSubresourceRange {
+                            base_array_layer: start as u32,
+                            layer_count: (i - start) as u32,
+                            ..subresource_range
+                        });
 
                 unsafe {
                     self.device.cmd_pipeline_barrier2(
@@ -476,8 +490,9 @@ impl Image {
         if let Some(old) = current_old_layout {
             let start = current_start.unwrap();
 
-            let barrier =
-                barrier.old_layout(old).subresource_range(vk::ImageSubresourceRange {
+            let barrier = barrier
+                .old_layout(old)
+                .subresource_range(vk::ImageSubresourceRange {
                     base_array_layer: start as u32,
                     layer_count: (end - start) as u32,
                     ..subresource_range
@@ -491,8 +506,7 @@ impl Image {
             }
         }
 
-        for layout in layout[subresource_range.base_array_layer as usize..end].iter_mut()
-        {
+        for layout in layout[subresource_range.base_array_layer as usize..end].iter_mut() {
             *layout = new_layout;
         }
 
@@ -596,7 +610,8 @@ impl Drop for Image {
                 tracing::error!("Error while freeing image: {e}")
             }
 
-            self.allocator.destroy_image(self.image, &mut self.allocation)
+            self.allocator
+                .destroy_image(self.image, &mut self.allocation)
         };
     }
 }
@@ -615,7 +630,11 @@ impl ImageView {
     ) -> Result<Self, VulkanCommonError> {
         let view = unsafe { device.create_image_view(create_info, None)? };
 
-        Ok(ImageView { view, _image: image, device: device.clone() })
+        Ok(ImageView {
+            view,
+            _image: image,
+            device: device.clone(),
+        })
     }
 }
 
