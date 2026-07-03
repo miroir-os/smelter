@@ -1,7 +1,14 @@
 mod decoder;
 mod encoder;
 
-use std::{collections::VecDeque, os::fd::AsFd, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    os::fd::{AsFd, AsRawFd, IntoRawFd, OwnedFd},
+    sync::Arc,
+    time::Duration,
+};
+
+use ash::vk;
 
 pub use decoder::{QuickSyncH264DecoderError, WgpuTexturesDecoderH264};
 pub use encoder::{
@@ -14,7 +21,7 @@ use crate::{
     quicksync::sys as vpl,
     quicksync::{
         display::{DrmRenderNode, quicksync_drm_render_node},
-        va::{VaDisplay, VaError},
+        va::{DrmPrimeNv12Surface, VaDisplay, VaError},
         vpl::{Codec, Component, ExportedSurface, FrameSurface, Session, SyncStatus, SyncWait},
     },
 };
@@ -141,101 +148,44 @@ impl H264Session {
         Ok(Self { session, display })
     }
 
-    pub(super) fn import_bgr4_surface(
+    /// Acquires one encoder input surface: oneVPL allocates it, VA exports the
+    /// backing NV12 dma-buf, and the single object is imported as one wgpu
+    /// NV12 texture the caller copies into.
+    pub(super) fn acquire_nv12_input(
         &self,
         device: &wgpu::Device,
-        surface: &FrameSurface,
-        usage: wgpu::TextureUsages,
-        initial_state: wgpu::TextureUses,
-    ) -> Result<ImportedRgbaSurface, H264SessionError> {
-        const LABEL: &str = "Intel Quick Sync BGR4 decoder DMA-BUF import";
-        let exported = self.session.export_va_surface(surface)?;
-        let dma_buf = self
-            .display
-            .export_single_plane_surface(exported.va_surface_id())?;
-        if dma_buf.fourcc.to_le_bytes() != *b"ABGR" {
-            return Err(H264SessionError::DmaBuf(format!(
-                "expected BGR4 VA surface to export as ABGR DRM fourcc, got {:?}",
-                dma_buf.fourcc.to_le_bytes()
-            )));
-        }
-        let texture = import_dma_buf_texture(
-            device,
-            dma_buf.fd,
-            DmaBufTextureLayout {
-                label: LABEL,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                width: dma_buf.width,
-                height: dma_buf.height,
-                modifier: dma_buf.modifier,
-                pitch: dma_buf.pitch,
-                offset: dma_buf.offset,
-            },
-            usage,
-            initial_state,
-        )
-        .map_err(H264SessionError::DmaBuf)?;
-        Ok(ImportedRgbaSurface {
-            frame: Arc::new(RgbaDmaBufFrame { texture }),
+    ) -> Result<EncodeInputSurface, H264SessionError> {
+        let surface = self.session.get_surface_for_encode()?;
+        let exported = self.session.export_va_surface(&surface)?;
+        let dma_buf = self.display.export_nv12_surface(exported.va_surface_id())?;
+        let sync_fd = clone_dma_buf_fd(&dma_buf.fd)?;
+        let texture =
+            import_nv12_dma_buf_texture(device, dma_buf, wgpu::TextureUsages::COPY_DST)
+                .map_err(H264SessionError::DmaBuf)?;
+        Ok(EncodeInputSurface {
+            surface,
             _exported: exported,
+            frame: Arc::new(Nv12DmaBufFrame {
+                texture,
+                sync: DmaBufSyncFd::new(sync_fd),
+            }),
         })
     }
 
-    pub(super) fn import_nv12_surface(
+    /// Imports a decoded NV12 surface as one wgpu texture the decoder copies
+    /// out of. The caller CPU-syncs the decode before reading, so no dma-buf
+    /// fences are involved.
+    pub(super) fn import_nv12_frame(
         &self,
         device: &wgpu::Device,
         surface: &FrameSurface,
-        usage: wgpu::TextureUsages,
-        initial_state: wgpu::TextureUses,
-    ) -> Result<ImportedNv12Surface, H264SessionError> {
-        const LABEL: &str = "Intel Quick Sync NV12 encode DMA-BUF import";
+    ) -> Result<ImportedNv12Frame, H264SessionError> {
         let exported = self.session.export_va_surface(surface)?;
-        let dma_buf = self
-            .display
-            .export_nv12_surface(exported.va_surface_id())?;
-        let sync_fd = clone_dma_buf_fd(&dma_buf.fd)?;
-        let uv_fd = clone_dma_buf_fd(&dma_buf.fd)?;
-
-        let y = import_dma_buf_texture(
-            device,
-            dma_buf.fd,
-            DmaBufTextureLayout {
-                label: LABEL,
-                format: wgpu::TextureFormat::R8Unorm,
-                width: dma_buf.width,
-                height: dma_buf.height,
-                modifier: dma_buf.modifier,
-                pitch: dma_buf.y_pitch,
-                offset: dma_buf.y_offset,
-            },
-            usage,
-            initial_state,
-        )
-        .map_err(H264SessionError::DmaBuf)?;
-        let uv = import_dma_buf_texture(
-            device,
-            uv_fd,
-            DmaBufTextureLayout {
-                label: LABEL,
-                format: wgpu::TextureFormat::Rg8Unorm,
-                width: dma_buf.width / 2,
-                height: dma_buf.height / 2,
-                modifier: dma_buf.modifier,
-                pitch: dma_buf.uv_pitch,
-                offset: dma_buf.uv_offset,
-            },
-            usage,
-            initial_state,
-        )
-        .map_err(H264SessionError::DmaBuf)?;
-        Ok(ImportedNv12Surface {
-            frame: Arc::new(Nv12DmaBufFrame {
-                y,
-                uv,
-                sync: DmaBufSyncFd::new(sync_fd),
-            }),
-            _exported: exported,
-        })
+        let dma_buf = self.display.export_nv12_surface(exported.va_surface_id())?;
+        let texture =
+            import_nv12_dma_buf_texture(device, dma_buf, wgpu::TextureUsages::COPY_SRC)
+                .map_err(H264SessionError::DmaBuf)?;
+        Ok(ImportedNv12Frame { texture, _exported: exported })
     }
 
     pub(super) fn sync_status(
@@ -247,39 +197,43 @@ impl H264Session {
     }
 }
 
-pub(super) struct ImportedRgbaSurface {
-    pub(super) frame: Arc<RgbaDmaBufFrame>,
+/// One pooled encoder input. Declaration order is drop order, consumers
+/// before producers: free the imported Vulkan image, release the VA export
+/// mapping, then release the owning oneVPL surface — releasing the surface
+/// while its export mapping is alive corrupts the runtime's refcounts.
+pub(super) struct EncodeInputSurface {
+    pub(super) frame: Arc<Nv12DmaBufFrame>,
+    _exported: ExportedSurface,
+    pub(super) surface: FrameSurface,
+}
+
+/// A decoded frame's imported texture. Declaration order is drop order:
+/// free the imported Vulkan image before releasing the VA export mapping.
+pub(super) struct ImportedNv12Frame {
+    texture: wgpu::Texture,
     _exported: ExportedSurface,
 }
 
-pub(super) struct RgbaDmaBufFrame {
-    texture: wgpu::Texture,
-}
-
-impl RgbaDmaBufFrame {
+impl ImportedNv12Frame {
     pub(super) fn texture(&self) -> &wgpu::Texture {
         &self.texture
     }
 }
 
-pub(super) struct ImportedNv12Surface {
-    pub(super) frame: Arc<Nv12DmaBufFrame>,
-    _exported: ExportedSurface,
+fn clone_dma_buf_fd(fd: &OwnedFd) -> Result<OwnedFd, H264SessionError> {
+    fd.as_fd()
+        .try_clone_to_owned()
+        .map_err(|err| H264SessionError::DmaBuf(err.to_string()))
 }
 
 pub(super) struct Nv12DmaBufFrame {
-    y: wgpu::Texture,
-    uv: wgpu::Texture,
+    texture: wgpu::Texture,
     sync: DmaBufSyncFd,
 }
 
 impl Nv12DmaBufFrame {
-    pub(super) fn y_texture(&self) -> &wgpu::Texture {
-        &self.y
-    }
-
-    pub(super) fn uv_texture(&self) -> &wgpu::Texture {
-        &self.uv
+    pub(super) fn texture(&self) -> &wgpu::Texture {
+        &self.texture
     }
 
     pub(super) fn sync(&self) -> &DmaBufSyncFd {
@@ -287,74 +241,15 @@ impl Nv12DmaBufFrame {
     }
 }
 
-fn clone_dma_buf_fd(fd: &std::os::fd::OwnedFd) -> Result<std::os::fd::OwnedFd, H264SessionError> {
-    fd.as_fd()
-        .try_clone_to_owned()
-        .map_err(|err| H264SessionError::DmaBuf(err.to_string()))
-}
-
-struct DmaBufTextureLayout {
-    label: &'static str,
-    format: wgpu::TextureFormat,
-    width: u32,
-    height: u32,
-    modifier: u64,
-    pitch: u32,
-    offset: u32,
-}
-
-fn import_dma_buf_texture(
-    device: &wgpu::Device,
-    fd: std::os::fd::OwnedFd,
-    layout: DmaBufTextureLayout,
-    usage: wgpu::TextureUsages,
-    initial_state: wgpu::TextureUses,
-) -> Result<wgpu::Texture, String> {
-    let size = wgpu::Extent3d {
-        width: layout.width,
-        height: layout.height,
-        depth_or_array_layers: 1,
-    };
-    let hal_texture = unsafe {
-        let hal_device = device
-            .as_hal::<VkApi>()
-            .ok_or_else(|| format!("{} requires a Vulkan wgpu device", layout.label))?;
-        (*hal_device)
-            .texture_from_dmabuf_fd(
-                fd,
-                &wgpu::hal::TextureDescriptor {
-                    label: Some(layout.label),
-                    size,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: layout.format,
-                    usage: texture_uses(usage),
-                    memory_flags: wgpu::hal::MemoryFlags::empty(),
-                    view_formats: Vec::new(),
-                },
-                layout.modifier,
-                u64::from(layout.pitch),
-                u64::from(layout.offset),
-            )
-            .map_err(|err| format!("{}: DMA-BUF import failed: {err}", layout.label))?
-    };
-    Ok(unsafe {
-        device.create_texture_from_hal::<VkApi>(
-            hal_texture,
-            &wgpu::TextureDescriptor {
-                label: Some(layout.label),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: layout.format,
-                usage,
-                view_formats: &[],
-            },
-            initial_state,
-        )
-    })
+fn vk_transfer_usage(usage: wgpu::TextureUsages) -> vk::ImageUsageFlags {
+    let mut flags = vk::ImageUsageFlags::empty();
+    if usage.contains(wgpu::TextureUsages::COPY_DST) {
+        flags |= vk::ImageUsageFlags::TRANSFER_DST;
+    }
+    if usage.contains(wgpu::TextureUsages::COPY_SRC) {
+        flags |= vk::ImageUsageFlags::TRANSFER_SRC;
+    }
+    flags
 }
 
 fn texture_uses(usage: wgpu::TextureUsages) -> wgpu::TextureUses {
@@ -372,6 +267,163 @@ fn texture_uses(usage: wgpu::TextureUsages) -> wgpu::TextureUses {
         uses |= wgpu::TextureUses::COLOR_TARGET;
     }
     uses
+}
+
+/// Imports the single-object NV12 dma-buf exported from a VA surface as one
+/// multi-planar wgpu texture. wgpu's `texture_from_dmabuf_fd` only handles
+/// single-plane formats (https://github.com/gfx-rs/wgpu/issues/9801), so the
+/// image is created and bound with raw Vulkan (explicit per-plane DRM
+/// modifier layouts) and wrapped via `texture_from_raw`; the wrapper owns the
+/// image and its imported memory.
+fn import_nv12_dma_buf_texture(
+    device: &wgpu::Device,
+    dma_buf: DrmPrimeNv12Surface,
+    usage: wgpu::TextureUsages,
+) -> Result<wgpu::Texture, String> {
+    const LABEL: &str = "Intel Quick Sync NV12 encode DMA-BUF import";
+    let size = wgpu::Extent3d {
+        width: dma_buf.width,
+        height: dma_buf.height,
+        depth_or_array_layers: 1,
+    };
+    let (image, memory, vk_device) = unsafe {
+        let hal_device_guard = device
+            .as_hal::<VkApi>()
+            .ok_or_else(|| format!("{LABEL} requires a Vulkan wgpu device"))?;
+        let hal_device = &*hal_device_guard;
+        let instance = hal_device.shared_instance().raw_instance();
+        let vk_device = hal_device.raw_device().clone();
+        let physical_device = hal_device.raw_physical_device();
+
+        let plane_layout = |offset: u32, pitch: u32| vk::SubresourceLayout {
+            offset: u64::from(offset),
+            row_pitch: u64::from(pitch),
+            ..Default::default()
+        };
+        let plane_layouts = [
+            plane_layout(dma_buf.y_offset, dma_buf.y_pitch),
+            plane_layout(dma_buf.uv_offset, dma_buf.uv_pitch),
+        ];
+        let mut external_info = vk::ExternalMemoryImageCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        let mut modifier_info = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+            .drm_format_modifier(dma_buf.modifier)
+            .plane_layouts(&plane_layouts);
+        let create_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+            .extent(vk::Extent3D {
+                width: dma_buf.width,
+                height: dma_buf.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+            .usage(vk_transfer_usage(usage))
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .push_next(&mut external_info)
+            .push_next(&mut modifier_info);
+        let image = vk_device
+            .create_image(&create_info, None)
+            .map_err(|err| format!("{LABEL}: failed to create image: {err}"))?;
+
+        let import_fd = dma_buf
+            .fd
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|err| format!("{LABEL}: failed to duplicate fd: {err}"))?;
+        let imported = (|| {
+            let external_memory_fd =
+                ash::khr::external_memory_fd::Device::new(instance, &vk_device);
+            let mut fd_properties = vk::MemoryFdPropertiesKHR::default();
+            external_memory_fd
+                .get_memory_fd_properties(
+                    vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+                    import_fd.as_raw_fd(),
+                    &mut fd_properties,
+                )
+                .map_err(|err| format!("{LABEL}: failed to query fd properties: {err}"))?;
+            let requirements = vk_device.get_image_memory_requirements(image);
+            let memory_properties =
+                instance.get_physical_device_memory_properties(physical_device);
+            let allowed = requirements.memory_type_bits & fd_properties.memory_type_bits;
+            let memory_type_index = (0..memory_properties.memory_type_count)
+                .find(|index| allowed & (1 << index) != 0)
+                .ok_or_else(|| format!("{LABEL}: no compatible memory type"))?;
+
+            let mut import_info = vk::ImportMemoryFdInfoKHR::default()
+                .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+                .fd(import_fd.as_raw_fd());
+            let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::default().image(image);
+            let allocate_info = vk::MemoryAllocateInfo::default()
+                .allocation_size(requirements.size)
+                .memory_type_index(memory_type_index)
+                .push_next(&mut import_info)
+                .push_next(&mut dedicated_info);
+            let memory = vk_device
+                .allocate_memory(&allocate_info, None)
+                .map_err(|err| format!("{LABEL}: failed to import memory: {err}"))?;
+            if let Err(err) = vk_device.bind_image_memory(image, memory, 0) {
+                vk_device.free_memory(memory, None);
+                return Err(format!("{LABEL}: failed to bind memory: {err}"));
+            }
+            Ok(memory)
+        })();
+        match imported {
+            Ok(memory) => {
+                let _ = import_fd.into_raw_fd();
+                (image, memory, vk_device)
+            }
+            Err(err) => {
+                vk_device.destroy_image(image, None);
+                return Err(err);
+            }
+        }
+    };
+
+    let hal_texture = unsafe {
+        let hal_device_guard = device
+            .as_hal::<VkApi>()
+            .ok_or_else(|| format!("{LABEL} requires a Vulkan wgpu device"))?;
+        (*hal_device_guard).texture_from_raw(
+            image,
+            &wgpu::hal::TextureDescriptor {
+                label: Some(LABEL),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::NV12,
+                usage: texture_uses(usage),
+                memory_flags: wgpu::hal::MemoryFlags::empty(),
+                view_formats: Vec::new(),
+            },
+            Some(Box::new(move || {
+                vk_device.destroy_image(image, None);
+                vk_device.free_memory(memory, None);
+            })),
+            wgpu::hal::vulkan::TextureMemory::External,
+        )
+    };
+    Ok(unsafe {
+        device.create_texture_from_hal::<VkApi>(
+            hal_texture,
+            &wgpu::TextureDescriptor {
+                label: Some(LABEL),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::NV12,
+                usage,
+                view_formats: &[],
+            },
+            texture_uses(usage),
+        )
+    })
 }
 
 pub(super) struct VplSyncQueue<T> {

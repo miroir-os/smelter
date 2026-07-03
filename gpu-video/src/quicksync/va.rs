@@ -21,9 +21,6 @@ pub(super) enum VaError {
     #[error("DRM PRIME descriptor has invalid object count {0}")]
     InvalidObjectCount(u32),
 
-    #[error("DRM PRIME descriptor must contain exactly one single-plane layer")]
-    UnsupportedSinglePlaneLayout,
-
     #[error("DRM PRIME descriptor must contain two single-plane NV12 layers, got fourcc {0:#x}")]
     UnsupportedNv12Layout(u32),
 }
@@ -59,18 +56,22 @@ impl VaDisplay {
         self.handle
     }
 
-    pub(super) fn export_single_plane_surface(
-        &self,
-        surface_id: SurfaceId,
-    ) -> Result<DrmPrimeSinglePlaneSurface, VaError> {
-        DrmPrimeSinglePlaneSurface::new(self.export_drm_prime_surface(surface_id)?)
-    }
-
     pub(super) fn export_nv12_surface(
         &self,
         surface_id: SurfaceId,
     ) -> Result<DrmPrimeNv12Surface, VaError> {
-        DrmPrimeNv12Surface::new(self.export_drm_prime_surface(surface_id)?)
+        let mut descriptor =
+            unsafe { std::mem::zeroed::<ffi::VADRMPRIMESurfaceDescriptor>() };
+        check_status("vaExportSurfaceHandle", unsafe {
+            ffi::vaExportSurfaceHandle(
+                self.handle.as_ptr(),
+                surface_id,
+                ffi::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                ffi::VA_EXPORT_SURFACE_READ_WRITE | ffi::VA_EXPORT_SURFACE_SEPARATE_LAYERS,
+                &mut descriptor as *mut _ as *mut std::ffi::c_void,
+            )
+        })?;
+        DrmPrimeNv12Surface::new(descriptor)
     }
 
     fn export_drm_prime_surface(
@@ -97,38 +98,6 @@ impl Drop for VaDisplay {
         unsafe {
             ffi::vaTerminate(self.handle.as_ptr());
         }
-    }
-}
-
-pub(super) struct DrmPrimeSinglePlaneSurface {
-    pub(super) fd: OwnedFd,
-    pub(super) fourcc: u32,
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) modifier: u64,
-    pub(super) offset: u32,
-    pub(super) pitch: u32,
-}
-
-impl DrmPrimeSinglePlaneSurface {
-    fn new(descriptor: ffi::VADRMPRIMESurfaceDescriptor) -> Result<Self, VaError> {
-        if descriptor.num_objects != 1 {
-            return Err(VaError::InvalidObjectCount(descriptor.num_objects));
-        }
-        if descriptor.num_layers != 1 || descriptor.layers[0].num_planes != 1 {
-            return Err(VaError::UnsupportedSinglePlaneLayout);
-        }
-        let object = &descriptor.objects[0];
-        let layer = &descriptor.layers[0];
-        Ok(Self {
-            fd: unsafe { OwnedFd::from_raw_fd(object.fd) },
-            fourcc: descriptor.fourcc,
-            width: descriptor.width,
-            height: descriptor.height,
-            modifier: object.drm_format_modifier,
-            offset: layer.offset[0],
-            pitch: layer.pitch[0],
-        })
     }
 }
 
