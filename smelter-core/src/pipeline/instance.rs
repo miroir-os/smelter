@@ -593,7 +593,6 @@ fn create_pipeline(opts: PipelineOptions) -> Result<Pipeline, InitPipelineError>
         device: graphics_context.device.clone(),
         queue: graphics_context.queue.clone(),
         rendering_mode: opts.rendering_mode,
-        scaling_filter: opts.scaling_filter,
     })?;
 
     let download_dir =

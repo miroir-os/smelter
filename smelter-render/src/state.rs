@@ -12,7 +12,7 @@ use crate::{
         UnregisterRendererError, UpdateSceneError,
     },
     image,
-    scene::{Component, ImageScalingFilter, OutputScene, SceneState},
+    scene::{Component, OutputScene, SceneState},
     shader,
     transformations::{
         image::Image,
@@ -46,7 +46,6 @@ pub struct RendererOptions {
     pub chromium_context: Option<Arc<ChromiumContext>>,
     pub framerate: Framerate,
     pub stream_fallback_timeout: Duration,
-    pub scaling_filter: ImageScalingFilter,
     pub load_system_fonts: bool,
     pub rendering_mode: RenderingMode,
     pub device: Arc<wgpu::Device>,
@@ -67,7 +66,6 @@ struct InnerRenderer {
     renderers: Renderers,
 
     stream_fallback_timeout: Duration,
-    scaling_filter: ImageScalingFilter,
 
     wgpu_ctx: Arc<WgpuCtx>,
     texture_upload_belt: wgpu::util::StagingBelt,
@@ -78,7 +76,6 @@ pub(crate) struct RenderCtx<'a> {
     pub(crate) text_renderer_ctx: &'a TextRendererCtx,
     pub(crate) renderers: &'a Renderers,
     pub(crate) stream_fallback_timeout: Duration,
-    pub(crate) scaling_filter: ImageScalingFilter,
 }
 
 pub(crate) struct RegisterCtx {
@@ -212,7 +209,6 @@ impl InnerRenderer {
             render_graph: RenderGraph::empty(),
             renderers: Renderers::new(wgpu_ctx.clone())?,
             stream_fallback_timeout: opts.stream_fallback_timeout,
-            scaling_filter: opts.scaling_filter,
             scene: SceneState::new(),
             chromium_context: opts.chromium_context,
             texture_upload_belt: wgpu::util::StagingBelt::new(
@@ -238,7 +234,6 @@ impl InnerRenderer {
             text_renderer_ctx: &self.text_renderer_ctx,
             renderers: &self.renderers,
             stream_fallback_timeout: self.stream_fallback_timeout,
-            scaling_filter: self.scaling_filter,
         };
 
         let scope = WgpuErrorScope::push(&ctx.wgpu_ctx.device);
@@ -299,7 +294,6 @@ impl InnerRenderer {
                 text_renderer_ctx: &self.text_renderer_ctx,
                 renderers: &self.renderers,
                 stream_fallback_timeout: self.stream_fallback_timeout,
-                scaling_filter: self.scaling_filter,
             },
             output_node,
             output_format,

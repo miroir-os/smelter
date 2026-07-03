@@ -14,7 +14,7 @@ use std::{
 };
 use tracing::warn;
 
-use smelter_render::{Framerate, RenderingMode, YuvPlanes, scene::ImageScalingFilter};
+use smelter_render::{Framerate, RenderingMode, YuvPlanes};
 
 use crate::{args::Resolution, benchmark_pass::RawInputFile};
 

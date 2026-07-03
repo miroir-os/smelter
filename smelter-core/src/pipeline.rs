@@ -2,7 +2,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use ::rtmp::TlsConfig;
 use smelter_render::{
-    Framerate, RenderingMode, WgpuCtx, WgpuFeatures, scene::ImageScalingFilter,
+    Framerate, RenderingMode, WgpuCtx, WgpuFeatures,
     web_renderer::ChromiumContext,
 };
 use tokio::runtime::Runtime;
@@ -66,7 +66,6 @@ pub struct PipelineOptions {
     pub download_root: Arc<Path>,
 
     pub rendering_mode: RenderingMode,
-    pub scaling_filter: ImageScalingFilter,
     pub wgpu_options: PipelineWgpuOptions,
     pub tokio_rt: Option<Arc<Runtime>>,
 

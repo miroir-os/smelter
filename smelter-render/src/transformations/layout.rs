@@ -221,6 +221,13 @@ impl LayoutNode {
             return stats;
         }
 
+        let global_filter = match ctx.wgpu_ctx.mode {
+            crate::RenderingMode::GpuOptimized | crate::RenderingMode::WebGl => {
+                ImageScalingFilter::Lanczos3
+            }
+            crate::RenderingMode::CpuOptimized => ImageScalingFilter::Bilinear,
+        };
+
         // Apply global filter and compute mip levels for Lanczos3 child nodes.
         // Only apply to sources that actually have texture data
         let mut mip_levels_needed: HashMap<usize, u32> = HashMap::new();
@@ -240,7 +247,7 @@ impl LayoutNode {
                     continue;
                 }
 
-                *scaling_filter = ctx.scaling_filter;
+                *scaling_filter = global_filter;
                 let ratio =
                     f32::max(crop.width / layout_width, crop.height / layout_height);
                 if ratio > 1.0 {

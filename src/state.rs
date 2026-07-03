@@ -7,7 +7,6 @@ use smelter_core::{
     protocols::WebrtcUdpPortStrategy,
 };
 use smelter_render::{
-    scene::ImageScalingFilter,
     web_renderer::{ChromiumContext, ChromiumContextInitError},
 };
 
@@ -119,7 +118,6 @@ pub fn pipeline_options_from_config(
         output_framerate: opt.output_framerate,
 
         rendering_mode: opt.rendering_mode,
-        scaling_filter: ImageScalingFilter::Lanczos3,
         tokio_rt: Some(tokio_rt.clone()),
 
         chromium_context: chromium_context.clone(),
