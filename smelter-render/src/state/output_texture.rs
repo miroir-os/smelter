@@ -256,21 +256,6 @@ impl Nv12WgpuOutput {
         Some(texture.texture_arc())
     }
 
-    pub fn convert_lanczos_vertical_from_with_encoder(
-        &self,
-        ctx: &WgpuCtx,
-        encoder: &mut wgpu::CommandEncoder,
-        source: &wgpu::BindGroup,
-    ) -> Option<Arc<wgpu::Texture>> {
-        let mut textures = self.textures.borrow_mut();
-        let texture_index = self.acquire_texture(&mut textures, ctx)?;
-        let texture = &textures[texture_index];
-        ctx.format
-            .rgba_to_nv12
-            .encode_lanczos_vertical_convert(ctx, encoder, source, texture);
-        Some(texture.texture_arc())
-    }
-
     pub fn fill_with_color(
         &self,
         ctx: &WgpuCtx,

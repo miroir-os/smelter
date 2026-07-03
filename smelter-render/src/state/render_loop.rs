@@ -230,37 +230,6 @@ pub(super) fn read_outputs(
     let encode_started = Instant::now();
     for (output_id, output) in &scene.outputs {
         let root = &output.root;
-        if let OutputTexture::Nv12WgpuTexture(nv12_output) = &output.output_texture
-            && let Some(node) = root
-                .direct_nv12_passthrough_texture()
-                .and_then(|texture| texture.state())
-        {
-            stats.nv12_outputs += 1;
-            stats.nv12_conversion_passes += 2;
-            if nv12_output.resolution().width >= 3840
-                && nv12_output.resolution().height >= 2160
-            {
-                stats.intermediate_4k_textures += 1;
-            }
-            let Some(texture) = nv12_output.convert_lanczos_vertical_from_with_encoder(
-                ctx.wgpu_ctx,
-                &mut nv12_encoder,
-                node.output_texture_bind_group(),
-            ) else {
-                continue;
-            };
-            nv12_conversions += 1;
-            let frame = Frame {
-                resolution: nv12_output.resolution(),
-                data: FrameData::Nv12WgpuTexture(texture),
-                pts,
-            };
-            partial_textures.push(PartialOutputFrame::CompleteFrame {
-                output_id: output_id.clone(),
-                frame,
-            });
-            continue;
-        }
         match root.output_texture(&scene.inputs).state() {
             Some(node) => match &output.output_texture {
                 OutputTexture::PlanarYuvTextures(yuv_output) => {

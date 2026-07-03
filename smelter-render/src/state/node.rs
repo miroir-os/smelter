@@ -142,13 +142,6 @@ impl RenderNode {
         }
     }
 
-    pub(super) fn direct_nv12_passthrough_texture(&self) -> Option<&NodeTexture> {
-        match &self.renderer {
-            InnerRenderNode::Layout(node) => node.direct_nv12_passthrough_texture(),
-            _ => None,
-        }
-    }
-
     fn new_shader_node(
         ctx: &RenderCtx,
         children: Vec<RenderNode>,

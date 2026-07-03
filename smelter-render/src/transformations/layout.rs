@@ -34,7 +34,6 @@ pub(crate) struct LayoutNode {
     mip_cache: HashMap<usize, MippedTexture>,
     lanczos_cache: HashMap<usize, NodeTexture>,
     passthrough_child_index: Option<usize>,
-    direct_nv12_passthrough: bool,
 }
 
 #[derive(Debug, Default)]
@@ -182,16 +181,11 @@ impl LayoutNode {
             mip_cache: HashMap::new(),
             lanczos_cache: HashMap::new(),
             passthrough_child_index: None,
-            direct_nv12_passthrough: false,
         }
     }
 
     pub(crate) fn passthrough_child_index(&self) -> Option<usize> {
         self.passthrough_child_index
-    }
-
-    pub(crate) fn direct_nv12_passthrough_texture(&self) -> Option<&NodeTexture> {
-        self.direct_nv12_passthrough.then(|| self.lanczos_cache.get(&0)).flatten()
     }
 
     pub fn render(
@@ -214,7 +208,6 @@ impl LayoutNode {
             &input_resolutions,
             output_resolution,
         );
-        self.direct_nv12_passthrough = false;
         if self.passthrough_child_index.is_some() {
             self.mip_cache.clear();
             self.lanczos_cache.clear();
@@ -263,37 +256,6 @@ impl LayoutNode {
                     *entry = (*entry).max(levels_needed);
                 }
             }
-        }
-
-        if let Some((index, resolution)) = Self::direct_nv12_passthrough_for(
-            &layouts,
-            &input_resolutions,
-            output_resolution,
-        ) {
-            self.mip_cache.clear();
-            self.lanczos_cache.retain(|layout_index, _| *layout_index == 0);
-            let Some(source) = sources.get(index).and_then(|source| source.state()) else {
-                return stats;
-            };
-            let target = self
-                .lanczos_cache
-                .entry(0)
-                .or_default()
-                .ensure_size(ctx.wgpu_ctx, resolution);
-            self.lanczos_horizontal.render(
-                ctx.wgpu_ctx,
-                source,
-                source.resolution(),
-                target,
-                encoder,
-            );
-            self.direct_nv12_passthrough = true;
-            stats.lanczos_passes += 1;
-            if resolution.width >= 3840 && resolution.height >= 2160 {
-                stats.intermediate_4k_textures += 1;
-            }
-            stats.total_ms = started.elapsed().as_secs_f64() * 1000.0;
-            return stats;
         }
 
         let format = ctx.wgpu_ctx.default_view_format();
@@ -502,50 +464,7 @@ impl LayoutNode {
         (same_resolution && full_output && full_crop && no_effects).then_some(*index)
     }
 
-    fn direct_nv12_passthrough_for(
-        layouts: &[RenderLayout],
-        input_resolutions: &[Option<Resolution>],
-        output_resolution: Resolution,
-    ) -> Option<(usize, Resolution)> {
-        let [layout] = layouts else { return None };
-        let RenderLayoutContent::ChildNode {
-            index,
-            border_color: RGBAColor(_, _, _, border_alpha),
-            border_width,
-            crop,
-            scaling_filter: ImageScalingFilter::Lanczos3,
-            ..
-        } = &layout.content
-        else {
-            return None;
-        };
-        let input_resolution = input_resolutions.get(*index).copied().flatten()?;
-
-        let full_output = is_same_px(layout.top, 0.0)
-            && is_same_px(layout.left, 0.0)
-            && is_same_px(layout.width, output_resolution.width as f32)
-            && is_same_px(layout.height, output_resolution.height as f32);
-        let full_crop = is_same_px(crop.top, 0.0)
-            && is_same_px(crop.left, 0.0)
-            && is_same_px(crop.width, input_resolution.width as f32)
-            && is_same_px(crop.height, input_resolution.height as f32);
-        let no_effects = is_same_px(layout.rotation_degrees, 0.0)
-            && layout.masks.is_empty()
-            && layout.border_radius == BorderRadius::ZERO
-            && (*border_width == 0.0 || *border_alpha == 0);
-        let upscale = output_resolution.width > input_resolution.width
-            || output_resolution.height > input_resolution.height;
-
-        (full_output && full_crop && no_effects && upscale).then_some((
-            *index,
-            Resolution {
-                width: output_resolution.width,
-                height: input_resolution.height,
-            },
-        ))
-    }
 }
-
 fn is_same_px(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.001
 }

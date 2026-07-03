@@ -9,8 +9,6 @@ use super::WgpuCtx;
 pub struct RgbaToNv12Converter {
     y_pipeline: wgpu::RenderPipeline,
     uv_pipeline: wgpu::RenderPipeline,
-    vertical_lanczos_y_pipeline: wgpu::RenderPipeline,
-    vertical_lanczos_uv_pipeline: wgpu::RenderPipeline,
     sampler: Sampler,
 }
 
@@ -47,26 +45,9 @@ impl RgbaToNv12Converter {
             "fs_main_uv",
             wgpu::TextureFormat::Rg8Unorm,
         );
-        let vertical_lanczos_y_pipeline = create_converting_pipeline(
-            device,
-            &pipeline_layout,
-            &shader_module,
-            "fs_lanczos_vertical_y",
-            wgpu::TextureFormat::R8Unorm,
-        );
-        let vertical_lanczos_uv_pipeline = create_converting_pipeline(
-            device,
-            &pipeline_layout,
-            &shader_module,
-            "fs_lanczos_vertical_uv",
-            wgpu::TextureFormat::Rg8Unorm,
-        );
-
         Self {
             y_pipeline,
             uv_pipeline,
-            vertical_lanczos_y_pipeline,
-            vertical_lanczos_uv_pipeline,
             sampler,
         }
     }
@@ -134,31 +115,6 @@ impl RgbaToNv12Converter {
         );
     }
 
-    pub fn encode_lanczos_vertical_convert(
-        &self,
-        ctx: &WgpuCtx,
-        encoder: &mut wgpu::CommandEncoder,
-        src_bg: &wgpu::BindGroup,
-        dst_texture: &NV12Texture,
-    ) {
-        let (dst_y_view, dst_uv_view) = dst_texture.views();
-        convert_plane(
-            ctx,
-            encoder,
-            &self.vertical_lanczos_y_pipeline,
-            &self.sampler.bind_group,
-            src_bg,
-            dst_y_view,
-        );
-        convert_plane(
-            ctx,
-            encoder,
-            &self.vertical_lanczos_uv_pipeline,
-            &self.sampler.bind_group,
-            src_bg,
-            dst_uv_view,
-        );
-    }
 }
 
 fn create_converting_pipeline(
