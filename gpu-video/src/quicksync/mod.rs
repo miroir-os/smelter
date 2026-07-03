@@ -10,9 +10,7 @@ mod vpl;
 
 #[cfg(feature = "wgpu")]
 fn required_wgpu_features() -> wgpu::Features {
-    // The encoder consumes NV12 wgpu textures, so callers need the format
-    // available on any device that can reach the Quick Sync backend.
-    crate::dmabuf::required_wgpu_features() | wgpu::Features::TEXTURE_FORMAT_NV12
+    crate::dmabuf::required_wgpu_features()
 }
 
 #[cfg(feature = "wgpu")]
