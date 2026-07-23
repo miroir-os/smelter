@@ -34,7 +34,7 @@ pub struct StatsReport {
     pub outputs: BTreeMap<String, OutputStatsReport>,
 }
 
-pub(crate) struct StatsMonitor(Arc<Mutex<StatsState>>);
+pub struct StatsMonitor(Arc<Mutex<StatsState>>);
 
 #[derive(Debug, Clone)]
 pub(crate) struct StatsSender(Sender<Vec<StatsEvent>>);

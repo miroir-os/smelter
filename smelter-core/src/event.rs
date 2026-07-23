@@ -82,7 +82,7 @@ impl Debug for EventEmitter {
 }
 
 impl EventEmitter {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             emitter: Emitter::new(),
         }
@@ -96,7 +96,7 @@ impl EventEmitter {
         emit_event(event)
     }
 
-    pub(super) fn subscribe(&self) -> Receiver<Event> {
+    pub fn subscribe(&self) -> Receiver<Event> {
         self.emitter.subscribe()
     }
 }
