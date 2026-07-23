@@ -98,7 +98,7 @@ impl AudioSamples {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct Ref<Id: fmt::Display + Clone> {
+pub struct Ref<Id: fmt::Display + Clone> {
     public_id: Id,
     generated_id: u64,
 }
