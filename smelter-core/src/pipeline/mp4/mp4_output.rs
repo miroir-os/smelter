@@ -350,22 +350,26 @@ fn run_ffmpeg_output_thread(
         };
 
         if eos_state.is_complete() {
-            if let Err(err) = output_ctx.write_trailer() {
-                let err = match err {
-                    ffmpeg::Error::Other {
-                        errno: ffmpeg::error::ENOSPC,
-                    } => OutputMp4RuntimeError::NoSpaceLeftOnDevice,
-                    err => OutputMp4RuntimeError::TrailerWriteError(err),
-                };
-                ctx.event_emitter.emit(Event::OutputError {
-                    output_id: output_ref.id().clone(),
-                    err: err.into(),
-                    severity: ErrorSeverity::Critical,
-                });
-            };
             break;
         }
     }
+
+    // Reached on EOS, on abort, and when the packet channel disconnects
+    // before EOS (e.g. an encoder thread died): the trailer must still be
+    // written so already-muxed data stays a readable file.
+    if let Err(err) = output_ctx.write_trailer() {
+        let err = match err {
+            ffmpeg::Error::Other {
+                errno: ffmpeg::error::ENOSPC,
+            } => OutputMp4RuntimeError::NoSpaceLeftOnDevice,
+            err => OutputMp4RuntimeError::TrailerWriteError(err),
+        };
+        ctx.event_emitter.emit(Event::OutputError {
+            output_id: output_ref.id().clone(),
+            err: err.into(),
+            severity: ErrorSeverity::Critical,
+        });
+    };
 }
 
 fn write_chunk(
