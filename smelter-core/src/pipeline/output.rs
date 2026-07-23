@@ -24,7 +24,7 @@ pub(crate) struct PipelineOutput {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct OutputVideo<'a> {
+pub struct OutputVideo<'a> {
     pub resolution: Resolution,
     pub frame_format: OutputFrameFormat,
     pub frame_sender: &'a Sender<PipelineEvent<Frame>>,
@@ -32,11 +32,11 @@ pub(crate) struct OutputVideo<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct OutputAudio<'a> {
+pub struct OutputAudio<'a> {
     pub samples_batch_sender: &'a Sender<PipelineEvent<OutputAudioSamples>>,
 }
 
-pub(crate) trait Output: Send {
+pub trait Output: Send {
     fn audio(&self) -> Option<OutputAudio<'_>>;
     fn video(&self) -> Option<OutputVideo<'_>>;
     fn kind(&self) -> OutputProtocolKind;

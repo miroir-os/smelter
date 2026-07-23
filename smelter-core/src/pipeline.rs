@@ -51,6 +51,18 @@ pub(crate) use moq::SelfSignedTlsError;
 #[cfg(target_os = "linux")]
 pub use v4l2::{V4l2DeviceInfo, V4l2FormatInfo, V4l2ResolutionInfo, list_v4l2_devices};
 
+// Constructible parts for callers that drive inputs/outputs without a
+// running `Pipeline` (see `PipelineCtx::new_detached`).
+pub use channel::{EncodedDataOutput, RawDataInput, RawDataOutput};
+#[cfg(feature = "decklink")]
+pub use decklink::DeckLink;
+pub use input::{Input, PipelineInput};
+pub use mp4::{Mp4Input, Mp4Output};
+pub use output::{Output, OutputAudio, OutputVideo};
+pub use rtmp::RtmpClientOutput;
+#[cfg(target_os = "linux")]
+pub use v4l2::V4l2Input;
+
 #[derive(Debug)]
 pub struct PipelineOptions {
     pub stream_fallback_timeout: Duration,
@@ -122,7 +134,7 @@ pub enum PipelineMoqServerOptions {
 pub const DEFAULT_BUFFER_DURATION: Duration = Duration::from_millis(16 * 5); // about 5 frames at 60 fps
 
 #[derive(Clone)]
-pub(crate) struct PipelineCtx {
+pub struct PipelineCtx {
     pub queue_ctx: QueueContext,
     pub default_buffer_duration: Duration,
 
@@ -140,6 +152,51 @@ pub(crate) struct PipelineCtx {
     whip_whep_state: Option<Arc<WhipWhepPipelineState>>,
     rtmp_state: Option<Arc<RtmpPipelineState>>,
     moq_state: Option<Arc<MoqPipelineState>>,
+}
+
+impl PipelineCtx {
+    /// Minimal context for constructing inputs and outputs without a running
+    /// [`Pipeline`]. No protocol servers are started; the caller owns the
+    /// event emitter and drains the returned [`crate::stats::StatsMonitor`].
+    pub fn new_detached(
+        queue_ctx: QueueContext,
+        output_framerate: Framerate,
+        mixing_sample_rate: u32,
+        download_root: Arc<Path>,
+        graphics_context: GraphicsContext,
+        wgpu_ctx: Arc<WgpuCtx>,
+        event_emitter: Arc<EventEmitter>,
+        tokio_rt: Option<Arc<Runtime>>,
+    ) -> Result<(Arc<Self>, crate::stats::StatsMonitor), InitPipelineError> {
+        let download_dir = download_root.join(format!("smelter-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&download_dir).map_err(InitPipelineError::CreateDownloadDir)?;
+        let tokio_rt = match tokio_rt {
+            Some(tokio_rt) => tokio_rt,
+            None => Arc::new(Runtime::new().map_err(InitPipelineError::CreateTokioRuntime)?),
+        };
+        let (stats_monitor, stats_sender) = crate::stats::StatsMonitor::new();
+        let webrtc_setting_engine = WebrtcSettingEngineCtx::new(Arc::new(vec![]), None, &tokio_rt)?;
+        Ok((
+            Arc::new(Self {
+                queue_ctx,
+                default_buffer_duration: DEFAULT_BUFFER_DURATION,
+                mixing_sample_rate,
+                output_framerate,
+                download_dir: download_dir.into(),
+                graphics_context,
+                wgpu_ctx,
+                event_emitter,
+                stats_sender,
+                webrtc_stun_servers: Arc::new(vec![]),
+                webrtc_setting_engine,
+                tokio_rt,
+                whip_whep_state: None,
+                rtmp_state: None,
+                moq_state: None,
+            }),
+            stats_monitor,
+        ))
+    }
 }
 
 impl std::fmt::Debug for PipelineCtx {

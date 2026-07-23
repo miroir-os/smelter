@@ -31,7 +31,7 @@ struct PendingTrack {
     track_offset: TrackOffset,
 }
 
-pub(crate) struct QueueSender<T>(crossbeam_channel::Sender<T>);
+pub struct QueueSender<T>(crossbeam_channel::Sender<T>);
 
 impl<T> QueueSender<T> {
     pub(crate) fn new(sender: crossbeam_channel::Sender<T>) -> Self {
@@ -226,7 +226,7 @@ pub(crate) struct QueueTrackOptions {
 }
 
 #[derive(Clone)]
-pub(crate) struct QueueInput(Arc<Mutex<InnerQueueInput>>);
+pub struct QueueInput(Arc<Mutex<InnerQueueInput>>);
 
 #[derive(Clone)]
 pub(crate) struct WeakQueueInput(Weak<Mutex<InnerQueueInput>>);
@@ -333,8 +333,46 @@ impl QueueInput {
         WeakQueueInput(Arc::downgrade(&self.0))
     }
 
-    pub(super) fn maybe_start_next_track(&self) {
+    pub fn maybe_start_next_track(&self) {
         self.0.lock().unwrap().maybe_start_next_track();
+    }
+
+    /// Consumer-side drain API. These are the same reads the queue thread
+    /// performs; callers that construct inputs on a detached [`QueueContext`]
+    /// (see [`QueueContext::new_detached`]) use them to drive the input
+    /// directly. `queue_start_pts` plays the role of the queue's start PTS
+    /// when resolving track offsets.
+    pub fn get_frame(
+        &self,
+        pts: Duration,
+        queue_start_pts: Duration,
+    ) -> Option<PipelineEvent<Frame>> {
+        let mut inner = self.0.lock().unwrap();
+        let video = inner.video.as_mut()?;
+        video.get_frame(pts, queue_start_pts).map(|f| f.event)
+    }
+
+    /// Pop all audio batches with PTS below the end of `pts_range`. Every
+    /// batch is returned exactly once. Returns `None` if the current track
+    /// has no audio.
+    pub fn pop_samples(
+        &self,
+        pts_range: (Duration, Duration),
+        queue_start_pts: Duration,
+    ) -> Option<PipelineEvent<Vec<InputAudioSamples>>> {
+        let mut inner = self.0.lock().unwrap();
+        let audio = inner.audio.as_mut()?;
+        Some(audio.pop_samples(pts_range, queue_start_pts).event)
+    }
+
+    pub fn is_video_done(&self) -> bool {
+        let mut inner = self.0.lock().unwrap();
+        inner.video.as_mut().map(|v| v.is_done()).unwrap_or(true)
+    }
+
+    pub fn is_audio_done(&self) -> bool {
+        let mut inner = self.0.lock().unwrap();
+        inner.audio.as_mut().map(|a| a.is_done()).unwrap_or(true)
     }
 }
 

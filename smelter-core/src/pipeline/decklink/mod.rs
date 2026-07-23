@@ -49,7 +49,7 @@ pub struct DeckLink {
 }
 
 impl DeckLink {
-    pub(super) fn new_input(
+    pub fn new_input(
         ctx: Arc<PipelineCtx>,
         input_ref: Ref<InputId>,
         opts: DeckLinkInputOptions,
