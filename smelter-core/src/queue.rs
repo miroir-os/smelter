@@ -27,10 +27,8 @@ use crate::audio_mixer::InputSamplesSet;
 
 use crate::prelude::*;
 
-pub use self::queue_input::QueueInputOptions;
-pub(crate) use self::queue_input::{
-    QueueInput, QueueSender, QueueTrackOffset, QueueTrackOptions, WeakQueueInput,
-};
+pub use self::queue_input::{QueueInput, QueueInputOptions, QueueSender};
+pub(crate) use self::queue_input::{QueueTrackOffset, QueueTrackOptions, WeakQueueInput};
 
 use self::{
     audio_queue::AudioQueue,
@@ -156,6 +154,18 @@ pub struct QueueContext {
 }
 
 impl QueueContext {
+    /// Standalone context for driving inputs without a running [`Queue`].
+    /// The caller drains the [`QueueInput`] mailboxes itself; all PTS values
+    /// are measured from the provided `sync_point`.
+    pub fn new_detached(sync_point: Instant) -> Self {
+        Self {
+            sync_point,
+            start_pts: Default::default(),
+            last_pts: Default::default(),
+            side_channel_socket_dir: None,
+        }
+    }
+
     pub(crate) fn effective_last_pts(&self) -> Duration {
         self.last_pts
             .value()
