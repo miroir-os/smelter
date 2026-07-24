@@ -135,6 +135,16 @@ impl libcef::App for ChromiumApp {
             command_line.append_switch("disable-software-rasterizer");
         }
 
+        // No display server present (DRM-scanout appliances): Chromium's
+        // ozone platform must not demand X11/Wayland — OSR renders
+        // offscreen either way.
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("WAYLAND_DISPLAY").is_none()
+            && std::env::var_os("DISPLAY").is_none()
+        {
+            command_line.append_switch_with_value("ozone-platform", "headless");
+        }
+
         command_line.append_switch("disable-dev-shm-usage");
         command_line.append_switch("disable-gpu-shader-disk-cache");
         command_line.append_switch_with_value("autoplay-policy", "no-user-gesture-required");
