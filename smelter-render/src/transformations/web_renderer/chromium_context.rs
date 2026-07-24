@@ -139,10 +139,13 @@ impl libcef::App for ChromiumApp {
         // ozone platform must not demand X11/Wayland — OSR renders
         // offscreen either way.
         #[cfg(target_os = "linux")]
-        if std::env::var_os("WAYLAND_DISPLAY").is_none()
-            && std::env::var_os("DISPLAY").is_none()
         {
-            command_line.append_switch_with_value("ozone-platform", "headless");
+            let unset = |key| {
+                std::env::var_os(key).map_or(true, |value| value.is_empty())
+            };
+            if unset("WAYLAND_DISPLAY") && unset("DISPLAY") {
+                command_line.append_switch_with_value("ozone-platform", "headless");
+            }
         }
 
         command_line.append_switch("disable-dev-shm-usage");
