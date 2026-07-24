@@ -29,6 +29,10 @@ impl ChromiumContext {
             root_cache_path: utils::get_smelter_instance_tmp_path(&instance_id).join("cef_cache"),
             windowless_rendering_enabled: true,
             log_severity: libcef::LogSeverity::Info,
+            // Linux appliances have no main-thread run loop to piggyback
+            // on (no window system): CEF drives its own browser thread and
+            // `run_event_loop_single_iter` must not be called.
+            multi_threaded_message_loop: cfg!(target_os = "linux"),
             ..Default::default()
         };
 
