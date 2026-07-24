@@ -66,31 +66,29 @@ fn pull_all_video(input: &QueueInput, until: Duration) -> (Vec<Duration>, bool) 
     let mut eos = false;
     let mut cursor = Duration::ZERO;
     while cursor <= until {
-        match input.get_frame(cursor, Duration::ZERO) {
-            Some(PipelineEvent::Data(frame)) => {
+        if let Some(pulled) = input.get_frame(cursor, Duration::ZERO) {
+            if let Some(frame) = pulled.frame {
                 if seen.last() != Some(&frame.pts) {
                     seen.push(frame.pts);
                 }
             }
-            Some(PipelineEvent::EOS) => {
+            if pulled.is_eos {
                 eos = true;
                 break;
             }
-            None => {}
         }
         cursor += ms(5);
     }
     (seen, eos)
 }
 
-/// Contract 1: the once-per-track EOS is delivered by `get_frame` /
-/// `pop_samples` *after* the track's buffer drains — and it is delivered at
-/// most once. A drain must pull until it observes EOS before advancing
-/// tracks; `maybe_start_next_track` at the instant both tracks are done
-/// swaps the track and the undelivered EOS is silently skipped.
+/// Contract 1: `is_eos` rides every pull and latches true exactly once per
+/// track — on the *same* pull that drains the final data when the producer
+/// is already gone, and on empty pulls otherwise (a decoder dying before
+/// its first frame still reports EOS). The flag is consumed by the pull
+/// that sees it.
 #[test]
-fn eos_skipped_when_advancing_before_pull() {
-    // Pulled-first path: EOS observed, exactly one event emitted.
+fn eos_delivered_once_after_drain() {
     let drained = drain_input();
     let (video, audio) = drained.input.queue_new_track(media_track());
     drained.input.maybe_start_next_track();
@@ -102,53 +100,20 @@ fn eos_skipped_when_advancing_before_pull() {
     let (frames, eos) = pull_all_video(&drained.input, ms(50));
     assert_eq!(frames, vec![ms(0)]);
     assert!(eos, "EOS must surface once the drained track is done");
-    match drained.input.pop_samples((ms(0), ms(50)), Duration::ZERO) {
-        Some(PipelineEvent::Data(batches)) => assert_eq!(batches.len(), 1),
-        other => panic!("expected one audio batch, got {other:?}"),
-    }
-    assert!(matches!(
-        drained.input.pop_samples((ms(50), ms(70)), Duration::ZERO),
-        Some(PipelineEvent::EOS)
-    ));
-    // EOS is once-per-track: subsequent pulls return None / empty data.
-    assert!(drained.input.get_frame(ms(60), Duration::ZERO).is_none());
+    // The producer dropped before the pop, so the final batch and the EOS
+    // flag arrive together — one pull, no empty tail required.
+    let batch = drained.input.pop_samples((ms(0), ms(50)), Duration::ZERO).unwrap();
+    assert_eq!(batch.samples.len(), 1);
+    assert!(batch.is_eos);
+
+    // EOS is once-per-track: subsequent pulls are empty and un-flagged.
+    let after = drained.input.get_frame(ms(60), Duration::ZERO).unwrap();
+    assert!(after.frame.is_none() && !after.is_eos);
+    let after = drained.input.pop_samples((ms(70), ms(80)), Duration::ZERO).unwrap();
+    assert!(after.samples.is_empty() && !after.is_eos);
+
     let (video_eos, audio_eos) = eos_events(&drained.events);
     assert_eq!((video_eos, audio_eos), (1, 1));
-
-    // Advanced-first path: the same scenario, but the drain swaps tracks the
-    // moment both sides report done (data consumed, EOS not yet pulled) —
-    // the EOS event is lost with the track.
-    let skipped = drain_input();
-    let (video, audio) = skipped.input.queue_new_track(media_track());
-    skipped.input.maybe_start_next_track();
-    let (video, audio) = (video.unwrap(), audio.unwrap());
-    video.send(test_frame(0, ms(0))).unwrap();
-    audio.send(test_samples(ms(0), ms(20))).unwrap();
-    drop((video, audio));
-    assert!(matches!(
-        skipped.input.get_frame(ms(0), Duration::ZERO),
-        Some(PipelineEvent::Data(_))
-    ));
-    match skipped.input.pop_samples((ms(0), ms(50)), Duration::ZERO) {
-        Some(PipelineEvent::Data(batches)) => assert_eq!(batches.len(), 1),
-        other => panic!("expected one audio batch, got {other:?}"),
-    }
-    assert!(skipped.input.is_video_done() && skipped.input.is_audio_done());
-    let (video2, audio2) = skipped.input.queue_new_track(media_track());
-    skipped.input.maybe_start_next_track();
-    video2.unwrap().send(test_frame(1, ms(0))).unwrap();
-    assert!(matches!(
-        skipped.input.get_frame(ms(0), Duration::ZERO),
-        Some(PipelineEvent::Data(_))
-    ));
-    drop(audio2);
-    let (video_eos, audio_eos) = eos_events(&skipped.events);
-    assert_eq!(
-        (video_eos, audio_eos),
-        (0, 0),
-        "track 1's EOS must be skipped when the swap precedes the pull — \
-         if this starts delivering it, external drain ordering can change"
-    );
 }
 
 /// Contract 2: a pending track (the next loop iteration, queued by media
@@ -177,19 +142,18 @@ fn pending_track_waits_for_both_tracks_done() {
     assert!(eos);
     assert!(!drained.input.is_audio_done());
     drained.input.maybe_start_next_track();
+    let held = drained.input.get_frame(ms(35), Duration::ZERO).unwrap();
     assert!(
-        drained.input.get_frame(ms(35), Duration::ZERO).is_none(),
+        held.frame.is_none(),
         "track 2 frames must not surface while track 1 audio is live"
     );
 
-    // Audio 1 ends: after draining it, the swap takes effect and track 2's
-    // frame surfaces at its track-local PTS.
+    // Audio 1 ends: the drain that empties it carries the EOS flag, the
+    // swap takes effect, and track 2's frame surfaces at its track-local
+    // PTS.
     drop(audio1);
-    let _ = drained.input.pop_samples((ms(0), ms(60)), Duration::ZERO);
-    assert!(matches!(
-        drained.input.pop_samples((ms(60), ms(80)), Duration::ZERO),
-        Some(PipelineEvent::EOS)
-    ));
+    let tail = drained.input.pop_samples((ms(0), ms(60)), Duration::ZERO).unwrap();
+    assert!(tail.is_eos);
     assert!(drained.input.is_video_done() && drained.input.is_audio_done());
     drained.input.maybe_start_next_track();
     let (frames, _) = pull_all_video(&drained.input, ms(10));
@@ -205,7 +169,7 @@ fn eos_events_fire_per_track() {
     let drained = drain_input();
     for track in 0..3u32 {
         let (video, audio) = drained.input.queue_new_track(media_track());
-    drained.input.maybe_start_next_track();
+        drained.input.maybe_start_next_track();
         let (video, audio) = (video.unwrap(), audio.unwrap());
         video.send(test_frame(track, ms(0))).unwrap();
         audio.send(test_samples(ms(0), ms(20))).unwrap();
@@ -214,11 +178,8 @@ fn eos_events_fire_per_track() {
         let (frames, eos) = pull_all_video(&drained.input, ms(40));
         assert_eq!(frames, vec![ms(0)]);
         assert!(eos);
-        let _ = drained.input.pop_samples((ms(0), ms(40)), Duration::ZERO);
-        assert!(matches!(
-            drained.input.pop_samples((ms(40), ms(60)), Duration::ZERO),
-            Some(PipelineEvent::EOS)
-        ));
+        let batch = drained.input.pop_samples((ms(0), ms(40)), Duration::ZERO).unwrap();
+        assert!(batch.is_eos);
         drained.input.maybe_start_next_track();
     }
     let (video_eos, audio_eos) = eos_events(&drained.events);

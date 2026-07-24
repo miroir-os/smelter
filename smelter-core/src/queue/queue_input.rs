@@ -10,7 +10,7 @@ use tracing::info;
 use crate::{
     event::EventEmitter,
     queue::{
-        QueueContext,
+        QueueAudioSamples, QueueContext, QueueVideoFrame,
         audio_input::AudioQueueInput,
         side_channel::{AudioSideChannel, VideoSideChannel},
         utils::PauseState,
@@ -346,10 +346,10 @@ impl QueueInput {
         &self,
         pts: Duration,
         queue_start_pts: Duration,
-    ) -> Option<PipelineEvent<Frame>> {
+    ) -> Option<QueueVideoFrame> {
         let mut inner = self.0.lock().unwrap();
         let video = inner.video.as_mut()?;
-        video.get_frame(pts, queue_start_pts).map(|f| f.event)
+        Some(video.get_frame(pts, queue_start_pts))
     }
 
     /// Pop all audio batches with PTS below the end of `pts_range`. Every
@@ -359,10 +359,10 @@ impl QueueInput {
         &self,
         pts_range: (Duration, Duration),
         queue_start_pts: Duration,
-    ) -> Option<PipelineEvent<Vec<InputAudioSamples>>> {
+    ) -> Option<QueueAudioSamples> {
         let mut inner = self.0.lock().unwrap();
         let audio = inner.audio.as_mut()?;
-        Some(audio.pop_samples(pts_range, queue_start_pts).event)
+        Some(audio.pop_samples(pts_range, queue_start_pts))
     }
 
     pub fn is_video_done(&self) -> bool {

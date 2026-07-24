@@ -2,7 +2,7 @@
 
 mod audio_mixer;
 mod queue;
-pub use queue::{QueueContext, QueueInput, QueueInputOptions, QueueSender};
+pub use queue::{QueueAudioSamples, QueueContext, QueueInput, QueueInputOptions, QueueSender, QueueVideoFrame};
 
 pub mod codecs;
 pub mod error;

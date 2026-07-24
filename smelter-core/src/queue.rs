@@ -182,7 +182,7 @@ pub(super) struct QueueVideoOutput {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct QueueVideoFrame {
+pub struct QueueVideoFrame {
     pub frame: Option<Frame>,
     /// Track on this input ended.
     pub is_eos: bool,
@@ -219,7 +219,7 @@ pub(super) struct QueueAudioOutput {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct QueueAudioSamples {
+pub struct QueueAudioSamples {
     pub samples: Vec<InputAudioSamples>,
     /// Track on this input ended.
     pub is_eos: bool,

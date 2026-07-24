@@ -148,6 +148,11 @@ impl AudioQueueInput {
         }
     }
 
+    /// Receiver-state probe for drain consumers (no event-guard interplay).
+    pub(super) fn is_done(&mut self) -> bool {
+        matches!(self.receiver.state(), ReceiverState::Done)
+    }
+
     /// True on the first call after the track ended; also emits the EOS event.
     fn check_eos(&mut self) -> bool {
         let is_eos =
