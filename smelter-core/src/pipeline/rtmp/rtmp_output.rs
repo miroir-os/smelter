@@ -80,7 +80,6 @@ impl RtmpClientOutput {
             kind: OutputProtocolKind::Rtmp,
         });
 
-        let client = Self::establish_connection(options.connection, &video_config, &audio_config)?;
         std::thread::Builder::new()
             .name(format!("RTMP sender thread for output {output_ref}"))
             .spawn(move || {
@@ -92,7 +91,11 @@ impl RtmpClientOutput {
                     output_ref: output_ref.clone(),
                 };
                 let result =
-                    run_rtmp_output_thread(client, video_config, audio_config, stats_sender);
+                    Self::establish_connection(options.connection, &video_config, &audio_config)
+                        .and_then(|client| {
+                            run_rtmp_output_thread(client, video_config, audio_config, stats_sender)
+                                .map_err(Into::into)
+                        });
                 if let Err(err) = result {
                     let err = Arc::new(err);
                     warn!("{}", ErrorStack::new(err.as_ref()).into_string());

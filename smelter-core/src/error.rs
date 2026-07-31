@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use rtmp::RtmpStreamError;
 use smelter_render::{
     InputId, OutputId,
     error::{
@@ -191,7 +190,7 @@ pub enum OutputRuntimeError {
     Mp4(#[from] OutputMp4RuntimeError),
 
     #[error("RTMP output failed")]
-    Rtmp(#[source] Arc<RtmpStreamError>),
+    Rtmp(#[source] Arc<RtmpClientError>),
 
     #[error(transparent)]
     Whip(#[from] OutputWhipRuntimeError),
