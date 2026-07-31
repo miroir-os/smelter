@@ -51,9 +51,8 @@ const MIN_CHUNK_BUFFER_DURATION: Duration = Duration::from_millis(200);
 ///   - Register track with `QueueTrackOffset::None`
 ///
 /// ### On loop (`opts.should_loop = true`)
-/// - When the video reader reaches the end (or the audio reader if there is no
-///   video track), a new track is created with `QueueTrackOffset::None` and the
-///   remaining in-progress track is aborted.
+/// - When all reader tracks reach the end, a new track is created with
+///   `QueueTrackOffset::None`.
 /// - PTS of first frame starts from zero again (same as initial registration).
 ///
 /// ### Pause / Resume / Seek
@@ -141,7 +140,7 @@ impl Mp4Input {
             },
         };
         let (video_sender, audio_sender) = if options.should_loop && video_track.is_some() {
-            queue_input.queue_new_track_on_video_eos(track_options)
+            queue_input.queue_new_loop_track(track_options)
         } else {
             queue_input.queue_new_track(track_options)
         };
@@ -248,6 +247,7 @@ struct TrackManagerThread {
     track_ctx: TrackContext,
     video_thread: Option<(JoinHandle<Track<File>>, ShutdownCondition)>,
     audio_thread: Option<(JoinHandle<Track<File>>, ShutdownCondition)>,
+    finished_tracks: usize,
     chunk_buffer_duration: Duration,
     queue_input: WeakQueueInput,
 }
@@ -280,6 +280,7 @@ impl TrackManagerThread {
                 track_ctx,
                 video_thread: None,
                 audio_thread: None,
+                finished_tracks: 0,
                 chunk_buffer_duration,
                 queue_input,
             },
@@ -307,13 +308,22 @@ impl TrackManagerThread {
                     self.restart_threads(Some(seek));
                 }
                 StateEvent::ThreadFinished(thread_id) => {
-                    // Loop restart is driven by the video track (audio if no video track).
-                    let primary_thread = self.video_thread.as_ref().or(self.audio_thread.as_ref());
-                    let primary_finished =
-                        primary_thread.is_some_and(|(handle, _)| handle.thread().id() == thread_id);
-
                     // when not looping do not break because user can still send seek request
-                    if self.options.should_loop && primary_finished {
+                    let is_current = self
+                        .video_thread
+                        .as_ref()
+                        .is_some_and(|(handle, _)| handle.thread().id() == thread_id)
+                        || self
+                            .audio_thread
+                            .as_ref()
+                            .is_some_and(|(handle, _)| handle.thread().id() == thread_id);
+                    if !is_current {
+                        continue;
+                    }
+                    self.finished_tracks += 1;
+                    let track_count =
+                        self.video_thread.is_some() as usize + self.audio_thread.is_some() as usize;
+                    if self.options.should_loop && self.finished_tracks == track_count {
                         self.restart_threads(None);
                     }
                 }
@@ -326,6 +336,7 @@ impl TrackManagerThread {
     }
 
     fn restart_threads(&mut self, seek: Option<Duration>) {
+        self.finished_tracks = 0;
         let (video_sender, audio_sender) = {
             let Some(queue_input) = self.queue_input.upgrade() else {
                 return;
@@ -336,7 +347,7 @@ impl TrackManagerThread {
                 offset: QueueTrackOffset::None,
             };
             if self.options.should_loop && self.video_thread.is_some() {
-                queue_input.queue_new_track_on_video_eos(track_options)
+                queue_input.queue_new_loop_track(track_options)
             } else {
                 queue_input.queue_new_track(track_options)
             }

@@ -30,6 +30,7 @@ pub(crate) struct AudioQueueInput {
     offset_from_start: Option<Duration>,
 
     track_offset: TrackOffset,
+    last_sample_end_pts: Option<Duration>,
 
     paused: bool,
 
@@ -59,6 +60,7 @@ impl AudioQueueInput {
             offset_from_start: offset,
             receiver,
             track_offset,
+            last_sample_end_pts: None,
             paused: false,
             event_delivered_guard: EmitOnceGuard::new(
                 Event::AudioInputStreamDelivered(input_ref.id().clone()),
@@ -80,8 +82,11 @@ impl AudioQueueInput {
 
     /// The track ended and its EOS was delivered in a chunk. Only then it is
     /// safe to replace the track with the next one.
-    pub(super) fn eos_sent(&self) -> bool {
+    pub(super) fn ended_at(&self, pts: Duration) -> bool {
         self.event_eos_guard.emited()
+            && self
+                .last_sample_end_pts
+                .is_none_or(|end_pts| pts >= end_pts)
     }
 
     pub(super) fn required(&self) -> bool {
@@ -136,6 +141,10 @@ impl AudioQueueInput {
         let mut samples = self.receiver.pop_before_pts(input_pts);
         for batch in &mut samples {
             batch.start_pts += offset;
+            self.last_sample_end_pts = Some(
+                self.last_sample_end_pts
+                    .map_or(batch.end_pts(), |end_pts| end_pts.max(batch.end_pts())),
+            );
         }
 
         if !samples.is_empty() {
