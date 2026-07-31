@@ -94,7 +94,13 @@ impl RtmpClientOutput {
                 let result =
                     run_rtmp_output_thread(client, video_config, audio_config, stats_sender);
                 if let Err(err) = result {
-                    warn!("{}", ErrorStack::new(&err).into_string())
+                    let err = Arc::new(err);
+                    warn!("{}", ErrorStack::new(err.as_ref()).into_string());
+                    ctx.event_emitter.emit(Event::OutputError {
+                        output_id: output_ref.id().clone(),
+                        severity: ErrorSeverity::Critical,
+                        err: OutputRuntimeError::Rtmp(err),
+                    });
                 }
 
                 ctx.event_emitter
