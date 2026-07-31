@@ -132,14 +132,19 @@ impl Mp4Input {
         }
 
         let queue_input = QueueInput::new(&ctx, &input_ref, options.queue_options.clone());
-        let (video_sender, audio_sender) = queue_input.queue_new_track(QueueTrackOptions {
+        let track_options = QueueTrackOptions {
             video: video_track.is_some(),
             audio: audio_track.is_some(),
             offset: match options.offset {
                 Some(offset) => QueueTrackOffset::FromStart(offset),
                 None => QueueTrackOffset::None,
             },
-        });
+        };
+        let (video_sender, audio_sender) = if options.should_loop && video_track.is_some() {
+            queue_input.queue_new_track_on_video_eos(track_options)
+        } else {
+            queue_input.queue_new_track(track_options)
+        };
 
         // Buffer needs to be smaller than half of the longest track, otherwise
         // reader threads of short looped files finish too far ahead of playback.
@@ -325,11 +330,16 @@ impl TrackManagerThread {
             let Some(queue_input) = self.queue_input.upgrade() else {
                 return;
             };
-            queue_input.queue_new_track(QueueTrackOptions {
+            let track_options = QueueTrackOptions {
                 video: self.video_thread.is_some(),
                 audio: self.audio_thread.is_some(),
                 offset: QueueTrackOffset::None,
-            })
+            };
+            if self.options.should_loop && self.video_thread.is_some() {
+                queue_input.queue_new_track_on_video_eos(track_options)
+            } else {
+                queue_input.queue_new_track(track_options)
+            }
         };
 
         if let Some((_, cond)) = self.video_thread.as_ref() {

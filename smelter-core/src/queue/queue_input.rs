@@ -26,10 +26,17 @@ use crate::prelude::*;
 /// blocks until there is room.
 const MAX_PENDING_TRACKS: usize = 5;
 
+#[derive(Clone, Copy)]
+enum TrackEndCondition {
+    AllTracks,
+    Video,
+}
+
 struct PendingTrack {
     video: Option<VideoQueueInput>,
     audio: Option<AudioQueueInput>,
     track_offset: TrackOffset,
+    end_condition: TrackEndCondition,
 }
 
 pub(crate) struct QueueSender<T>(crossbeam_channel::Sender<T>);
@@ -63,6 +70,7 @@ pub(super) struct InnerQueueInput {
     video: Option<VideoQueueInput>,
     audio: Option<AudioQueueInput>,
     track_offset: TrackOffset,
+    end_condition: TrackEndCondition,
     pause_state: PauseState,
 
     pending_sender: crossbeam_channel::Sender<PendingTrack>,
@@ -77,7 +85,11 @@ impl InnerQueueInput {
     fn maybe_start_next_track(&mut self) {
         let video_eos_sent = self.video.as_ref().map(|v| v.eos_sent()).unwrap_or(true);
         let audio_eos_sent = self.audio.as_ref().map(|a| a.eos_sent()).unwrap_or(true);
-        if video_eos_sent && audio_eos_sent {
+        let ended = match self.end_condition {
+            TrackEndCondition::AllTracks => video_eos_sent && audio_eos_sent,
+            TrackEndCondition::Video => video_eos_sent,
+        };
+        if ended {
             self.replace_track()
         }
     }
@@ -92,6 +104,7 @@ impl InnerQueueInput {
         self.video = pending.video;
         self.audio = pending.audio;
         self.track_offset = pending.track_offset;
+        self.end_condition = pending.end_condition;
         if self.pause_state.is_paused() {
             let pts = self.queue_ctx.effective_last_pts();
             if let Some(v) = self.video.as_mut() {
@@ -114,6 +127,7 @@ impl InnerQueueInput {
     fn new_pending_track(
         &self,
         opts: QueueTrackOptions,
+        end_condition: TrackEndCondition,
     ) -> (
         PendingTrack,
         Option<QueueSender<Frame>>,
@@ -169,6 +183,7 @@ impl InnerQueueInput {
                 video: video_input,
                 audio: audio_input,
                 track_offset,
+                end_condition,
             },
             video_sender,
             audio_sender,
@@ -324,6 +339,7 @@ impl QueueInput {
             video: None,
             audio: None,
             track_offset: TrackOffset::default(),
+            end_condition: TrackEndCondition::AllTracks,
 
             pending_sender,
             pending_receiver,
@@ -345,11 +361,35 @@ impl QueueInput {
         Option<QueueSender<Frame>>,
         Option<QueueSender<InputAudioSamples>>,
     ) {
+        self.queue_new_track_until(opts, TrackEndCondition::AllTracks)
+    }
+
+    pub(crate) fn queue_new_track_on_video_eos(
+        &self,
+        opts: QueueTrackOptions,
+    ) -> (
+        Option<QueueSender<Frame>>,
+        Option<QueueSender<InputAudioSamples>>,
+    ) {
+        if !opts.video {
+            return self.queue_new_track(opts);
+        }
+        self.queue_new_track_until(opts, TrackEndCondition::Video)
+    }
+
+    fn queue_new_track_until(
+        &self,
+        opts: QueueTrackOptions,
+        end_condition: TrackEndCondition,
+    ) -> (
+        Option<QueueSender<Frame>>,
+        Option<QueueSender<InputAudioSamples>>,
+    ) {
         if !opts.video && !opts.audio {
             return (None, None);
         }
         let guard = self.0.lock().unwrap();
-        let (track, video_sender, audio_sender) = guard.new_pending_track(opts);
+        let (track, video_sender, audio_sender) = guard.new_pending_track(opts, end_condition);
         let pending_sender = guard.pending_sender.clone();
         drop(guard);
         // receiver is owned by InnerQueueInput, so send can't fail while
