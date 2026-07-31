@@ -3,7 +3,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex, Weak},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crossbeam_channel::{Receiver, Sender, bounded};
@@ -75,6 +75,10 @@ impl Pipeline {
 
     pub fn queue(&self) -> &Queue {
         &self.queue
+    }
+
+    pub fn start_instant(&self) -> Option<Instant> {
+        self.queue.ctx().start_instant()
     }
 
     pub fn stats(&self) -> StatsReport {

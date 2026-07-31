@@ -156,6 +156,10 @@ pub struct QueueContext {
 }
 
 impl QueueContext {
+    pub fn start_instant(&self) -> Option<Instant> {
+        self.start_pts.value().map(|pts| self.sync_point + pts)
+    }
+
     pub(crate) fn effective_last_pts(&self) -> Duration {
         self.last_pts
             .value()
