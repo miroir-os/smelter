@@ -30,7 +30,6 @@ pub(crate) struct AudioQueueInput {
     offset_from_start: Option<Duration>,
 
     track_offset: TrackOffset,
-    last_sample_end_pts: Option<Duration>,
 
     paused: bool,
 
@@ -52,15 +51,16 @@ impl AudioQueueInput {
         track_offset: TrackOffset,
         side_channel: Option<AudioSideChannel>,
         side_channel_delay: Duration,
+        duration: Option<Duration>,
     ) -> (Self, Sender<InputAudioSamples>) {
-        let (receiver, sender) = AudioInputReceiver::new(side_channel_delay, side_channel);
+        let (receiver, sender) =
+            AudioInputReceiver::new(side_channel_delay, side_channel, duration);
         let input = Self {
             queue_ctx: queue_ctx.clone(),
             required,
             offset_from_start: offset,
             receiver,
             track_offset,
-            last_sample_end_pts: None,
             paused: false,
             event_delivered_guard: EmitOnceGuard::new(
                 Event::AudioInputStreamDelivered(input_ref.id().clone()),
@@ -80,13 +80,9 @@ impl AudioQueueInput {
         (input, sender)
     }
 
-    /// The track ended and its EOS was delivered in a chunk. Only then it is
-    /// safe to replace the track with the next one.
-    pub(super) fn ended_at(&self, pts: Duration) -> bool {
+    /// The track ended and its EOS was delivered in a chunk.
+    pub(super) fn eos_sent(&self) -> bool {
         self.event_eos_guard.emited()
-            && self
-                .last_sample_end_pts
-                .is_none_or(|end_pts| pts >= end_pts)
     }
 
     pub(super) fn required(&self) -> bool {
@@ -141,10 +137,6 @@ impl AudioQueueInput {
         let mut samples = self.receiver.pop_before_pts(input_pts);
         for batch in &mut samples {
             batch.start_pts += offset;
-            self.last_sample_end_pts = Some(
-                self.last_sample_end_pts
-                    .map_or(batch.end_pts(), |end_pts| end_pts.max(batch.end_pts())),
-            );
         }
 
         if !samples.is_empty() {
@@ -159,8 +151,9 @@ impl AudioQueueInput {
 
     /// True on the first call after the track ended; also emits the EOS event.
     fn check_eos(&mut self) -> bool {
-        let is_eos =
-            matches!(self.receiver.state(), ReceiverState::Done) && !self.event_eos_guard.emited();
+        let is_eos = self.receiver.duration.is_none()
+            && matches!(self.receiver.state(), ReceiverState::Done)
+            && !self.event_eos_guard.emited();
         if is_eos {
             self.event_eos_guard.emit();
         }
@@ -250,12 +243,14 @@ pub(crate) struct AudioInputReceiver {
     state: ReceiverState,
     delay: Duration,
     side_channel: Option<AudioSideChannel>,
+    duration: Option<Duration>,
 }
 
 impl AudioInputReceiver {
     pub fn new(
         delay: Duration,
         side_channel: Option<AudioSideChannel>,
+        duration: Option<Duration>,
     ) -> (Self, Sender<InputAudioSamples>) {
         let (sender, receiver) = bounded(1);
         let track = Self {
@@ -266,6 +261,7 @@ impl AudioInputReceiver {
             state: ReceiverState::New,
             delay,
             side_channel,
+            duration,
         };
         (track, sender)
     }
@@ -321,6 +317,18 @@ impl AudioInputReceiver {
             match self.receiver.try_recv() {
                 Ok(mut batch) => {
                     trace!(pts_range=?batch.pts_range(), pending=self.receiver.len(), "Enqueue samples");
+                    if let Some(duration) = self.duration {
+                        let sample_count = (duration.saturating_sub(batch.start_pts).as_nanos()
+                            * batch.sample_rate as u128
+                            / 1_000_000_000) as usize;
+                        match &mut batch.samples {
+                            AudioSamples::Mono(samples) => samples.truncate(sample_count),
+                            AudioSamples::Stereo(samples) => samples.truncate(sample_count),
+                        }
+                        if batch.is_empty() {
+                            continue;
+                        }
+                    }
                     batch.start_pts += self.delay;
                     if let Some(side_channel) = &self.side_channel {
                         side_channel.send_samples(&batch);

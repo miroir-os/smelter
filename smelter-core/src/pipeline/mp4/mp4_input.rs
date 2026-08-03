@@ -22,7 +22,10 @@ use crate::{
         mp4::reader::{DecoderOptions, Mp4FileReader, Track},
         utils::H264AvccToAnnexB,
     },
-    queue::{QueueInput, QueueSender, QueueTrackOffset, QueueTrackOptions, WeakQueueInput},
+    queue::{
+        QueueInput, QueueSender, QueueTrackOffset, QueueTrackOptions, QueueTrackTiming,
+        WeakQueueInput,
+    },
     utils::{
         InitializableThread, ShutdownCondition,
         channel::{SendTimeoutError, Sender},
@@ -51,9 +54,8 @@ const MIN_CHUNK_BUFFER_DURATION: Duration = Duration::from_millis(200);
 ///   - Register track with `QueueTrackOffset::None`
 ///
 /// ### On loop (`opts.should_loop = true`)
-/// - When all reader tracks reach the end, a new track is created with
-///   `QueueTrackOffset::None`.
-/// - PTS of first frame starts from zero again (same as initial registration).
+/// - The video presentation duration defines the iteration, or audio for audio-only files.
+/// - Each iteration continues from the preceding presentation boundary.
 ///
 /// ### Pause / Resume / Seek
 /// - Pausing stops queue consumption, reader threads continue running.
@@ -130,6 +132,10 @@ impl Mp4Input {
             ));
         }
 
+        let loop_duration = video_duration
+            .or(audio_duration)
+            .filter(|_| options.should_loop);
+        let initial_seek = options.seek;
         let queue_input = QueueInput::new(&ctx, &input_ref, options.queue_options.clone());
         let track_options = QueueTrackOptions {
             video: video_track.is_some(),
@@ -139,10 +145,12 @@ impl Mp4Input {
                 None => QueueTrackOffset::None,
             },
         };
-        let (video_sender, audio_sender) = if options.should_loop && video_track.is_some() {
-            queue_input.queue_new_loop_track(track_options)
-        } else {
-            queue_input.queue_new_track(track_options)
+        let (video_sender, audio_sender) = match loop_duration {
+            Some(duration) => queue_input.queue_new_timed_track(
+                track_options,
+                QueueTrackTiming::Finite(duration.saturating_sub(initial_seek.unwrap_or_default())),
+            ),
+            None => queue_input.queue_new_track(track_options),
         };
 
         // Buffer needs to be smaller than half of the longest track, otherwise
@@ -156,12 +164,12 @@ impl Mp4Input {
             None => MAX_CHUNK_BUFFER_DURATION,
         };
 
-        let initial_seek = options.seek;
         let (mut reader, events_sender) = TrackManagerThread::new(
             &ctx,
             &input_ref,
             options,
             source_file,
+            loop_duration,
             chunk_buffer_duration,
             queue_input.downgrade(),
         );
@@ -247,7 +255,7 @@ struct TrackManagerThread {
     track_ctx: TrackContext,
     video_thread: Option<(JoinHandle<Track<File>>, ShutdownCondition)>,
     audio_thread: Option<(JoinHandle<Track<File>>, ShutdownCondition)>,
-    finished_tracks: usize,
+    loop_duration: Option<Duration>,
     chunk_buffer_duration: Duration,
     queue_input: WeakQueueInput,
 }
@@ -258,6 +266,7 @@ impl TrackManagerThread {
         input_ref: &Ref<InputId>,
         options: Mp4InputOptions,
         source_file: Arc<SourceFile>,
+        loop_duration: Option<Duration>,
         chunk_buffer_duration: Duration,
         queue_input: WeakQueueInput,
     ) -> (Self, crossbeam_channel::Sender<StateEvent>) {
@@ -280,7 +289,7 @@ impl TrackManagerThread {
                 track_ctx,
                 video_thread: None,
                 audio_thread: None,
-                finished_tracks: 0,
+                loop_duration,
                 chunk_buffer_duration,
                 queue_input,
             },
@@ -308,22 +317,12 @@ impl TrackManagerThread {
                     self.restart_threads(Some(seek));
                 }
                 StateEvent::ThreadFinished(thread_id) => {
+                    let primary_thread = self.video_thread.as_ref().or(self.audio_thread.as_ref());
+                    let primary_finished =
+                        primary_thread.is_some_and(|(handle, _)| handle.thread().id() == thread_id);
+
                     // when not looping do not break because user can still send seek request
-                    let is_current = self
-                        .video_thread
-                        .as_ref()
-                        .is_some_and(|(handle, _)| handle.thread().id() == thread_id)
-                        || self
-                            .audio_thread
-                            .as_ref()
-                            .is_some_and(|(handle, _)| handle.thread().id() == thread_id);
-                    if !is_current {
-                        continue;
-                    }
-                    self.finished_tracks += 1;
-                    let track_count =
-                        self.video_thread.is_some() as usize + self.audio_thread.is_some() as usize;
-                    if self.options.should_loop && self.finished_tracks == track_count {
+                    if self.options.should_loop && primary_finished {
                         self.restart_threads(None);
                     }
                 }
@@ -336,7 +335,6 @@ impl TrackManagerThread {
     }
 
     fn restart_threads(&mut self, seek: Option<Duration>) {
-        self.finished_tracks = 0;
         let (video_sender, audio_sender) = {
             let Some(queue_input) = self.queue_input.upgrade() else {
                 return;
@@ -346,18 +344,24 @@ impl TrackManagerThread {
                 audio: self.audio_thread.is_some(),
                 offset: QueueTrackOffset::None,
             };
-            if self.options.should_loop && self.video_thread.is_some() {
-                queue_input.queue_new_loop_track(track_options)
-            } else {
-                queue_input.queue_new_track(track_options)
+            match (self.loop_duration, seek) {
+                (Some(duration), None) => queue_input
+                    .queue_new_timed_track(track_options, QueueTrackTiming::Continuation(duration)),
+                (Some(duration), Some(seek)) => queue_input.queue_new_timed_track(
+                    track_options,
+                    QueueTrackTiming::Finite(duration.saturating_sub(seek)),
+                ),
+                (None, _) => queue_input.queue_new_track(track_options),
             }
         };
 
-        if let Some((_, cond)) = self.video_thread.as_ref() {
-            cond.mark_for_shutdown()
-        }
-        if let Some((_, cond)) = self.audio_thread.as_ref() {
-            cond.mark_for_shutdown()
+        if seek.is_some() {
+            if let Some((_, cond)) = self.video_thread.as_ref() {
+                cond.mark_for_shutdown()
+            }
+            if let Some((_, cond)) = self.audio_thread.as_ref() {
+                cond.mark_for_shutdown()
+            }
         }
 
         let video_track = self
