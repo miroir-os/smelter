@@ -102,7 +102,11 @@ impl InnerQueueInput {
         };
         info!(input_id=%self.input_ref, "Push track to queue");
 
+        let previous_video = self.video.take();
         self.video = pending.video;
+        if let Some(video) = &mut self.video {
+            video.inherit_last_frame(previous_video);
+        }
         self.audio = pending.audio;
         self.track_offset = pending.track_offset;
         self.end_condition = pending.end_condition;
@@ -163,6 +167,7 @@ impl InnerQueueInput {
                 track_offset.clone(),
                 side_channel,
                 self.side_channel_delay,
+                matches!(end_condition, TrackEndCondition::Video),
             );
             (Some(video_input), Some(QueueSender::new(video_sender)))
         } else {

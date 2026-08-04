@@ -29,6 +29,8 @@ pub(crate) struct VideoQueueInput {
 
     paused_pts: Option<Duration>,
     paused_frame: Option<Frame>,
+    hold_last_frame: bool,
+    last_frame: Option<Frame>,
 
     event_delivered_guard: EmitOnceGuard,
     event_playing_guard: EmitOnceGuard,
@@ -48,6 +50,7 @@ impl VideoQueueInput {
         track_offset: TrackOffset,
         side_channel: Option<VideoSideChannel>,
         side_channel_delay: Duration,
+        hold_last_frame: bool,
     ) -> (Self, Sender<Frame>) {
         let (receiver, sender) = VideoInputReceiver::new(side_channel_delay, side_channel);
         let input = Self {
@@ -58,6 +61,8 @@ impl VideoQueueInput {
             track_offset,
             paused_pts: None,
             paused_frame: None,
+            hold_last_frame,
+            last_frame: None,
             event_delivered_guard: EmitOnceGuard::new(
                 Event::VideoInputStreamDelivered(input_ref.id().clone()),
                 event_emitter,
@@ -84,6 +89,12 @@ impl VideoQueueInput {
 
     pub(super) fn required(&self) -> bool {
         self.required
+    }
+
+    pub(super) fn inherit_last_frame(&mut self, previous: Option<Self>) {
+        if self.hold_last_frame {
+            self.last_frame = previous.and_then(|video| video.last_frame);
+        }
     }
 
     pub(super) fn pause(&mut self) {
@@ -157,11 +168,17 @@ impl VideoQueueInput {
         };
         trace!(queue_pts=?pts, ?input_pts, "Try get frame");
 
-        let frame = self.receiver.get_for_pts(input_pts).map(|mut frame| {
+        let mut frame = self.receiver.get_for_pts(input_pts).map(|mut frame| {
             self.event_playing_guard.emit();
             frame.pts += offset;
             frame
         });
+
+        if let Some(frame) = &frame {
+            self.last_frame = Some(frame.clone());
+        } else if self.hold_last_frame {
+            frame = self.last_frame.clone();
+        }
 
         QueueVideoFrame {
             frame,
