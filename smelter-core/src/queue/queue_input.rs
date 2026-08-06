@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ops::DerefMut,
     sync::{Arc, Mutex, Weak},
     time::Duration,
@@ -38,24 +39,166 @@ struct PendingTrack {
     end_condition: TrackEndCondition,
 }
 
-pub(crate) struct QueueSender<T>(crossbeam_channel::Sender<T>);
+/// A media item that can enter a queue track, with the per-track policies the
+/// sender applies before the item reaches the track's channel.
+pub(crate) trait QueueItem: Clone + Sized {
+    type SideChannel;
 
-impl<T> QueueSender<T> {
-    pub(crate) fn new(sender: crossbeam_channel::Sender<T>) -> Self {
-        Self(sender)
+    /// Drop or truncate content at or past the track duration.
+    fn clip(self, duration: Duration) -> Option<Self>;
+    fn shift_pts(&mut self, delay: Duration);
+    fn forward(&self, side_channel: &Self::SideChannel);
+}
+
+/// Per-input, per-modality side-channel delivery order. Tracks decode
+/// concurrently, but subscribers expect one PTS-ordered stream per input:
+/// only the delivery head forwards live; later tracks buffer their early
+/// items (decode backpressure keeps that to the first few) and flush when
+/// the head's sender drops, i.e. when its content is fully forwarded.
+/// Tracks discarded before reaching the head never forward.
+struct SideChannelLane<T: QueueItem>(Mutex<LaneState<T>>);
+
+struct LaneState<T: QueueItem> {
+    next_seq: u64,
+    head: u64,
+    head_channel: Option<T::SideChannel>,
+    queued: BTreeMap<u64, QueuedLane<T>>,
+}
+
+struct QueuedLane<T: QueueItem> {
+    channel: T::SideChannel,
+    buffer: Vec<T>,
+    closed: bool,
+    abandoned: bool,
+}
+
+impl<T: QueueItem> SideChannelLane<T> {
+    fn new() -> Self {
+        Self(Mutex::new(LaneState {
+            next_seq: 0,
+            head: 0,
+            head_channel: None,
+            queued: BTreeMap::new(),
+        }))
     }
 
+    fn register(&self, channel: T::SideChannel) -> u64 {
+        let mut state = self.0.lock().unwrap();
+        let seq = state.next_seq;
+        state.next_seq += 1;
+        if seq == state.head {
+            state.head_channel = Some(channel);
+        } else {
+            state.queued.insert(
+                seq,
+                QueuedLane { channel, buffer: Vec::new(), closed: false, abandoned: false },
+            );
+        }
+        seq
+    }
+
+    fn forward(&self, seq: u64, item: &T) {
+        let mut state = self.0.lock().unwrap();
+        if seq == state.head {
+            if let Some(channel) = &state.head_channel {
+                item.forward(channel);
+            }
+        } else if let Some(queued) = state.queued.get_mut(&seq)
+            && !queued.abandoned
+        {
+            queued.buffer.push(item.clone());
+        }
+    }
+
+    fn close(&self, seq: u64) {
+        let mut state = self.0.lock().unwrap();
+        if seq != state.head {
+            if let Some(queued) = state.queued.get_mut(&seq) {
+                queued.closed = true;
+            }
+            return;
+        }
+        state.head_channel = None;
+        loop {
+            state.head += 1;
+            let head = state.head;
+            let Some(queued) = state.queued.remove(&head) else {
+                return;
+            };
+            if queued.abandoned {
+                continue;
+            }
+            for item in &queued.buffer {
+                item.forward(&queued.channel);
+            }
+            if !queued.closed {
+                state.head_channel = Some(queued.channel);
+                return;
+            }
+        }
+    }
+
+    /// The queue discarded every track behind the current one; their items
+    /// must never reach subscribers.
+    fn abandon_queued(&self) {
+        let mut state = self.0.lock().unwrap();
+        for queued in state.queued.values_mut() {
+            queued.abandoned = true;
+            queued.buffer.clear();
+        }
+    }
+}
+
+/// Sender half of a track's media channel. Items are clipped to the track
+/// duration, shifted by the side-channel delay and forwarded to the side
+/// channel as they arrive from the input, before the (bounded) channel send —
+/// so side-channel subscribers observe media on arrival, independent of when
+/// the queue consumes the track.
+pub(crate) struct QueueSender<T: QueueItem> {
+    sender: crossbeam_channel::Sender<T>,
+    delay: Duration,
+    duration: Option<Duration>,
+    lane: Option<(Arc<SideChannelLane<T>>, u64)>,
+}
+
+impl<T: QueueItem> QueueSender<T> {
     pub fn send(&self, item: T) -> Result<(), crossbeam_channel::SendError<T>> {
-        self.0.send(item)
+        match self.prepare(item) {
+            Some(item) => self.sender.send(item),
+            None => Ok(()),
+        }
     }
 
     #[allow(dead_code)]
     pub fn try_send(&self, item: T) -> Result<(), crossbeam_channel::TrySendError<T>> {
-        self.0.try_send(item)
+        match self.prepare(item) {
+            Some(item) => self.sender.try_send(item),
+            None => Ok(()),
+        }
+    }
+
+    fn prepare(&self, item: T) -> Option<T> {
+        let mut item = match self.duration {
+            Some(duration) => item.clip(duration)?,
+            None => item,
+        };
+        item.shift_pts(self.delay);
+        if let Some((lane, seq)) = &self.lane {
+            lane.forward(*seq, &item);
+        }
+        Some(item)
     }
 }
 
-impl<T> std::fmt::Debug for QueueSender<T> {
+impl<T: QueueItem> Drop for QueueSender<T> {
+    fn drop(&mut self) {
+        if let Some((lane, seq)) = &self.lane {
+            lane.close(*seq);
+        }
+    }
+}
+
+impl<T: QueueItem> std::fmt::Debug for QueueSender<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QueueSender").finish()
     }
@@ -78,6 +221,8 @@ pub(super) struct InnerQueueInput {
     required: bool,
     video_side_channel: Option<VideoSideChannel>,
     audio_side_channel: Option<AudioSideChannel>,
+    video_lane: Option<Arc<SideChannelLane<Frame>>>,
+    audio_lane: Option<Arc<SideChannelLane<InputAudioSamples>>>,
     side_channel_delay: Duration,
 }
 
@@ -163,10 +308,6 @@ impl InnerQueueInput {
             })
             .unwrap_or(TrackEndCondition::AllTracks);
         let (video_input, video_sender) = if opts.video {
-            let side_channel = self
-                .video_side_channel
-                .as_ref()
-                .map(|sc| sc.with_track_offset(&track_offset));
             let (video_input, video_sender) = VideoQueueInput::new(
                 &self.queue_ctx,
                 &self.event_emitter,
@@ -174,19 +315,27 @@ impl InnerQueueInput {
                 self.required,
                 offset_from_start,
                 track_offset.clone(),
-                side_channel,
-                self.side_channel_delay,
-                duration,
+                duration.is_some(),
             );
-            (Some(video_input), Some(QueueSender::new(video_sender)))
+            let lane = self.video_lane.as_ref().map(|lane| {
+                let channel = self
+                    .video_side_channel
+                    .as_ref()
+                    .expect("lane exists only with a side channel")
+                    .with_track_offset(&track_offset);
+                (lane.clone(), lane.register(channel))
+            });
+            let sender = QueueSender {
+                sender: video_sender,
+                delay: self.side_channel_delay,
+                duration,
+                lane,
+            };
+            (Some(video_input), Some(sender))
         } else {
             (None, None)
         };
         let (audio_input, audio_sender) = if opts.audio {
-            let side_channel = self
-                .audio_side_channel
-                .as_ref()
-                .map(|sc| sc.with_track_offset(&track_offset));
             let (audio_input, audio_sender) = AudioQueueInput::new(
                 &self.queue_ctx,
                 &self.event_emitter,
@@ -194,11 +343,23 @@ impl InnerQueueInput {
                 self.required,
                 offset_from_start,
                 track_offset.clone(),
-                side_channel,
-                self.side_channel_delay,
-                duration,
+                duration.is_some(),
             );
-            (Some(audio_input), Some(QueueSender::new(audio_sender)))
+            let lane = self.audio_lane.as_ref().map(|lane| {
+                let channel = self
+                    .audio_side_channel
+                    .as_ref()
+                    .expect("lane exists only with a side channel")
+                    .with_track_offset(&track_offset);
+                (lane.clone(), lane.register(channel))
+            });
+            let sender = QueueSender {
+                sender: audio_sender,
+                delay: self.side_channel_delay,
+                duration,
+                lane,
+            };
+            (Some(audio_input), Some(sender))
         } else {
             (None, None)
         };
@@ -377,6 +538,8 @@ impl QueueInput {
 
             required: opts.required,
             pause_state: PauseState::new(),
+            video_lane: video_side_channel.as_ref().map(|_| Arc::new(SideChannelLane::new())),
+            audio_lane: audio_side_channel.as_ref().map(|_| Arc::new(SideChannelLane::new())),
             video_side_channel,
             audio_side_channel,
             side_channel_delay: opts.side_channel_delay,
@@ -420,6 +583,12 @@ impl QueueInput {
         let mut guard = self.0.lock().unwrap();
         if matches!(timing, Some(QueueTrackTiming::Finite(_))) {
             while guard.pending_receiver.try_recv().is_ok() {}
+            if let Some(lane) = &guard.video_lane {
+                lane.abandon_queued();
+            }
+            if let Some(lane) = &guard.audio_lane {
+                lane.abandon_queued();
+            }
         }
         let (track, video_sender, audio_sender) = guard.new_pending_track(opts, timing);
         let pending_sender = guard.pending_sender.clone();

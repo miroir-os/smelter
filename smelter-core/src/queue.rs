@@ -94,12 +94,12 @@ impl From<&PipelineOptions> for QueueOptions {
 ///     queue start to the current queue PTS at which the packet is observed.
 ///
 /// - Side channel (`QueueInputOptions::side_channel_delay`):
-///   - For inputs with a side channel, the receiver shifts incoming PTS by
+///   - For inputs with a side channel, the track sender shifts incoming PTS by
 ///     `side_channel_delay`, so that input runs that far behind real time.
-///   - The receiver buffer is allowed to grow up to `side_channel_delay` worth of data,
-///     so the side-channel subscriber receives frames ahead of when the queue consumes
-///     them — leaving the subscriber roughly `side_channel_delay` time to process
-///     before the frame is due.
+///   - The sender forwards every item to the side channel as it arrives from the
+///     input — before the queue buffers it and independent of when the track starts
+///     playing — leaving the subscriber roughly `side_channel_delay` time to process
+///     before the item is due.
 ///
 /// - Example usage scenarios:
 ///   - MP4 input:

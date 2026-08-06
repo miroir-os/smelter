@@ -8,7 +8,9 @@ use crate::{
     Ref,
     event::{Event, EventEmitter},
     queue::{
-        QueueAudioSamples, QueueContext, queue_input::TrackOffset, side_channel::AudioSideChannel,
+        QueueAudioSamples, QueueContext,
+        queue_input::{QueueItem, TrackOffset},
+        side_channel::AudioSideChannel,
         utils::EmitOnceGuard,
     },
 };
@@ -16,6 +18,32 @@ use crate::{
 use crate::prelude::*;
 
 const MIXER_STRETCH_BUFFER: Duration = Duration::from_millis(80);
+
+impl QueueItem for InputAudioSamples {
+    type SideChannel = AudioSideChannel;
+
+    fn clip(mut self, duration: Duration) -> Option<Self> {
+        let sample_count = (duration.saturating_sub(self.start_pts).as_nanos()
+            * self.sample_rate as u128
+            / 1_000_000_000) as usize;
+        match &mut self.samples {
+            AudioSamples::Mono(samples) => samples.truncate(sample_count),
+            AudioSamples::Stereo(samples) => samples.truncate(sample_count),
+        }
+        match self.is_empty() {
+            true => None,
+            false => Some(self),
+        }
+    }
+
+    fn shift_pts(&mut self, delay: Duration) {
+        self.start_pts += delay;
+    }
+
+    fn forward(&self, side_channel: &AudioSideChannel) {
+        side_channel.send_samples(self);
+    }
+}
 
 pub(crate) struct AudioQueueInput {
     queue_ctx: QueueContext,
@@ -41,7 +69,6 @@ pub(crate) struct AudioQueueInput {
 }
 
 impl AudioQueueInput {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         queue_ctx: &QueueContext,
         event_emitter: &Arc<EventEmitter>,
@@ -49,12 +76,9 @@ impl AudioQueueInput {
         required: bool,
         offset: Option<Duration>,
         track_offset: TrackOffset,
-        side_channel: Option<AudioSideChannel>,
-        side_channel_delay: Duration,
-        duration: Option<Duration>,
+        finite: bool,
     ) -> (Self, Sender<InputAudioSamples>) {
-        let (receiver, sender) =
-            AudioInputReceiver::new(side_channel_delay, side_channel, duration);
+        let (receiver, sender) = AudioInputReceiver::new(finite);
         let input = Self {
             queue_ctx: queue_ctx.clone(),
             required,
@@ -151,7 +175,7 @@ impl AudioQueueInput {
 
     /// True on the first call after the track ended; also emits the EOS event.
     fn check_eos(&mut self) -> bool {
-        let is_eos = self.receiver.duration.is_none()
+        let is_eos = !self.receiver.finite
             && matches!(self.receiver.state(), ReceiverState::Done)
             && !self.event_eos_guard.emited();
         if is_eos {
@@ -241,17 +265,13 @@ pub(crate) struct AudioInputReceiver {
     buffer: VecDeque<InputAudioSamples>,
     disconnected: bool,
     state: ReceiverState,
-    delay: Duration,
-    side_channel: Option<AudioSideChannel>,
-    duration: Option<Duration>,
+    /// Finite tracks end at their PTS boundary, so their channel close does
+    /// not represent an EOS.
+    finite: bool,
 }
 
 impl AudioInputReceiver {
-    pub fn new(
-        delay: Duration,
-        side_channel: Option<AudioSideChannel>,
-        duration: Option<Duration>,
-    ) -> (Self, Sender<InputAudioSamples>) {
+    pub fn new(finite: bool) -> (Self, Sender<InputAudioSamples>) {
         let (sender, receiver) = bounded(1);
         let track = Self {
             max_size: Duration::from_millis(100),
@@ -259,9 +279,7 @@ impl AudioInputReceiver {
             buffer: VecDeque::new(),
             disconnected: false,
             state: ReceiverState::New,
-            delay,
-            side_channel,
-            duration,
+            finite,
         };
         (track, sender)
     }
@@ -299,10 +317,6 @@ impl AudioInputReceiver {
     /// Enqueue batches from the channel, allowing exceeding `max_size`
     /// if the buffer doesn't yet cover `needed_pts`.
     fn try_enqueue_until(&mut self, needed_pts: Duration) {
-        let side_channel_size = match self.side_channel {
-            Some(_) => self.delay,
-            None => Duration::ZERO,
-        };
         loop {
             if self.disconnected {
                 return;
@@ -311,28 +325,12 @@ impl AudioInputReceiver {
             let has_needed = back
                 .map(|batch| batch.end_pts() > needed_pts)
                 .unwrap_or(false);
-            if has_needed && self.size() >= self.max_size && self.size() >= side_channel_size {
+            if has_needed && self.size() >= self.max_size {
                 return;
             }
             match self.receiver.try_recv() {
-                Ok(mut batch) => {
+                Ok(batch) => {
                     trace!(pts_range=?batch.pts_range(), pending=self.receiver.len(), "Enqueue samples");
-                    if let Some(duration) = self.duration {
-                        let sample_count = (duration.saturating_sub(batch.start_pts).as_nanos()
-                            * batch.sample_rate as u128
-                            / 1_000_000_000) as usize;
-                        match &mut batch.samples {
-                            AudioSamples::Mono(samples) => samples.truncate(sample_count),
-                            AudioSamples::Stereo(samples) => samples.truncate(sample_count),
-                        }
-                        if batch.is_empty() {
-                            continue;
-                        }
-                    }
-                    batch.start_pts += self.delay;
-                    if let Some(side_channel) = &self.side_channel {
-                        side_channel.send_samples(&batch);
-                    }
                     self.buffer.push_back(batch);
                     self.state = ReceiverState::Running;
                 }

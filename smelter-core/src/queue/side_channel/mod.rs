@@ -55,7 +55,7 @@ impl VideoSideChannel {
         side_channel
     }
 
-    pub(super) fn send_frame(&mut self, frame: &Frame) {
+    pub(super) fn send_frame(&self, frame: &Frame) {
         let Some(offset) = self.track_offset.get() else {
             return;
         };

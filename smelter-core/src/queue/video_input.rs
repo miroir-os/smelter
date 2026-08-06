@@ -8,10 +8,31 @@ use crate::{
     Ref,
     event::{Event, EventEmitter},
     queue::{
-        QueueContext, QueueVideoFrame, queue_input::TrackOffset, side_channel::VideoSideChannel,
+        QueueContext, QueueVideoFrame,
+        queue_input::{QueueItem, TrackOffset},
+        side_channel::VideoSideChannel,
         utils::EmitOnceGuard,
     },
 };
+
+impl QueueItem for Frame {
+    type SideChannel = VideoSideChannel;
+
+    fn clip(self, duration: Duration) -> Option<Self> {
+        match self.pts < duration {
+            true => Some(self),
+            false => None,
+        }
+    }
+
+    fn shift_pts(&mut self, delay: Duration) {
+        self.pts += delay;
+    }
+
+    fn forward(&self, side_channel: &VideoSideChannel) {
+        side_channel.send_frame(self);
+    }
+}
 
 pub(crate) struct VideoQueueInput {
     queue_ctx: QueueContext,
@@ -38,7 +59,6 @@ pub(crate) struct VideoQueueInput {
 }
 
 impl VideoQueueInput {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         queue_ctx: &QueueContext,
         event_emitter: &Arc<EventEmitter>,
@@ -46,12 +66,9 @@ impl VideoQueueInput {
         required: bool,
         offset_from_start: Option<Duration>,
         track_offset: TrackOffset,
-        side_channel: Option<VideoSideChannel>,
-        side_channel_delay: Duration,
-        duration: Option<Duration>,
+        finite: bool,
     ) -> (Self, Sender<Frame>) {
-        let (receiver, sender) =
-            VideoInputReceiver::new(side_channel_delay, side_channel, duration);
+        let (receiver, sender) = VideoInputReceiver::new(finite);
         let input = Self {
             queue_ctx: queue_ctx.clone(),
             required,
@@ -254,17 +271,13 @@ pub(crate) struct VideoInputReceiver {
     buffer: VecDeque<Frame>,
     disconnected: bool,
     state: ReceiverState,
-    delay: Duration,
-    side_channel: Option<VideoSideChannel>,
-    duration: Option<Duration>,
+    /// Finite tracks end at their PTS boundary; their final frame is held so
+    /// the track can fill its window even after the channel closes.
+    finite: bool,
 }
 
 impl VideoInputReceiver {
-    pub fn new(
-        delay: Duration,
-        side_channel: Option<VideoSideChannel>,
-        duration: Option<Duration>,
-    ) -> (Self, Sender<Frame>) {
+    pub fn new(finite: bool) -> (Self, Sender<Frame>) {
         let (sender, receiver) = bounded(1);
         let track = Self {
             max_size: Duration::from_millis(100),
@@ -272,9 +285,7 @@ impl VideoInputReceiver {
             buffer: VecDeque::new(),
             disconnected: false,
             state: ReceiverState::New,
-            delay,
-            side_channel,
-            duration,
+            finite,
         };
         (track, sender)
     }
@@ -293,7 +304,7 @@ impl VideoInputReceiver {
             None => return None,
             _ => {}
         }
-        if self.disconnected && self.buffer.len() == 1 && self.duration.is_none() {
+        if self.disconnected && self.buffer.len() == 1 && !self.finite {
             let frame = self.buffer.pop_front();
             self.maybe_transition_to_done();
             frame
@@ -344,29 +355,17 @@ impl VideoInputReceiver {
     }
 
     fn try_enqueue(&mut self) {
-        let side_channel_size = match self.side_channel {
-            Some(_) => self.delay,
-            None => Duration::ZERO,
-        };
-
         loop {
             if self.disconnected {
                 return;
             }
 
-            if self.size() >= self.max_size && self.size() >= side_channel_size {
+            if self.size() >= self.max_size {
                 return;
             }
             match self.receiver.try_recv() {
-                Ok(mut frame) => {
+                Ok(frame) => {
                     trace!(pts=?frame.pts, pending=self.receiver.len(), "Enqueue frame");
-                    if self.duration.is_some_and(|duration| frame.pts >= duration) {
-                        continue;
-                    }
-                    frame.pts += self.delay;
-                    if let Some(side_channel) = &mut self.side_channel {
-                        side_channel.send_frame(&frame);
-                    }
                     self.buffer.push_back(frame);
                     self.state = ReceiverState::Running;
                 }
