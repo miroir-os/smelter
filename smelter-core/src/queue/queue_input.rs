@@ -12,7 +12,7 @@ use crate::{
     event::EventEmitter,
     queue::{
         QueueContext,
-        audio_input::AudioQueueInput,
+        audio_input::{AudioQueueInput, MIXER_STRETCH_BUFFER},
         side_channel::{AudioSideChannel, VideoSideChannel},
         utils::PauseState,
         video_input::VideoQueueInput,
@@ -75,6 +75,7 @@ pub(super) struct InnerQueueInput {
 
     pending_sender: crossbeam_channel::Sender<PendingTrack>,
     pending_receiver: crossbeam_channel::Receiver<PendingTrack>,
+    next_track: Option<PendingTrack>,
     required: bool,
     video_side_channel: Option<VideoSideChannel>,
     audio_side_channel: Option<AudioSideChannel>,
@@ -94,12 +95,43 @@ impl InnerQueueInput {
         };
         if ended {
             self.replace_track()
+        } else {
+            self.prefetch_next_track(pts)
+        }
+    }
+
+    fn prefetch_next_track(&mut self, pts: Duration) {
+        if self.pause_state.is_paused() {
+            return;
+        }
+        let TrackEndCondition::Pts(end) = &self.end_condition else {
+            return;
+        };
+        let Some(end) = end.get() else {
+            return;
+        };
+        if pts.saturating_add(MIXER_STRETCH_BUFFER) < end {
+            return;
+        }
+        if self.next_track.is_none() {
+            self.next_track = self.pending_receiver.try_recv().ok();
+        }
+        if let Some(audio) = self
+            .next_track
+            .as_mut()
+            .and_then(|track| track.audio.as_mut())
+        {
+            audio.prefetch();
         }
     }
 
     /// Replace current track with the next pending, do nothing if there is no pending
     fn replace_track(&mut self) {
-        let Ok(pending) = self.pending_receiver.try_recv() else {
+        let Some(pending) = self
+            .next_track
+            .take()
+            .or_else(|| self.pending_receiver.try_recv().ok())
+        else {
             return;
         };
         info!(input_id=%self.input_ref, "Push track to queue");
@@ -374,6 +406,7 @@ impl QueueInput {
 
             pending_sender,
             pending_receiver,
+            next_track: None,
 
             required: opts.required,
             pause_state: PauseState::new(),
@@ -419,6 +452,7 @@ impl QueueInput {
         }
         let mut guard = self.0.lock().unwrap();
         if matches!(timing, Some(QueueTrackTiming::Finite(_))) {
+            guard.next_track = None;
             while guard.pending_receiver.try_recv().is_ok() {}
         }
         let (track, video_sender, audio_sender) = guard.new_pending_track(opts, timing);

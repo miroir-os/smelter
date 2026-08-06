@@ -15,7 +15,7 @@ use crate::{
 
 use crate::prelude::*;
 
-const MIXER_STRETCH_BUFFER: Duration = Duration::from_millis(80);
+pub(super) const MIXER_STRETCH_BUFFER: Duration = Duration::from_millis(80);
 
 pub(crate) struct AudioQueueInput {
     queue_ctx: QueueContext,
@@ -190,6 +190,12 @@ impl AudioQueueInput {
                 true
             }
             ReceiverState::Done => true,
+        }
+    }
+
+    pub(super) fn prefetch(&mut self) {
+        if self.track_offset.get().is_some() {
+            self.receiver.try_enqueue_until(Duration::ZERO);
         }
     }
 
