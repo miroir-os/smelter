@@ -52,36 +52,27 @@ impl ChannelCallbackAdapter {
         }
     }
 
-    /// Maps a device stream time onto the pipeline clock.
-    ///
-    /// Stream times advance on the DeckLink's own crystal, which drifts
-    /// against the pipeline clock (typically tens of ppm — frames per hour
-    /// on a long-lived input). A once-resolved offset lets that drift
-    /// accumulate into delivered latency, so the mapping is maintained as a
-    /// minimum envelope of the observed arrival offsets: callback delay only
-    /// ever inflates `arrival - device_time`, so an earlier-than-known
-    /// arrival is ground truth and takes the offset down immediately, while
-    /// upward movement (a device crystal running slow, or a stream restart)
-    /// is followed at a bounded creep that load-induced arrival jitter
-    /// cannot meaningfully exploit. A jump past the snap window (signal
-    /// replug, stream restart) re-anchors outright.
+    /// Maps a device stream time onto the pipeline clock, as a minimum
+    /// envelope of the observed arrival offsets: device crystals drift
+    /// against the pipeline clock (tens of ppm — frames per hour on a
+    /// long-lived input), so the mapping must be maintained, not resolved
+    /// once. Callback delay only ever inflates `arrival - device_time`, so
+    /// an earlier arrival is ground truth and taken outright — as is a jump
+    /// past the snap window (signal replug, stream restart) — while upward
+    /// movement is followed at a creep above any crystal rate but below
+    /// load-induced arrival jitter.
     fn resolve_offset(&self, device_time: Duration) -> Duration {
         const UPWARD_CREEP: Duration = Duration::from_micros(2);
         const SNAP: Duration = Duration::from_millis(500);
         let target = self.sync_point.elapsed().saturating_sub(device_time);
-        let mut guard = self.stream_offset.lock().unwrap();
-        let Some(offset) = *guard else {
-            *guard = Some(target);
-            return target;
+        let mut offset = self.stream_offset.lock().unwrap();
+        let adjusted = match *offset {
+            Some(current) if target > current && target - current < SNAP => {
+                current + UPWARD_CREEP
+            }
+            _ => target,
         };
-        let adjusted = if target <= offset {
-            target
-        } else if target - offset >= SNAP {
-            target
-        } else {
-            offset + UPWARD_CREEP
-        };
-        *guard = Some(adjusted);
+        *offset = Some(adjusted);
         adjusted
     }
 
