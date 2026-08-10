@@ -52,16 +52,46 @@ impl ChannelCallbackAdapter {
         }
     }
 
+    /// Maps a device stream time onto the pipeline clock.
+    ///
+    /// Stream times advance on the DeckLink's own crystal, which drifts
+    /// against the pipeline clock (typically tens of ppm — frames per hour
+    /// on a long-lived input). A once-resolved offset lets that drift
+    /// accumulate into delivered latency, so the mapping is maintained as a
+    /// minimum envelope of the observed arrival offsets: callback delay only
+    /// ever inflates `arrival - device_time`, so an earlier-than-known
+    /// arrival is ground truth and takes the offset down immediately, while
+    /// upward movement (a device crystal running slow, or a stream restart)
+    /// is followed at a bounded creep that load-induced arrival jitter
+    /// cannot meaningfully exploit. A jump past the snap window (signal
+    /// replug, stream restart) re-anchors outright.
+    fn resolve_offset(&self, device_time: Duration) -> Duration {
+        const UPWARD_CREEP: Duration = Duration::from_micros(2);
+        const SNAP: Duration = Duration::from_millis(500);
+        let target = self.sync_point.elapsed().saturating_sub(device_time);
+        let mut guard = self.stream_offset.lock().unwrap();
+        let Some(offset) = *guard else {
+            *guard = Some(target);
+            return target;
+        };
+        let adjusted = if target <= offset {
+            target
+        } else if target - offset >= SNAP {
+            target
+        } else {
+            offset + UPWARD_CREEP
+        };
+        *guard = Some(adjusted);
+        adjusted
+    }
+
     fn handle_video_frame(
         &self,
         video_frame: &mut VideoInputFrame,
         sender: &QueueSender<Frame>,
     ) -> Result<(), decklink::DeckLinkError> {
         let stream_time = video_frame.stream_time()?;
-        let offset = {
-            let mut guard = self.stream_offset.lock().unwrap();
-            *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(stream_time))
-        };
+        let offset = self.resolve_offset(stream_time);
         let presentation_delay =
             Duration::from_millis(if self.audio_sender.is_some() { 40 } else { 0 });
         let pts = stream_time + offset + presentation_delay;
@@ -184,10 +214,7 @@ impl ChannelCallbackAdapter {
         sender: &QueueSender<InputAudioSamples>,
     ) -> Result<(), decklink::DeckLinkError> {
         let packet_time = audio_packet.packet_time()?;
-        let offset = {
-            let mut guard = self.stream_offset.lock().unwrap();
-            *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(packet_time))
-        };
+        let offset = self.resolve_offset(packet_time);
         let pts = packet_time + offset + Duration::from_millis(40);
 
         let samples = audio_packet.as_32_bit_stereo()?;
