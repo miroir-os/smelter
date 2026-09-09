@@ -1,6 +1,8 @@
 fn main() {
     #[cfg(feature = "transcoder")]
     build_transcoding_shader();
+    #[cfg(all(feature = "quicksync", target_os = "linux"))]
+    build_quicksync_bindings();
 
     cfg_aliases::cfg_aliases! {
         vulkan: {
@@ -13,6 +15,86 @@ fn main() {
             )
         },
     }
+}
+
+#[cfg(all(feature = "quicksync", target_os = "linux"))]
+fn build_quicksync_bindings() {
+    use std::path::PathBuf;
+
+    println!("cargo:rerun-if-changed=build.rs");
+    let output_directory = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+
+    let vpl = pkg_config::Config::new()
+        .atleast_version("2.10")
+        .probe("vpl")
+        .expect("failed to find libvpl development headers");
+    let vpl_include_directory = vpl
+        .include_paths
+        .iter()
+        .find(|path| path.join("vpl/mfx.h").exists())
+        .expect("libvpl pkg-config metadata did not include vpl/mfx.h");
+    let mut vpl_builder = bindgen::Builder::default()
+        .header(
+            vpl_include_directory
+                .join("vpl/mfx.h")
+                .display()
+                .to_string(),
+        )
+        .clang_arg("-DONEVPL_EXPERIMENTAL")
+        .allowlist_function("MFX.*")
+        .allowlist_type("_?mfx.*")
+        .allowlist_type("mfx.*")
+        .allowlist_var("MFX.*")
+        .allowlist_var("mfx.*")
+        .generate_comments(false)
+        .derive_debug(false)
+        .derive_default(false);
+    for include_directory in vpl.include_paths {
+        vpl_builder = vpl_builder.clang_arg(format!("-I{}", include_directory.display()));
+    }
+    let vpl_bindings = vpl_builder
+        .generate()
+        .expect("failed to generate libvpl bindings");
+    std::fs::write(
+        output_directory.join("vpl_bindings.rs"),
+        vpl_bindings.to_string(),
+    )
+    .expect("failed to write libvpl bindings");
+
+    let libva = pkg_config::Config::new()
+        .probe("libva")
+        .expect("failed to find libva development headers");
+    let libva_drm = pkg_config::Config::new()
+        .probe("libva-drm")
+        .expect("failed to find libva-drm development headers");
+    let mut va_builder = bindgen::Builder::default()
+        .header_contents(
+            "va_wrapper.h",
+            "#include <va/va.h>\n#include <va/va_drm.h>\n#include <va/va_drmcommon.h>\n",
+        )
+        .allowlist_function("va(GetDisplayDRM|Initialize|Terminate|ExportSurfaceHandle)")
+        .allowlist_type("(VADisplay|VASurfaceID|VAStatus|.*VADRMPRIME.*)")
+        .allowlist_var(
+            "VA_(STATUS_SUCCESS|EXPORT_SURFACE_READ_WRITE|EXPORT_SURFACE_SEPARATE_LAYERS|SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2)",
+        )
+        .generate_comments(false)
+        .derive_debug(false)
+        .derive_default(false);
+    for include_directory in libva
+        .include_paths
+        .into_iter()
+        .chain(libva_drm.include_paths)
+    {
+        va_builder = va_builder.clang_arg(format!("-I{}", include_directory.display()));
+    }
+    let va_bindings = va_builder
+        .generate()
+        .expect("failed to generate libva bindings");
+    std::fs::write(
+        output_directory.join("va_bindings.rs"),
+        va_bindings.to_string(),
+    )
+    .expect("failed to write libva bindings");
 }
 
 // cfg vulkan && feature "transcoder"

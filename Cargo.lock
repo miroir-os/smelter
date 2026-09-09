@@ -1610,6 +1610,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "drm-fourcc"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0aafbcdb8afc29c1a7ee5fbe53b5d62f4565b35a042a662ca9fecd0b54dae6f4"
+
+[[package]]
 name = "dtls"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2325,13 +2331,17 @@ name = "gpu-video"
 version = "0.4.0"
 dependencies = [
  "ash",
+ "bindgen 0.72.1",
  "bytemuck",
  "bytes",
  "cfg_aliases",
  "clap",
+ "drm-fourcc",
  "h264-reader",
+ "libc",
  "memchr",
  "naga",
+ "pkg-config",
  "pollster",
  "rustc-hash 2.1.1",
  "thiserror 2.0.17",

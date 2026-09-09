@@ -17,6 +17,13 @@ pub mod libopus;
 #[cfg(feature = "gpu-video")]
 pub mod vulkan_h264;
 
+#[cfg(all(feature = "quicksync", target_os = "linux"))]
+pub mod quicksync_h264;
+
+#[cfg(not(all(feature = "quicksync", target_os = "linux")))]
+#[path = "./encoder/quicksync_h264_fallback.rs"]
+pub mod quicksync_h264;
+
 #[cfg(not(feature = "gpu-video"))]
 #[path = "./encoder/vulkan_h264_fallback.rs"]
 pub mod vulkan_h264;
