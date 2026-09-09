@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use crate::{
     Resolution,
@@ -9,13 +9,9 @@ use crate::{
 mod flatten;
 mod layout_renderer;
 mod params;
-mod resampler;
 mod shader;
 
-use self::{
-    resampler::{ResampledChild, ResamplerShader},
-    shader::LayoutShader,
-};
+use self::shader::LayoutShader;
 
 pub(crate) use layout_renderer::LayoutRenderer;
 use tracing::error;
@@ -30,8 +26,6 @@ pub(crate) trait LayoutProvider: Send {
 pub(crate) struct LayoutNode {
     layout_provider: Box<dyn LayoutProvider>,
     shader: Arc<LayoutShader>,
-    resampler: Option<Arc<ResamplerShader>>,
-    resample_cache: HashMap<usize, ResampledChild>,
 }
 
 /// When rendering we cut this fragment from texture and stretch it on
@@ -156,13 +150,10 @@ pub struct NestedLayout {
 impl LayoutNode {
     pub fn new(ctx: &RenderCtx, layout_provider: Box<dyn LayoutProvider>) -> Self {
         let shader = ctx.renderers.layout.shader.clone();
-        let resampler = ctx.renderers.layout.resampler.clone();
 
         Self {
             layout_provider,
             shader,
-            resampler,
-            resample_cache: HashMap::new(),
         }
     }
 
@@ -179,7 +170,7 @@ impl LayoutNode {
             .collect();
         let output_resolution = self.layout_provider.resolution(pts);
         let layouts = self.layout_provider.layouts(pts, &input_resolutions);
-        let mut layouts = layouts.flatten(&input_resolutions, output_resolution);
+        let layouts = layouts.flatten(&input_resolutions, output_resolution);
 
         let mut encoder =
             ctx.wgpu_ctx
@@ -188,30 +179,19 @@ impl LayoutNode {
                     label: Some("layout node"),
                 });
 
-        self.resample_scaled_children(ctx, sources, &mut layouts, &mut encoder);
-
         let resolved_views: Vec<&wgpu::TextureView> = layouts
             .iter()
-            .enumerate()
-            .map(|(layout_index, layout)| match &layout.content {
-                RenderLayoutContent::ChildNode { index, .. } => {
-                    if let Some(resampled) = self.resample_cache.get(&layout_index)
-                        && let Some(state) = resampled.output_state()
-                    {
-                        return state.view();
+            .map(|layout| match &layout.content {
+                RenderLayoutContent::ChildNode { index, .. } => match sources.get(*index) {
+                    Some(node_texture) => node_texture
+                        .state()
+                        .map(|s| s.view())
+                        .unwrap_or_else(|| ctx.wgpu_ctx.default_empty_view()),
+                    None => {
+                        error!("Invalid source index in layout");
+                        ctx.wgpu_ctx.default_empty_view()
                     }
-
-                    match sources.get(*index) {
-                        Some(node_texture) => node_texture
-                            .state()
-                            .map(|s| s.view())
-                            .unwrap_or_else(|| ctx.wgpu_ctx.default_empty_view()),
-                        None => {
-                            error!("Invalid source index in layout");
-                            ctx.wgpu_ctx.default_empty_view()
-                        }
-                    }
-                }
+                },
                 RenderLayoutContent::Color { .. } | RenderLayoutContent::BoxShadow { .. } => {
                     ctx.wgpu_ctx.default_empty_view()
                 }
@@ -229,52 +209,6 @@ impl LayoutNode {
         );
 
         ctx.wgpu_ctx.queue.submit(Some(encoder.finish()));
-    }
-
-    /// Resample scaled child nodes to their exact on-screen size, so the layout
-    /// shader always samples 1:1; each child's crop is consumed whole and
-    /// replaced with `output_crop`. CPU-optimized rendering has no resampler
-    /// and scales bilinearly in the layout shader instead.
-    fn resample_scaled_children(
-        &mut self,
-        ctx: &RenderCtx,
-        sources: &[&NodeTexture],
-        layouts: &mut [RenderLayout],
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
-        let Some(resampler) = &self.resampler else {
-            return;
-        };
-
-        let mut resampled: Vec<usize> = Vec::new();
-        for (layout_index, layout) in layouts.iter_mut().enumerate() {
-            let (width, height) = (layout.width, layout.height);
-            let RenderLayoutContent::ChildNode { index, crop, .. } = &mut layout.content else {
-                continue;
-            };
-            let Some(source) = sources.get(*index).and_then(|t| t.state()) else {
-                continue;
-            };
-            let dst = Resolution {
-                width: (width.round() as usize).max(1),
-                height: (height.round() as usize).max(1),
-            };
-            if !ResampledChild::is_needed(crop, dst) {
-                continue;
-            }
-            self.resample_cache.entry(layout_index).or_default().render(
-                ctx.wgpu_ctx,
-                resampler,
-                source,
-                crop,
-                dst,
-                encoder,
-            );
-            *crop = ResampledChild::output_crop(dst);
-            resampled.push(layout_index);
-        }
-        self.resample_cache
-            .retain(|layout_index, _| resampled.contains(layout_index));
     }
 }
 
