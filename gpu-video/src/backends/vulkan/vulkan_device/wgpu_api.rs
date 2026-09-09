@@ -70,6 +70,17 @@ impl VulkanDevice {
         let wgpu_features = desc.wgpu_features | wgpu::Features::TEXTURE_FORMAT_NV12;
         let mut wgpu_extensions = hal_adapter.required_device_extensions(wgpu_features);
         required_extensions.append(&mut wgpu_extensions);
+        #[cfg(feature = "quicksync")]
+        if desc
+            .wgpu_features
+            .contains(crate::quicksync::required_wgpu_features())
+        {
+            for extension in crate::dmabuf::REQUIRED_SYNC_VULKAN_DEVICE_EXTENSIONS {
+                if !required_extensions.contains(&extension) {
+                    required_extensions.push(extension);
+                }
+            }
+        }
 
         let mut wgpu_physical_device_features = unsafe {
             wgpu_adapter
