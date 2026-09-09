@@ -28,7 +28,8 @@ pub fn create_vulkan_graphics_ctx(
 
     let instance_flags = wgpu::InstanceFlags::default();
     let api_version = vk::API_VERSION_1_3;
-    let wgpu_features = features | required_wgpu_features() | wgpu::Features::TEXTURE_FORMAT_NV12;
+    let base_wgpu_features =
+        features | required_wgpu_features() | wgpu::Features::TEXTURE_FORMAT_NV12;
 
     let limits = set_required_wgpu_limits(limits);
 
@@ -109,6 +110,7 @@ pub fn create_vulkan_graphics_ctx(
             .ok_or(CreateGraphicsContextError::NoAdapter)?;
 
     info!("Using {} adapter with Vulkan backend", adapter_info.name);
+    let wgpu_features = base_wgpu_features | quicksync_wgpu_features(&adapter);
     let (device, queue) = adapter.request_device_with_video_support(&VideoDeviceDescriptor {
         wgpu_features,
         wgpu_experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
@@ -124,6 +126,16 @@ pub fn create_vulkan_graphics_ctx(
             adapter_info: adapter_info.into(),
         }),
     })
+}
+
+#[cfg(all(feature = "quicksync", target_os = "linux"))]
+fn quicksync_wgpu_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    gpu_video::quicksync::supported_wgpu_features(adapter)
+}
+
+#[cfg(not(all(feature = "quicksync", target_os = "linux")))]
+fn quicksync_wgpu_features(_adapter: &wgpu::Adapter) -> wgpu::Features {
+    wgpu::Features::empty()
 }
 
 fn log_available_adapters(instance: &wgpu::Instance) {
