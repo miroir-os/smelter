@@ -33,33 +33,33 @@ pub(super) fn video_catalog_entry(
     // H264 is the only codec whose catalog entry depends on the container: CMAF
     // needs the out-of-band avcC record, Legacy/LOC keep parameter sets inline.
     let (codec, description) = match options {
-        VideoEncoderOptions::FfmpegH264(_) | VideoEncoderOptions::VulkanH264(_) => {
-            match container {
-                MoqOutputContainer::Cmaf => {
-                    let avcc = extradata
-                        .clone()
-                        .ok_or(MoqClientError::MissingH264EncoderConfig)?;
-                    let (profile, constraints, level) = avcc_profile(&avcc)?;
-                    let codec = hang_catalog::H264 {
-                        inline: false,
-                        profile,
-                        constraints,
-                        level,
-                    };
-                    (codec.into(), Some(avcc))
-                }
-                _ => {
-                    let (profile, constraints, level) = DEFAULT_H264_PROFILE;
-                    let codec = hang_catalog::H264 {
-                        inline: true,
-                        profile,
-                        constraints,
-                        level,
-                    };
-                    (codec.into(), None)
-                }
+        VideoEncoderOptions::FfmpegH264(_)
+        | VideoEncoderOptions::VulkanH264(_)
+        | VideoEncoderOptions::QuickSyncH264(_) => match container {
+            MoqOutputContainer::Cmaf => {
+                let avcc = extradata
+                    .clone()
+                    .ok_or(MoqClientError::MissingH264EncoderConfig)?;
+                let (profile, constraints, level) = avcc_profile(&avcc)?;
+                let codec = hang_catalog::H264 {
+                    inline: false,
+                    profile,
+                    constraints,
+                    level,
+                };
+                (codec.into(), Some(avcc))
             }
-        }
+            _ => {
+                let (profile, constraints, level) = DEFAULT_H264_PROFILE;
+                let codec = hang_catalog::H264 {
+                    inline: true,
+                    profile,
+                    constraints,
+                    level,
+                };
+                (codec.into(), None)
+            }
+        },
         VideoEncoderOptions::FfmpegVp8(_) => (hang_catalog::VideoCodec::VP8, None),
         VideoEncoderOptions::FfmpegVp9(_) => {
             (vp9_codec(output_format, resolution, framerate).into(), None)

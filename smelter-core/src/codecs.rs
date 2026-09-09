@@ -33,6 +33,7 @@ pub enum VideoDecoderOptions {
     FfmpegVp8,
     FfmpegVp9,
     VulkanH264,
+    QuickSyncH264,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub enum VideoEncoderOptions {
     FfmpegVp8(FfmpegVp8EncoderOptions),
     FfmpegVp9(FfmpegVp9EncoderOptions),
     VulkanH264(VulkanH264EncoderOptions),
+    QuickSyncH264(QuickSyncH264EncoderOptions),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -80,6 +82,7 @@ impl VideoEncoderOptions {
             VideoEncoderOptions::FfmpegVp8(opt) => opt.resolution,
             VideoEncoderOptions::FfmpegVp9(opt) => opt.resolution,
             VideoEncoderOptions::VulkanH264(opt) => opt.resolution,
+            VideoEncoderOptions::QuickSyncH264(opt) => opt.resolution,
         }
     }
 }

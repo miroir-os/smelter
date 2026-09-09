@@ -16,7 +16,8 @@ use crate::{
     pipeline::{
         encoder::{
             fdk_aac::FdkAacEncoder, ffmpeg_h264::FfmpegH264Encoder, ffmpeg_vp8::FfmpegVp8Encoder,
-            ffmpeg_vp9::FfmpegVp9Encoder, libopus::OpusEncoder, vulkan_h264::VulkanH264Encoder,
+            ffmpeg_vp9::FfmpegVp9Encoder, libopus::OpusEncoder,
+            quicksync_h264::QuickSyncH264Encoder, vulkan_h264::VulkanH264Encoder,
         },
         moq::{
             MoqSession,
@@ -277,6 +278,16 @@ impl MoqClientOutput {
                     ));
                 }
                 VideoEncoderThread::<VulkanH264Encoder>::spawn(
+                    output_id.clone(),
+                    VideoEncoderThreadOptions {
+                        ctx: ctx.clone(),
+                        encoder_options: options.clone(),
+                        chunks_sender,
+                    },
+                )?
+            }
+            VideoEncoderOptions::QuickSyncH264(options) => {
+                VideoEncoderThread::<QuickSyncH264Encoder>::spawn(
                     output_id.clone(),
                     VideoEncoderThreadOptions {
                         ctx: ctx.clone(),

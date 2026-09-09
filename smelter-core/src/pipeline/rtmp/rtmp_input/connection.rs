@@ -21,7 +21,7 @@ use crate::{
             fdk_aac::FdkAacDecoder,
             ffmpeg_h264, ffmpeg_vp8, ffmpeg_vp9,
             libopus::OpusDecoder,
-            vulkan_h264,
+            quicksync_h264, vulkan_h264,
         },
         rtmp::rtmp_input::state::RtmpInputState,
         utils::{H264AvcDecoderConfig, H264AvccToAnnexB},
@@ -189,9 +189,12 @@ impl RtmpConnectionState {
 
         let decoder_opt = match codec {
             RtmpVideoCodec::H264 => self.decoders.h264.unwrap_or_else(|| {
-                match self.ctx.graphics_context.has_vulkan_decoder_support() {
-                    true => VideoDecoderOptions::VulkanH264,
-                    false => VideoDecoderOptions::FfmpegH264,
+                if self.ctx.graphics_context.has_vulkan_decoder_support() {
+                    VideoDecoderOptions::VulkanH264
+                } else if self.ctx.graphics_context.has_quicksync_decoder_support() {
+                    VideoDecoderOptions::QuickSyncH264
+                } else {
+                    VideoDecoderOptions::FfmpegH264
                 }
             }),
             RtmpVideoCodec::Vp8 => VideoDecoderOptions::FfmpegVp8,
@@ -208,6 +211,11 @@ impl RtmpConnectionState {
                 VideoDecoderThread::<vulkan_h264::VulkanH264Decoder, _>::spawn(input_ref, options)
                     .map_err(RtmpConnectionError::InitVideoDecoder)?
             }
+            VideoDecoderOptions::QuickSyncH264 => VideoDecoderThread::<
+                quicksync_h264::QuickSyncH264Decoder,
+                _,
+            >::spawn(input_ref, options)
+            .map_err(RtmpConnectionError::InitVideoDecoder)?,
             VideoDecoderOptions::FfmpegVp8 => {
                 VideoDecoderThread::<ffmpeg_vp8::FfmpegVp8Decoder, _>::spawn(input_ref, options)
                     .map_err(RtmpConnectionError::InitVideoDecoder)?
