@@ -158,8 +158,8 @@ impl QueueThreadAfterStart {
                 .should_push_for_pts_range(audio_pts_range, self.queue_start_pts);
 
             if let Some(event_pts) = event_pts
-                && event_pts < video_pts
-                && event_pts < audio_pts_range.0
+                && event_pts <= video_pts
+                && event_pts <= audio_pts_range.0
             {
                 info!("Handle scheduled event for PTS={:?}", event_pts);
                 self.queue.queue_ctx.last_pts.update(event_pts);
