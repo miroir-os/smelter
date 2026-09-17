@@ -194,10 +194,6 @@ where
         Ref<OutputId>,
     ) -> Result<(Box<dyn Output>, NewOutputResult), OutputInitError>,
 {
-    if video.is_none() && audio.is_none() {
-        return Err(RegisterOutputError::NoVideoAndAudio(output_id));
-    }
-
     let pipeline_ctx = {
         // Do not hold the pipeline lock for the whole scope, because output creation
         // can potentially take a relatively long time.
@@ -216,6 +212,10 @@ where
         OutputStatsGuard::new(output_ref.clone(), kind, pipeline_ctx.stats_sender.clone());
     let (output, output_result) = build_output(pipeline_ctx, output_ref.clone())
         .map_err(|err| RegisterOutputError::OutputError(output_id.clone(), err))?;
+
+    if video.is_none() && audio.is_none() && output.audio().is_none() {
+        return Err(RegisterOutputError::NoVideoAndAudio(output_id));
+    }
 
     let mut guard = pipeline.lock().unwrap();
     if guard.outputs.contains_key(&output_id) {
