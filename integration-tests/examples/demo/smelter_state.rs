@@ -11,13 +11,16 @@ use tracing::{debug, error};
 
 use crate::inputs::InputHandle;
 use crate::inputs::hls::HlsInputBuilder;
-use crate::inputs::moq::MoqInputBuilder;
+use crate::inputs::moq_client::MoqClientInputBuilder;
+use crate::inputs::moq_server::MoqServerInputBuilder;
 use crate::inputs::mp4::Mp4InputBuilder;
 use crate::inputs::rtmp::RtmpInputBuilder;
+use crate::inputs::v4l2::V4l2InputBuilder;
 use crate::inputs::whep::WhepInputBuilder;
 use crate::inputs::whip::WhipInputBuilder;
 
 use crate::outputs::hls::HlsOutputBuilder;
+use crate::outputs::moq_client::MoqClientOutputBuilder;
 use crate::outputs::mp4::Mp4OutputBuilder;
 use crate::outputs::whep::WhepOutputBuilder;
 use crate::outputs::whip::WhipOutputBuilder;
@@ -152,10 +155,20 @@ impl SmelterState {
                 let register_request = hls_input.serialize_register();
                 (InputHandle::Hls(hls_input), register_request)
             }
-            InputProtocol::Moq => {
-                let moq_input = MoqInputBuilder::new().prompt()?.build();
-                let register_request = moq_input.serialize_register();
-                (InputHandle::MoqServer(moq_input), register_request)
+            InputProtocol::MoqServer => {
+                let moq_server_input = MoqServerInputBuilder::new().prompt()?.build();
+                let register_request = moq_server_input.serialize_register();
+                (InputHandle::MoqServer(moq_server_input), register_request)
+            }
+            InputProtocol::MoqClient => {
+                let moq_client_input = MoqClientInputBuilder::new().prompt()?.build();
+                let register_request = moq_client_input.serialize_register();
+                (InputHandle::MoqClient(moq_client_input), register_request)
+            }
+            InputProtocol::V4l2 => {
+                let v4l2_input = V4l2InputBuilder::new().prompt()?.build();
+                let register_request = v4l2_input.serialize_register();
+                (InputHandle::V4l2(v4l2_input), register_request)
             }
         };
 
@@ -217,6 +230,11 @@ impl SmelterState {
                 let hls_output = HlsOutputBuilder::new().prompt(self.running_state)?.build();
                 let register_request = hls_output.serialize_register(&self.inputs);
                 (OutputHandle::Hls(hls_output), register_request)
+            }
+            OutputProtocol::MoqClient => {
+                let moq_client_output = MoqClientOutputBuilder::new().prompt()?.build();
+                let register_request = moq_client_output.serialize_register(&self.inputs);
+                (OutputHandle::MoqClient(moq_client_output), register_request)
             }
         };
 

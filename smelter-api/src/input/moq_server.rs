@@ -8,28 +8,30 @@ use super::SideChannel;
 
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct MoqInputServer {
+pub struct MoqServerInput {
     /// Token used for authentication in MoQ server input. The broadcaster must provide
     /// it as a `token` query parameter when connecting
     pub auth_token: Arc<str>,
-    /// (**default=`false`**) If input is required and the stream is not delivered
-    /// on time, then Smelter will delay producing output frames.
+    /// If input is required and the stream is not delivered on time, then Smelter will delay
+    /// producing output frames.
+    ///
+    /// Defaults to `false`.
     pub required: Option<bool>,
     /// Assigns which decoder should be used for media encoded with a specific codec.
-    pub decoder_map: Option<HashMap<InputMoqCodec, MoqVideoDecoderOptions>>,
+    pub decoder_map: Option<HashMap<InputMoqServerCodec, MoqServerVideoDecoderOptions>>,
     /// Enable side channel for video and/or audio track.
     pub side_channel: Option<SideChannel>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, ToSchema, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-pub enum InputMoqCodec {
+pub enum InputMoqServerCodec {
     H264,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, ToSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum MoqVideoDecoderOptions {
+pub enum MoqServerVideoDecoderOptions {
     /// Software H264 decoder based on FFmpeg.
     FfmpegH264,
 

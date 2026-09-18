@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{Receiver, bounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use glyphon::fontdb;
 use rtmp::RtmpServer;
 use tokio::runtime::Runtime;
@@ -24,12 +24,16 @@ use smelter_render::{
 use crate::{
     audio_mixer::AudioMixer,
     event::{Event, EventEmitter},
+    graphics_context::{GraphicsContext, GraphicsContextOptions},
     pipeline::{
         MoqPipelineState, RtmpPipelineState,
         channel::{EncodedDataOutput, RawDataInput, RawDataOutput},
         input::{PipelineInput, new_external_input, register_pipeline_input},
         moq::{MoqServer, spawn_moq_server},
-        output::{OutputSender, PipelineOutput, new_external_output, register_pipeline_output},
+        output::{
+            OutputSender, OutputState, PipelineOutput, new_external_output,
+            register_pipeline_output,
+        },
         rtmp::spawn_rtmp_server,
         webrtc::{
             WebrtcSettingEngineCtx, WhipWhepPipelineState, WhipWhepServer, WhipWhepServerHandle,
@@ -38,10 +42,8 @@ use crate::{
     queue::{Queue, QueueAudioOutput, QueueOptions, QueueVideoOutput},
     stats::StatsMonitor,
 };
-use crate::{
-    graphics_context::{GraphicsContext, GraphicsContextOptions},
-    prelude::*,
-};
+
+use crate::prelude::*;
 
 pub struct Pipeline {
     pub(super) inputs: HashMap<InputId, PipelineInput>,
@@ -137,10 +139,10 @@ impl Pipeline {
         self.renderer.unregister_input(input_id);
         self.audio_mixer.unregister_input(input_id);
         for output in self.outputs.values_mut() {
-            if let Some(ref mut cond) = output.audio_end_condition {
+            if let Some(cond) = output.audio_end_condition_mut() {
                 cond.on_input_unregistered(input_id);
             }
-            if let Some(ref mut cond) = output.video_end_condition {
+            if let Some(cond) = output.video_end_condition_mut() {
                 cond.on_input_unregistered(input_id);
             }
         }
@@ -152,12 +154,20 @@ impl Pipeline {
         output_id: OutputId,
         register_options: RegisterOutputOptions,
     ) -> Result<Option<Port>, RegisterOutputError> {
+        let RegisterOutputOptions {
+            output_options,
+            video,
+            audio,
+        } = register_options;
+        let start_at = output_options.start_at();
+
         register_pipeline_output(
             pipeline,
             output_id,
-            register_options.video,
-            register_options.audio,
-            |ctx, output_ref| new_external_output(ctx, output_ref, register_options.output_options),
+            video,
+            audio,
+            start_at,
+            |ctx, output_ref| new_external_output(ctx, output_ref, output_options),
         )
     }
 
@@ -171,6 +181,7 @@ impl Pipeline {
             output_id,
             register_options.video,
             register_options.audio,
+            None,
             |ctx, output_ref| {
                 let (output, handle) =
                     EncodedDataOutput::new(ctx, output_ref, register_options.output_options)?;
@@ -189,11 +200,27 @@ impl Pipeline {
             output_id,
             register_options.video,
             register_options.audio,
+            None,
             |_ctx, _output_ref| {
                 let (output, result) = RawDataOutput::new(register_options.output_options)?;
                 Ok((Box::new(output), result))
             },
         )
+    }
+
+    pub fn external_audio_sender(
+        pipeline: &Arc<Mutex<Self>>,
+        output_id: &OutputId,
+    ) -> Option<Sender<PipelineEvent<OutputAudioSamples>>> {
+        let guard = pipeline.lock().unwrap();
+        let output = guard.outputs.get(output_id)?;
+        if output.has_audio() {
+            return None;
+        }
+        output
+            .output
+            .audio()
+            .map(|audio| audio.samples_batch_sender.clone())
     }
 
     pub fn unregister_output(&mut self, output_id: &OutputId) -> Result<(), UnregisterOutputError> {
@@ -271,9 +298,7 @@ impl Pipeline {
         let Some(output) = self.outputs.get(output_id) else {
             return Err(UpdateSceneError::OutputNotRegistered(output_id.clone()));
         };
-        if output.audio_end_condition.is_some() != audio.is_some()
-            || output.video_end_condition.is_some() != video.is_some()
-        {
+        if output.has_audio() != audio.is_some() || output.has_video() != video.is_some() {
             return Err(UpdateSceneError::AudioVideoNotMatching(output_id.clone()));
         }
         if video.is_none() && audio.is_none() {
@@ -289,10 +314,10 @@ impl Pipeline {
     ) -> Result<(), UpdateSceneError> {
         let output = self
             .outputs
-            .get(&output_id)
+            .get_mut(&output_id)
             .ok_or_else(|| UpdateSceneError::OutputNotRegistered(output_id.clone()))?;
 
-        if let Some(cond) = &output.video_end_condition
+        if let Some(cond) = output.video_end_condition()
             && cond.did_output_end()
         {
             // Ignore updates after EOS
@@ -305,6 +330,14 @@ impl Pipeline {
         };
 
         info!(?output_id, "Update scene {:?}", scene_root);
+
+        if let OutputState::NotStarted { video, .. } = &mut output.state {
+            // Output is not connected to the renderer yet, update the scene it will start with.
+            if let Some(video) = video {
+                video.initial = scene_root;
+            }
+            return Ok(());
+        }
 
         self.renderer.update_scene(
             output_id,
@@ -321,10 +354,10 @@ impl Pipeline {
     ) -> Result<(), UpdateSceneError> {
         let output = self
             .outputs
-            .get(output_id)
+            .get_mut(output_id)
             .ok_or_else(|| UpdateSceneError::OutputNotRegistered(output_id.clone()))?;
 
-        if let Some(cond) = &output.audio_end_condition
+        if let Some(cond) = output.audio_end_condition()
             && cond.did_output_end()
         {
             // Ignore updates after EOS
@@ -333,6 +366,18 @@ impl Pipeline {
         }
 
         info!(?output_id, "Update audio mixer {:?}", audio);
+
+        if let OutputState::NotStarted {
+            audio: audio_opts, ..
+        } = &mut output.state
+        {
+            // Output is not connected to the audio mixer yet, update the config it will start with.
+            if let Some(audio_opts) = audio_opts {
+                audio_opts.initial = audio;
+            }
+            return Ok(());
+        }
+
         self.audio_mixer.update_output(output_id, audio)
     }
 
@@ -363,7 +408,8 @@ impl Pipeline {
 
     pub fn schedule_event<F: FnOnce(&mut Self) + Send + 'static>(
         pipeline: &Arc<Mutex<Self>>,
-        pts: Duration,
+        pts: Timestamp,
+        late_policy: LateEventPolicy,
         callback: F,
     ) {
         let weak = Arc::downgrade(pipeline);
@@ -373,6 +419,7 @@ impl Pipeline {
         let queue = pipeline.lock().unwrap().queue.clone();
         queue.schedule_event(
             pts,
+            late_policy,
             Box::new(move || {
                 let Some(pipeline) = weak.upgrade() else {
                     warn!("Unable to call scheduled callback. Pipeline already dropped.");
@@ -412,19 +459,19 @@ fn run_renderer_thread(
         }
     };
 
-    for mut input_frames in frames_receiver.iter() {
+    for input_frames in frames_receiver.iter() {
         let Some(pipeline) = pipeline.upgrade() else {
             break;
         };
-        for (input_id, event) in input_frames.frames.iter_mut() {
-            if let PipelineEvent::EOS = event {
+        for (input_id, event) in input_frames.frames.iter() {
+            if event.is_eos {
                 let mut guard = pipeline.lock().unwrap();
                 if let Some(input) = guard.inputs.get_mut(input_id) {
                     info!(?input_id, "Received video EOS on input.");
                     input.on_video_eos();
                 }
                 for output in guard.outputs.values_mut() {
-                    if let Some(ref mut cond) = output.video_end_condition {
+                    if let Some(cond) = output.video_end_condition_mut() {
                         cond.on_input_eos(input_id);
                     }
                 }
@@ -459,7 +506,10 @@ fn run_renderer_thread(
                 continue;
             };
 
-            if frame_sender.send(PipelineEvent::Data(frame)).is_err() {
+            if frame_sender
+                .send(PipelineEvent::Data(frame.into()))
+                .is_err()
+            {
                 warn!(?output_id, "Failed to send output frames. Channel closed.");
                 renderer.unregister_output(&output_id);
             }
@@ -481,22 +531,22 @@ fn run_audio_mixer_thread(
     };
 
     let _span = span!(Level::INFO, "AudioMixer").entered();
-    for mut samples in audio_receiver.iter() {
+    for samples in audio_receiver.iter() {
         trace!(?samples, "Received samples from queue");
         let Some(pipeline) = pipeline.upgrade() else {
             break;
         };
 
         trace!("Handle potential EOS");
-        for (input_id, event) in samples.samples.iter_mut() {
-            if let PipelineEvent::EOS = event {
+        for (input_id, event) in samples.samples.iter() {
+            if event.is_eos {
                 let mut guard = pipeline.lock().unwrap();
                 if let Some(input) = guard.inputs.get_mut(input_id) {
                     info!(?input_id, "Received audio EOS on input.");
                     input.on_audio_eos();
                 }
                 for output in guard.outputs.values_mut() {
-                    if let Some(ref mut cond) = output.audio_end_condition {
+                    if let Some(cond) = output.audio_end_condition_mut() {
                         cond.on_input_eos(input_id);
                     }
                 }
@@ -556,11 +606,11 @@ fn create_pipeline(opts: PipelineOptions) -> Result<Pipeline, InitPipelineError>
     let renderer = Renderer::new(RendererOptions {
         chromium_context: opts.chromium_context,
         framerate: opts.output_framerate,
-        stream_fallback_timeout: opts.stream_fallback_timeout,
         load_system_fonts: opts.load_system_fonts,
         device: graphics_context.device.clone(),
         queue: graphics_context.queue.clone(),
         rendering_mode: opts.rendering_mode,
+        max_layouts_count: opts.max_layouts_count,
     })?;
 
     let download_dir = opts
@@ -604,6 +654,7 @@ fn create_pipeline(opts: PipelineOptions) -> Result<Pipeline, InitPipelineError>
     let ctx = Arc::new(PipelineCtx {
         queue_ctx: queue.ctx(),
         default_buffer_duration: opts.default_buffer_duration,
+        stale_frame_timeout: opts.stale_frame_timeout,
 
         mixing_sample_rate: opts.mixing_sample_rate,
         output_framerate: opts.output_framerate,
@@ -624,6 +675,7 @@ fn create_pipeline(opts: PipelineOptions) -> Result<Pipeline, InitPipelineError>
         webrtc_setting_engine,
         rtmp_state: rtmp_state.clone(),
         moq_state: moq_state.clone(),
+        moq_disable_tls_verification: opts.moq_disable_tls_verification,
     });
 
     let whip_whep_handle = match &ctx.whip_whep_state {

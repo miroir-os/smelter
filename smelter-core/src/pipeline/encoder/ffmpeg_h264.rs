@@ -2,16 +2,16 @@ use std::{iter, sync::Arc};
 
 use ffmpeg_next::codec::Id;
 use ffmpeg_next::{Rational, codec::Context};
-use smelter_render::{Frame, OutputFrameFormat};
+use smelter_render::OutputFrameFormat;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::pipeline::encoder::ffmpeg_utils::{
-    create_av_frame, encoded_chunk_from_av_packet, into_ffmpeg_pixel_format, read_extradata,
+    create_av_frame, encoded_chunk_from_av_packet, into_ffmpeg_pixel_format,
 };
 use crate::pipeline::encoder::utils::{
     bitrate_from_resolution_framerate, gop_size_from_ms_framerate,
 };
-use crate::pipeline::ffmpeg_utils::FfmpegOptions;
+use crate::pipeline::ffmpeg_utils::{FfmpegOptions, ReadExtradataExt};
 use crate::pipeline::utils::{annexb_to_avcc, build_avc_decoder_config};
 use crate::prelude::*;
 
@@ -63,8 +63,9 @@ impl VideoEncoder for FfmpegH264Encoder {
         let ffmpeg_options = initialize_ffmpeg_h264_options(ctx, &options, codec_name);
 
         let encoder = encoder.open_as_with(codec, ffmpeg_options.into_dictionary())?;
-        let extradata =
-            read_extradata(&encoder).and_then(|extradata| build_avc_decoder_config(&extradata));
+        let extradata = encoder
+            .read_extradata()
+            .and_then(|extradata| build_avc_decoder_config(&extradata));
 
         Ok((
             Self {

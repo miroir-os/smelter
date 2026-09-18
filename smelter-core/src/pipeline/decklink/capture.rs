@@ -9,7 +9,7 @@ use decklink::{
     InputCallbackResult, PixelFormat, VideoInputFlags, VideoInputFormatChangedEvents,
     VideoInputFrame,
 };
-use smelter_render::{Frame, FrameData, Resolution, error::ErrorStack};
+use smelter_render::{FrameData, FramePreProcessor, Resolution, error::ErrorStack};
 use tracing::{Span, debug, info, trace, warn};
 
 use crate::pipeline::decklink::format::{BitDepth, Colorspace, Format};
@@ -22,14 +22,15 @@ use super::AUDIO_SAMPLE_RATE;
 pub(super) struct ChannelCallbackAdapter {
     video_sender: Option<QueueSender<Frame>>,
     audio_sender: Option<QueueSender<InputAudioSamples>>,
+    /// Only set when a side channel is enabled (avoids duplicated processing).
+    frame_pre_processor: Option<Mutex<FramePreProcessor>>,
     span: Span,
 
     // I'm not sure, but I suspect that holding Arc here would create a circular
     // dependency
     input: Weak<decklink::Input>,
     sync_point: Instant,
-    audio_offset: Mutex<Option<Duration>>,
-    video_offset: Mutex<Option<Duration>>,
+    stream_offset: Mutex<Option<Timestamp>>,
     last_format: Mutex<Format>,
 }
 
@@ -39,19 +40,37 @@ impl ChannelCallbackAdapter {
         span: Span,
         video_sender: Option<QueueSender<Frame>>,
         audio_sender: Option<QueueSender<InputAudioSamples>>,
+        side_channel_enabled: bool,
         input: Weak<decklink::Input>,
         initial_format: Format,
     ) -> Self {
+        let frame_pre_processor =
+            side_channel_enabled.then(|| Mutex::new(FramePreProcessor::new(ctx.wgpu_ctx.clone())));
         Self {
             video_sender,
             audio_sender,
+            frame_pre_processor,
             span,
             input,
             sync_point: ctx.queue_ctx.sync_point,
-            audio_offset: Mutex::new(None),
-            video_offset: Mutex::new(None),
+            stream_offset: Mutex::new(None),
             last_format: Mutex::new(initial_format),
         }
+    }
+
+    fn resolve_offset(&self, device_time: Duration) -> Timestamp {
+        const UPWARD_CREEP: Duration = Duration::from_micros(2);
+        const SNAP: Duration = Duration::from_millis(500);
+        let target = self.sync_point.timestamp_now() - device_time;
+        let mut offset = self.stream_offset.lock().unwrap();
+        let adjusted = match *offset {
+            Some(current) if target > current && target - current < SNAP.into() => {
+                current + UPWARD_CREEP
+            }
+            _ => target,
+        };
+        *offset = Some(adjusted);
+        adjusted
     }
 
     fn handle_video_frame(
@@ -60,11 +79,10 @@ impl ChannelCallbackAdapter {
         sender: &QueueSender<Frame>,
     ) -> Result<(), decklink::DeckLinkError> {
         let stream_time = video_frame.stream_time()?;
-        let offset = {
-            let mut guard = self.video_offset.lock().unwrap();
-            *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(stream_time))
-        };
-        let pts = stream_time + offset + Duration::from_millis(40);
+        let offset = self.resolve_offset(stream_time);
+        let presentation_delay =
+            Duration::from_millis(if self.audio_sender.is_some() { 40 } else { 0 });
+        let pts = offset + stream_time + presentation_delay;
 
         let width = video_frame.width();
         let height = video_frame.height();
@@ -88,6 +106,21 @@ impl ChannelCallbackAdapter {
             }
         };
 
+        let frame = match &self.frame_pre_processor {
+            Some(pre_processor) => {
+                let texture = pre_processor
+                    .lock()
+                    .unwrap()
+                    .process_to_texture(frame.into(), None);
+                Frame {
+                    data: FrameData::Rgba8UnormWgpuTexture(texture),
+                    resolution: Resolution { width, height },
+                    pts,
+                }
+            }
+            None => frame,
+        };
+
         trace!(?frame, ?pixel_format, "Received frame from decklink");
         match sender.try_send(frame) {
             Ok(_) => (),
@@ -108,7 +141,7 @@ impl ChannelCallbackAdapter {
         height: usize,
         bytes_per_row: usize,
         data: bytes::Bytes,
-        pts: Duration,
+        pts: Timestamp,
     ) -> Frame {
         let data = if width * 2 != bytes_per_row {
             let mut output_buffer = bytes::BytesMut::with_capacity(width * 2 * height);
@@ -133,7 +166,7 @@ impl ChannelCallbackAdapter {
         height: usize,
         bytes_per_row: usize,
         data: bytes::Bytes,
-        pts: Duration,
+        pts: Timestamp,
     ) -> Frame {
         let data = if width * 4 != bytes_per_row {
             let mut output_buffer = bytes::BytesMut::with_capacity(width * 4 * height);
@@ -158,7 +191,7 @@ impl ChannelCallbackAdapter {
         height: usize,
         bytes_per_row: usize,
         data: bytes::Bytes,
-        pts: Duration,
+        pts: Timestamp,
     ) -> Frame {
         let data = if width * 4 != bytes_per_row {
             let mut output_buffer = bytes::BytesMut::with_capacity(width * 4 * height);
@@ -184,11 +217,8 @@ impl ChannelCallbackAdapter {
         sender: &QueueSender<InputAudioSamples>,
     ) -> Result<(), decklink::DeckLinkError> {
         let packet_time = audio_packet.packet_time()?;
-        let offset = {
-            let mut guard = self.audio_offset.lock().unwrap();
-            *guard.get_or_insert_with(|| self.sync_point.elapsed().saturating_sub(packet_time))
-        };
-        let pts = packet_time + offset + Duration::from_millis(40);
+        let offset = self.resolve_offset(packet_time);
+        let pts = offset + packet_time + Duration::from_millis(40);
 
         let samples = audio_packet.as_32_bit_stereo()?;
         let samples = InputAudioSamples {
@@ -274,8 +304,7 @@ impl ChannelCallbackAdapter {
         input.start_streams()?;
 
         // it will reset on the next packet
-        *self.video_offset.lock().unwrap() = None;
-        *self.audio_offset.lock().unwrap() = None;
+        *self.stream_offset.lock().unwrap() = None;
 
         Ok(())
     }

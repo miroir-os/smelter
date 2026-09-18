@@ -1,10 +1,9 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use tracing::{Level, error, span};
 
 use crate::pipeline::input::Input;
-use crate::queue::{QueueTrackOffset, QueueTrackOptions};
+use crate::queue::{InputSideChannel, QueueTrackOffset, QueueTrackOptions};
 use crate::{pipeline::decklink::format::Format, queue::QueueInput};
 
 use crate::prelude::*;
@@ -25,17 +24,16 @@ const AUDIO_SAMPLE_RATE: u32 = 48_000;
 ///
 /// - Register track with `QueueTrackOffset::Pts(Duration::ZERO)` which means
 ///   that PTS should be relative to queue `sync_point`.
-/// - On first video/audio packet, compute offset as `sync_point.elapsed() - stream_time`.
-///   PTS of each subsequent packet is `stream_time + offset + 40ms`.
-/// - The 40ms buffer accounts for delivery latency, value could lower for video, but
-///   but for audio we need at least 40ms.
+/// - Video and audio use one offset because their timestamps share the card clock.
+/// - Video-only capture has no presentation delay. Audio capture adds the same
+///   40ms delay to both media to preserve A/V alignment.
 /// - Never block on sending. Frames/samples are dropped if the channel is full.
 ///
 /// ### Format detection
 /// - Initial video mode is provisional (HD720p50). `enable_format_detection` is set,
 ///   so the SDK calls `video_input_format_changed` when the real format is detected.
 /// - On format change, streams are paused, video is re-enabled with the new mode,
-///   streams are flushed and restarted, and video/audio offsets are reset (recomputed
+///   streams are flushed and restarted, and the stream offset is reset (recomputed
 ///   on the next packet).
 ///
 /// ### Unsupported scenarios
@@ -86,17 +84,22 @@ impl DeckLink {
             .enable_audio(AUDIO_SAMPLE_RATE, decklink::AudioSampleType::Sample32bit, 2)
             .map_err(DeckLinkInputError::DecklinkError)?;
 
+        let side_channel_enabled =
+            opts.queue_options.video_side_channel != InputSideChannel::Disabled;
+
         let queue_input = QueueInput::new(&ctx, &input_ref, opts.queue_options);
+        queue_input.set_stale_frame_timeout(ctx.stale_frame_timeout);
         let (video_sender, audio_sender) = queue_input.queue_new_track(QueueTrackOptions {
             video: true,
             audio: opts.enable_audio,
-            offset: QueueTrackOffset::Pts(Duration::ZERO),
+            offset: QueueTrackOffset::Pts(Timestamp::ZERO),
         });
         let callback = ChannelCallbackAdapter::new(
             &ctx,
             span,
             video_sender,
             audio_sender,
+            side_channel_enabled,
             Arc::<decklink::Input>::downgrade(&input),
             Format::new(initial_mode, initial_pixel_format),
         );

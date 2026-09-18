@@ -53,7 +53,7 @@ pub use v4l2::{V4l2DeviceInfo, V4l2FormatInfo, V4l2ResolutionInfo, list_v4l2_dev
 
 #[derive(Debug)]
 pub struct PipelineOptions {
-    pub stream_fallback_timeout: Duration,
+    pub stale_frame_timeout: Duration,
     pub default_buffer_duration: Duration,
 
     pub load_system_fonts: bool,
@@ -68,6 +68,7 @@ pub struct PipelineOptions {
     pub download_root: Arc<Path>,
 
     pub rendering_mode: RenderingMode,
+    pub max_layouts_count: usize,
     pub wgpu_options: PipelineWgpuOptions,
     pub tokio_rt: Option<Arc<Runtime>>,
 
@@ -81,6 +82,8 @@ pub struct PipelineOptions {
 
     pub rtmp_server: PipelineRtmpServerOptions,
     pub moq_server: PipelineMoqServerOptions,
+
+    pub moq_disable_tls_verification: bool,
 }
 
 #[derive(Debug)]
@@ -124,6 +127,7 @@ pub const DEFAULT_BUFFER_DURATION: Duration = Duration::from_millis(16 * 5); // 
 pub(crate) struct PipelineCtx {
     pub queue_ctx: QueueContext,
     pub default_buffer_duration: Duration,
+    pub stale_frame_timeout: Duration,
 
     pub mixing_sample_rate: u32,
     pub output_framerate: Framerate,
@@ -135,6 +139,8 @@ pub(crate) struct PipelineCtx {
     pub stats_sender: StatsSender,
     pub webrtc_stun_servers: Arc<Vec<String>>,
     pub webrtc_setting_engine: WebrtcSettingEngineCtx,
+    pub moq_disable_tls_verification: bool,
+
     tokio_rt: Arc<Runtime>,
     whip_whep_state: Option<Arc<WhipWhepPipelineState>>,
     rtmp_state: Option<Arc<RtmpPipelineState>>,

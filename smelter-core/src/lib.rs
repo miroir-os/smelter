@@ -2,7 +2,7 @@
 
 mod audio_mixer;
 mod queue;
-pub use queue::QueueInputOptions;
+pub use queue::{InputSideChannel, LateEventPolicy, QueueInputOptions, QueueTrackOffset};
 
 pub mod codecs;
 pub mod error;
@@ -16,6 +16,12 @@ pub use pipeline::*;
 
 mod types;
 pub use types::*;
+
+mod frame;
+pub use frame::*;
+
+mod timestamp;
+pub use timestamp::*;
 
 mod input;
 pub use input::*;

@@ -1,6 +1,6 @@
 use fdk_aac_sys as fdk;
-use std::sync::Arc;
-use tracing::{error, info};
+use std::{sync::Arc, time::Duration};
+use tracing::{error, info, trace};
 
 use crate::pipeline::decoder::{AudioDecoder, EncodedInputEvent};
 
@@ -28,9 +28,14 @@ impl AudioDecoder for FdkAacDecoder {
         &mut self,
         event: EncodedInputEvent,
     ) -> Result<Vec<InputAudioSamples>, DecodingError> {
+        trace!(?event, "FDK AAC decoder received an event.");
         let chunk = match event {
             EncodedInputEvent::Chunk(chunk) => chunk,
             EncodedInputEvent::LostData | EncodedInputEvent::AuDelimiter => return Ok(vec![]),
+            EncodedInputEvent::Discontinuity => {
+                self.decoder = None;
+                return Ok(vec![]);
+            }
         };
         match &mut self.decoder {
             Some(decoder) => Ok(decoder.decode(chunk)?),
@@ -58,7 +63,7 @@ impl Decoder {
         asc: &Option<bytes::Bytes>,
         first_chunk: &EncodedInputChunk,
     ) -> Result<Self, FdkAacDecoderError> {
-        let transport = if first_chunk.data[..4] == [b'A', b'D', b'I', b'F'] {
+        let transport = if first_chunk.data[..4] == *b"ADIF" {
             fdk::TRANSPORT_TYPE_TT_MP4_ADIF
         } else if first_chunk.data[0] == 0xff && first_chunk.data[1] & 0xf0 == 0xf0 {
             fdk::TRANSPORT_TYPE_TT_MP4_ADTS
@@ -168,11 +173,21 @@ impl Decoder {
                     0
                 };
 
-                decoded_samples.push(InputAudioSamples {
+                // The decoder delays output PCM (e.g. PCM limiter and concealment
+                // lookahead) without adjusting timestamps, so shift PTS back by the
+                // reported delay to keep samples in sync with input timestamps.
+                let output_delay = match sample_rate {
+                    0 => Duration::ZERO,
+                    _ => Duration::from_secs_f64(info.outputDelay as f64 / sample_rate as f64),
+                };
+
+                let samples = InputAudioSamples {
                     samples,
-                    start_pts: chunk.pts,
+                    start_pts: chunk.pts - output_delay,
                     sample_rate,
-                })
+                };
+                trace!(?samples, "FDK AAC decoder produced a samples.");
+                decoded_samples.push(samples)
             }
         }
         Ok(decoded_samples)

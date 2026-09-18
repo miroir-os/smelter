@@ -1,11 +1,11 @@
 use std::{
-    collections::VecDeque,
     ops::DerefMut,
     sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
-use smelter_render::{Frame, InputId};
+use crossbeam_channel::{Receiver, Sender, bounded};
+use smelter_render::InputId;
 use tracing::info;
 
 use crate::{
@@ -22,6 +22,16 @@ use crate::{
 
 use crate::prelude::*;
 
+/// Maximum number of tracks waiting to be started. `QueueInput::queue_new_track`
+/// blocks until there is room.
+const MAX_PENDING_TRACKS: usize = 5;
+
+struct PendingTrack {
+    video: Option<VideoQueueInput>,
+    audio: Option<AudioQueueInput>,
+    track_offset: TrackOffset,
+}
+
 pub(crate) struct QueueSender<T>(crossbeam_channel::Sender<T>);
 
 impl<T> QueueSender<T> {
@@ -36,6 +46,10 @@ impl<T> QueueSender<T> {
     #[allow(dead_code)]
     pub fn try_send(&self, item: T) -> Result<(), crossbeam_channel::TrySendError<T>> {
         self.0.try_send(item)
+    }
+
+    pub fn into_inner(self) -> crossbeam_channel::Sender<T> {
+        self.0
     }
 }
 
@@ -55,12 +69,10 @@ pub(super) struct InnerQueueInput {
     track_offset: TrackOffset,
     pause_state: PauseState,
 
-    pending: VecDeque<(
-        Option<VideoQueueInput>,
-        Option<AudioQueueInput>,
-        TrackOffset,
-    )>,
+    pending_sender: crossbeam_channel::Sender<PendingTrack>,
+    pending_receiver: crossbeam_channel::Receiver<PendingTrack>,
     required: bool,
+    stale_frame_timeout: Option<Duration>,
     video_side_channel: Option<VideoSideChannel>,
     audio_side_channel: Option<AudioSideChannel>,
     side_channel_delay: Duration,
@@ -68,24 +80,26 @@ pub(super) struct InnerQueueInput {
 
 impl InnerQueueInput {
     fn maybe_start_next_track(&mut self) {
-        let video_done = self.video.as_mut().map(|v| v.is_done()).unwrap_or(true);
-        let audio_done = self.audio.as_mut().map(|a| a.is_done()).unwrap_or(true);
-        if video_done && audio_done {
+        let video_eos_sent = self.video.as_ref().map(|v| v.eos_sent()).unwrap_or(true);
+        let audio_eos_sent = self.audio.as_ref().map(|a| a.eos_sent()).unwrap_or(true);
+        if video_eos_sent && audio_eos_sent {
             self.replace_track()
         }
     }
 
     /// Replace current track with the next pending, do nothing if there is no pending
     fn replace_track(&mut self) {
-        let Some((video, audio, track_offset)) = self.pending.pop_front() else {
+        let Ok(pending) = self.pending_receiver.try_recv() else {
             return;
         };
-        let input_id = self.input_ref.to_string();
-        info!(input_id, "Push track to queue");
+        info!(input_id=%self.input_ref, "Push track to queue");
 
-        self.video = video;
-        self.audio = audio;
-        self.track_offset = track_offset;
+        self.video = pending.video;
+        self.audio = pending.audio;
+        self.track_offset = pending.track_offset;
+        if let (Some(video), Some(timeout)) = (self.video.as_mut(), self.stale_frame_timeout) {
+            video.set_stale_frame_timeout(timeout);
+        }
         if self.pause_state.is_paused() {
             let pts = self.queue_ctx.effective_last_pts();
             if let Some(v) = self.video.as_mut() {
@@ -105,16 +119,14 @@ impl InnerQueueInput {
         }
     }
 
-    fn queue_new_track(
-        &mut self,
+    fn new_pending_track(
+        &self,
         opts: QueueTrackOptions,
     ) -> (
+        PendingTrack,
         Option<QueueSender<Frame>>,
         Option<QueueSender<InputAudioSamples>>,
     ) {
-        if !opts.video && !opts.audio {
-            return (None, None);
-        }
         let input_id = self.input_ref.to_string();
         info!(?opts, input_id, "Create new queue track");
         let (track_offset, offset_from_start) = match opts.offset {
@@ -160,9 +172,15 @@ impl InnerQueueInput {
         } else {
             (None, None)
         };
-        self.pending
-            .push_back((video_input, audio_input, track_offset));
-        (video_sender, audio_sender)
+        (
+            PendingTrack {
+                video: video_input,
+                audio: audio_input,
+                track_offset,
+            },
+            video_sender,
+            audio_sender,
+        )
     }
 
     /// Remember the start pts. On resume shift offset by the pts difference:
@@ -200,11 +218,11 @@ impl InnerQueueInput {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum QueueTrackOffset {
+#[derive(Debug, Clone)]
+pub enum QueueTrackOffset {
     None,
     /// Effectively offset from sync point
-    Pts(Duration),
+    Pts(Timestamp),
     /// Offset from start point
     FromStart(Duration),
 }
@@ -228,23 +246,67 @@ impl std::fmt::Debug for WeakQueueInput {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub enum InputSideChannel<T> {
+    #[default]
+    Disabled,
+    UnixSocket,
+    Native(Sender<T>),
+}
+
+impl<T> InputSideChannel<T> {
+    pub fn native(capacity: usize) -> (Self, Receiver<T>) {
+        let (sender, receiver) = bounded(capacity);
+        (Self::Native(sender), receiver)
+    }
+}
+
+impl<T> PartialEq for InputSideChannel<T> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Disabled, Self::Disabled) | (Self::UnixSocket, Self::UnixSocket) => true,
+            (Self::Native(left), Self::Native(right)) => left.same_channel(right),
+            _ => false,
+        }
+    }
+}
+
+impl<T> From<bool> for InputSideChannel<T> {
+    fn from(enabled: bool) -> Self {
+        match enabled {
+            true => Self::UnixSocket,
+            false => Self::Disabled,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct QueueInputOptions {
     pub required: bool,
-    pub audio_side_channel: bool,
-    pub video_side_channel: bool,
+    pub audio_side_channel: InputSideChannel<InputAudioSamples>,
+    pub video_side_channel: InputSideChannel<Frame>,
     pub side_channel_delay: Duration,
 }
 
 impl QueueInput {
     pub fn new(ctx: &Arc<PipelineCtx>, input_ref: &Ref<InputId>, opts: QueueInputOptions) -> Self {
         let socket_dir = ctx.queue_ctx.side_channel_socket_dir.as_deref();
-        let video_side_channel = match (opts.video_side_channel, socket_dir) {
-            (true, Some(dir)) => VideoSideChannel::new(ctx, input_ref, dir),
+        let video_side_channel = match (&opts.video_side_channel, socket_dir) {
+            (InputSideChannel::UnixSocket, Some(dir)) => {
+                VideoSideChannel::unix_socket(ctx, input_ref, dir)
+            }
+            (InputSideChannel::Native(sender), _) => {
+                Some(VideoSideChannel::native(ctx, sender.clone()))
+            }
             _ => None,
         };
-        let audio_side_channel = match (opts.audio_side_channel, socket_dir) {
-            (true, Some(dir)) => AudioSideChannel::new(ctx, input_ref, dir),
+        let audio_side_channel = match (&opts.audio_side_channel, socket_dir) {
+            (InputSideChannel::UnixSocket, Some(dir)) => {
+                AudioSideChannel::unix_socket(ctx, input_ref, dir)
+            }
+            (InputSideChannel::Native(sender), _) => {
+                Some(AudioSideChannel::native(ctx, sender.clone()))
+            }
             _ => None,
         };
         Self::new_inner(
@@ -265,6 +327,7 @@ impl QueueInput {
         video_side_channel: Option<VideoSideChannel>,
         audio_side_channel: Option<AudioSideChannel>,
     ) -> Self {
+        let (pending_sender, pending_receiver) = crossbeam_channel::bounded(MAX_PENDING_TRACKS);
         Self(Arc::new(Mutex::new(InnerQueueInput {
             queue_ctx,
             event_emitter,
@@ -274,9 +337,11 @@ impl QueueInput {
             audio: None,
             track_offset: TrackOffset::default(),
 
-            pending: VecDeque::new(),
+            pending_sender,
+            pending_receiver,
 
             required: opts.required,
+            stale_frame_timeout: None,
             pause_state: PauseState::new(),
             video_side_channel,
             audio_side_channel,
@@ -284,6 +349,8 @@ impl QueueInput {
         })))
     }
 
+    /// Blocks (without holding the inner mutex) if `MAX_PENDING_TRACKS` tracks
+    /// are already pending, until some of them are dequeued.
     pub fn queue_new_track(
         &self,
         opts: QueueTrackOptions,
@@ -291,11 +358,32 @@ impl QueueInput {
         Option<QueueSender<Frame>>,
         Option<QueueSender<InputAudioSamples>>,
     ) {
-        self.0.lock().unwrap().queue_new_track(opts)
+        if !opts.video && !opts.audio {
+            return (None, None);
+        }
+        let guard = self.0.lock().unwrap();
+        let (track, video_sender, audio_sender) = guard.new_pending_track(opts);
+        let pending_sender = guard.pending_sender.clone();
+        drop(guard);
+        // receiver is owned by InnerQueueInput, so send can't fail while
+        // we hold the Arc
+        let _ = pending_sender.send(track);
+        (video_sender, audio_sender)
     }
 
     pub fn abort_old_track(&self) {
         self.0.lock().unwrap().replace_track()
+    }
+
+    /// Stop rendering the last frame once it is older than `timeout`. Without
+    /// it the last frame is rendered until a newer one arrives. Applies to the
+    /// current track and to pending tracks once they start.
+    pub fn set_stale_frame_timeout(&self, timeout: Duration) {
+        let mut guard = self.0.lock().unwrap();
+        guard.stale_frame_timeout = Some(timeout);
+        if let Some(video) = guard.video.as_mut() {
+            video.set_stale_frame_timeout(timeout);
+        }
     }
 
     pub fn pause(&self) {
@@ -342,24 +430,24 @@ impl WeakQueueInput {
 }
 
 #[derive(Default, Clone)]
-pub(super) struct TrackOffset(Arc<Mutex<Option<Duration>>>);
+pub(super) struct TrackOffset(Arc<Mutex<Option<Timestamp>>>);
 
 impl TrackOffset {
-    pub fn new(value: Duration) -> Self {
+    pub fn new(value: Timestamp) -> Self {
         Self(Arc::new(Mutex::new(Some(value))))
     }
 
-    pub fn get(&self) -> Option<Duration> {
+    pub fn get(&self) -> Option<Timestamp> {
         *self.0.lock().unwrap()
     }
 
-    pub fn get_or_init(&self, offset: Duration) -> Duration {
+    pub fn get_or_init(&self, offset: Timestamp) -> Timestamp {
         *self.0.lock().unwrap().get_or_insert(offset)
     }
 
-    pub fn map_add(&self, duration: Duration) {
+    pub fn map_add(&self, delta: Timestamp) {
         if let Some(offset) = self.0.lock().unwrap().deref_mut() {
-            *offset += duration
+            *offset += delta
         }
     }
 }

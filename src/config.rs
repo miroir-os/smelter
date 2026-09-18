@@ -9,7 +9,7 @@ use std::{
 use rand::Rng;
 use rtmp::TlsConfig;
 use smelter_core::DEFAULT_BUFFER_DURATION;
-use smelter_render::{Framerate, RenderingMode, WgpuFeatures};
+use smelter_render::{DEFAULT_MAX_LAYOUTS_COUNT, Framerate, RenderingMode, WgpuFeatures};
 
 use crate::logger::FfmpegLogLevel;
 
@@ -20,7 +20,7 @@ pub struct Config {
 
     pub api_port: u16,
     pub download_root: Arc<Path>,
-    pub stream_fallback_timeout: Duration,
+    pub stale_frame_timeout: Duration,
     pub default_buffer_duration: Duration,
     pub side_channel_socket_dir: Option<Arc<Path>>,
 
@@ -33,6 +33,7 @@ pub struct Config {
     pub output_framerate: Framerate,
 
     pub rendering_mode: RenderingMode,
+    pub render_max_layouts_count: usize,
     pub wgpu_force_gpu: bool,
     pub wgpu_required_features: WgpuFeatures,
     pub gpu_device_id: Option<u32>,
@@ -54,6 +55,7 @@ pub struct Config {
     pub moq_server_port: u16,
     pub moq_enable: bool,
     pub moq_tls_config: Option<moq_native::ServerTlsConfig>,
+    pub moq_disable_tls_verification: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +94,7 @@ impl FromStr for LoggerFormat {
 }
 
 pub fn read_config() -> Config {
-    try_read_config().expect("Failed to read the config from environment variables.")
+    try_read_config().expect("Failed to read the config from environment variables")
 }
 
 fn try_read_config() -> Result<Config, String> {
@@ -147,7 +149,7 @@ fn try_read_config() -> Result<Config, String> {
     let gpu_driver_name = env::var("SMELTER_GPU_DEVICE_DRIVER").ok();
 
     const DEFAULT_STREAM_FALLBACK_TIMEOUT: Duration = Duration::from_millis(3000);
-    let stream_fallback_timeout = match env::var("SMELTER_STREAM_FALLBACK_TIMEOUT_MS") {
+    let stale_frame_timeout = match env::var("SMELTER_STREAM_FALLBACK_TIMEOUT_MS") {
         Ok(timeout_ms) => match timeout_ms.parse::<f64>() {
             Ok(timeout_ms) => Duration::from_secs_f64(timeout_ms / 1000.0),
             Err(_) => {
@@ -354,12 +356,17 @@ fn try_read_config() -> Result<Config, String> {
         Err(_) => 4443,
     };
 
-    let moq_tls_config = moq_tls_config();
+    let moq_tls_config = moq_server_tls_config();
 
     let moq_enable_default = moq_tls_config.is_some();
     let moq_enable = match env::var("SMELTER_START_MOQ_SERVER") {
         Ok(enable) => bool_env_from_str(&enable).unwrap_or(moq_enable_default),
         Err(_) => moq_enable_default,
+    };
+
+    let moq_disable_tls_verification = match env::var("SMELTER_MOQ_DISABLE_TLS_VERIFICATION") {
+        Ok(disable) => bool_env_from_str(&disable).unwrap_or(false),
+        Err(_) => false,
     };
 
     let log_file = match env::var("SMELTER_LOG_FILE") {
@@ -373,6 +380,23 @@ fn try_read_config() -> Result<Config, String> {
             Some(false) | None => RenderingMode::GpuOptimized,
         },
         Err(_) => RenderingMode::GpuOptimized,
+    };
+
+    let render_max_layouts_count = match env::var("SMELTER_RENDER_MAX_LAYOUTS_COUNT") {
+        Ok(count) => match count.parse::<usize>() {
+            Ok(0) => {
+                println!("CONFIG ERROR: SMELTER_RENDER_MAX_LAYOUTS_COUNT has to be greater than 0");
+                DEFAULT_MAX_LAYOUTS_COUNT
+            }
+            Ok(count) => count,
+            Err(err) => {
+                println!(
+                    "CONFIG ERROR: SMELTER_RENDER_MAX_LAYOUTS_COUNT has to be a valid number: {err}"
+                );
+                DEFAULT_MAX_LAYOUTS_COUNT
+            }
+        },
+        Err(_) => DEFAULT_MAX_LAYOUTS_COUNT,
     };
 
     let config = Config {
@@ -391,7 +415,7 @@ fn try_read_config() -> Result<Config, String> {
         output_framerate,
         run_late_scheduled_events,
         never_drop_output_frames,
-        stream_fallback_timeout,
+        stale_frame_timeout,
         web_renderer_enable,
         web_renderer_gpu_enable,
         download_root,
@@ -412,12 +436,14 @@ fn try_read_config() -> Result<Config, String> {
         moq_server_port,
         moq_enable,
         moq_tls_config,
+        moq_disable_tls_verification,
         rendering_mode,
+        render_max_layouts_count,
     };
     Ok(config)
 }
 
-fn moq_tls_config() -> Option<moq_native::ServerTlsConfig> {
+fn moq_server_tls_config() -> Option<moq_native::ServerTlsConfig> {
     let moq_tls_cert_file = env::var("SMELTER_MOQ_TLS_CERT_FILE")
         .ok()
         .map(PathBuf::from);

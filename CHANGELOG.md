@@ -6,6 +6,11 @@
 
 ### ✨ New features
 
+- Add `SMELTER_RENDER_MAX_LAYOUTS_COUNT` environment variable to configure the maximum number of layouts (default 100) by [@wkozyra95](https://github.com/wkozyra95)
+- Support FFmpeg 9 by [@wkozyra95](https://github.com/wkozyra95)
+- Add `start_at_ms` option to MP4 and HLS outputs. Output is created when the register request is handled, but it starts producing data at the specified time by [@wkozyra95](https://github.com/wkozyra95)
+- Add `buffer` option to RTMP and HLS inputs to control the buffer kept between the live edge and playback, and `ingest_mode` option to RTMP input by [@wkozyra95](https://github.com/wkozyra95)
+
 ### 🐛 Bug fixes
 
 - Fix `VIDEO_INPUT_DELIVERED`/`AUDIO_INPUT_DELIVERED` events not being sent before queue start ([#2068](https://github.com/software-mansion/smelter/pull/2068) by [@wkozyra95](https://github.com/wkozyra95))

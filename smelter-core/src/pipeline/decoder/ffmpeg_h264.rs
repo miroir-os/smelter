@@ -1,4 +1,4 @@
-use std::{iter, sync::Arc};
+use std::sync::Arc;
 
 use crate::pipeline::{
     decoder::{
@@ -14,7 +14,6 @@ use ffmpeg_next::{
     codec::{Context, Id},
     media::Type,
 };
-use smelter_render::Frame;
 use tracing::{debug, error, info, trace, warn};
 
 const TIME_BASE: i32 = 1_000_000;
@@ -24,7 +23,6 @@ pub struct FfmpegH264Decoder {
     keyframe_request_sender: Option<KeyframeRequestSender>,
     av_frame: ffmpeg_next::frame::Video,
     au_splitter: H264AuSplitter,
-    drop_frames: bool,
 }
 
 impl VideoDecoder for FfmpegH264Decoder {
@@ -55,7 +53,6 @@ impl VideoDecoder for FfmpegH264Decoder {
             keyframe_request_sender,
             av_frame: ffmpeg_next::frame::Video::empty(),
             au_splitter: H264AuSplitter::default(),
-            drop_frames: false,
         })
     }
 }
@@ -64,23 +61,21 @@ impl VideoDecoderInstance for FfmpegH264Decoder {
     fn decode(&mut self, event: EncodedInputEvent) -> Vec<Frame> {
         trace!(?event, "FFmpeg H264 decoder received an event.");
         let au_chunks = match event {
-            EncodedInputEvent::Chunk(chunk) => {
-                self.drop_frames = !chunk.present;
-                match self.au_splitter.put_chunk(chunk) {
-                    Ok(chunks) => chunks,
-                    Err(err) => {
-                        if let Some(s) = self.keyframe_request_sender.as_ref() {
-                            s.send()
-                        }
-                        debug!("H264 AU splitter could not process the chunks: {err}");
-                        return Vec::new();
+            EncodedInputEvent::Chunk(chunk) => match self.au_splitter.put_chunk(chunk) {
+                Ok(chunks) => chunks,
+                Err(err) => {
+                    if let Some(s) = self.keyframe_request_sender.as_ref() {
+                        s.send()
                     }
+                    debug!("H264 AU splitter could not process the chunks: {err}");
+                    return Vec::new();
                 }
-            }
+            },
             EncodedInputEvent::LostData => {
                 self.au_splitter.mark_missing_data();
                 return vec![];
             }
+            EncodedInputEvent::Discontinuity => return self.flush(),
             EncodedInputEvent::AuDelimiter => match self.au_splitter.flush() {
                 Ok(chunks) => chunks,
                 Err(err) => {
@@ -111,7 +106,10 @@ impl VideoDecoderInstance for FfmpegH264Decoder {
 
         // Signal end of stream so the decoder drains the frames it holds back for reordering.
         let _ = self.decoder.send_eof();
-        self.read_all_frames()
+        let frames = self.read_all_frames();
+        // Reset decoder state, so it can accept a new stream (e.g. after discontinuity).
+        self.decoder.flush();
+        frames
     }
 }
 
@@ -134,31 +132,29 @@ impl FfmpegH264Decoder {
     }
 
     fn read_all_frames(&mut self) -> Vec<Frame> {
-        iter::from_fn(|| {
+        let mut frames = Vec::new();
+        loop {
             match self.decoder.receive_frame(&mut self.av_frame) {
                 Ok(_) => match from_av_frame(&mut self.av_frame, TIME_BASE) {
                     Ok(frame) => {
-                        trace!(pts=?frame.pts, drop_frames=?self.drop_frames, "H264 decoder produced a frame.");
-                        match self.drop_frames {
-                            true => None,
-                            false => Some(frame),
-                        }
+                        trace!(pts=?frame.pts, "H264 decoder produced a frame.");
+                        frames.push(frame);
                     }
                     Err(err) => {
                         warn!("Dropping frame: {}", err);
-                        None
+                        break;
                     }
                 },
-                Err(ffmpeg_next::Error::Eof) => None,
+                Err(ffmpeg_next::Error::Eof) => break,
                 Err(ffmpeg_next::Error::Other {
                     errno: ffmpeg_next::error::EAGAIN,
-                }) => None, // decoder needs more chunks to produce frame
+                }) => break, // decoder needs more chunks to produce frame
                 Err(e) => {
                     error!("Decoder error: {e}.");
-                    None
+                    break;
                 }
             }
-        })
-        .collect()
+        }
+        frames
     }
 }

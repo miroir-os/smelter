@@ -3,39 +3,67 @@ mod server;
 
 use std::{path::Path, sync::Arc};
 
-use crossbeam_channel::TrySendError;
-use smelter_render::{Frame, InputId};
+use crossbeam_channel::{Sender, TrySendError};
+use smelter_render::InputId;
 use tracing::{debug, info};
 
 use crate::{
-    pipeline::PipelineCtx, prelude::InputAudioSamples, queue::queue_input::TrackOffset, types::Ref,
+    pipeline::PipelineCtx,
+    prelude::{Frame, InputAudioSamples},
+    queue::queue_input::TrackOffset,
+    types::Ref,
 };
 
 use super::SharedPts;
 
-use self::server::{AudioSideChannelServer, VideoSideChannelServer};
+use self::server::SideChannelServer;
+
+/// Where the side channel data is sent to. `UnixSocket` owns the server, so
+/// dropping the side channel shuts it down and removes the socket file.
+#[derive(Clone)]
+enum SideChannelSink<T> {
+    Native(Sender<T>),
+    UnixSocket(SideChannelServer<T>),
+}
+
+impl<T> SideChannelSink<T> {
+    fn sender(&self) -> &Sender<T> {
+        match self {
+            Self::Native(sender) => sender,
+            Self::UnixSocket(server) => server.sender(),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct VideoSideChannel {
     track_offset: TrackOffset,
     start_pts: SharedPts,
-    server: VideoSideChannelServer,
+    sink: SideChannelSink<Frame>,
 }
 
 impl VideoSideChannel {
-    pub fn new(
+    pub(super) fn unix_socket(
         ctx: &Arc<PipelineCtx>,
         input_ref: &Ref<InputId>,
         socket_dir: &Path,
     ) -> Option<Self> {
         let path = socket_dir.join(format!("video_{}.sock", input_ref.id()));
         info!(?path, "Starting video side channel");
-        let server = VideoSideChannelServer::new(path, input_ref.id(), ctx.wgpu_ctx.clone())?;
+        let server = SideChannelServer::new_video(path, input_ref.id(), ctx.wgpu_ctx.clone())?;
         Some(Self {
             track_offset: TrackOffset::default(),
             start_pts: ctx.queue_ctx.start_pts.clone(),
-            server,
+            sink: SideChannelSink::UnixSocket(server),
         })
+    }
+
+    pub(super) fn native(ctx: &Arc<PipelineCtx>, sender: Sender<Frame>) -> Self {
+        Self {
+            track_offset: TrackOffset::default(),
+            start_pts: ctx.queue_ctx.start_pts.clone(),
+            sink: SideChannelSink::Native(sender),
+        }
     }
 
     pub(super) fn with_track_offset(&self, track_offset: &TrackOffset) -> Self {
@@ -52,8 +80,8 @@ impl VideoSideChannel {
             return;
         };
         let mut frame = frame.clone();
-        frame.pts = (frame.pts + offset).saturating_sub(start_pts);
-        if let Err(TrySendError::Full(_)) = self.server.sender.try_send(frame) {
+        frame.pts = frame.pts + offset - start_pts;
+        if let Err(TrySendError::Full(_)) = self.sink.sender().try_send(frame) {
             debug!("Video side channel: dropping frame, channel full");
         }
     }
@@ -63,23 +91,31 @@ impl VideoSideChannel {
 pub struct AudioSideChannel {
     track_offset: TrackOffset,
     start_pts: SharedPts,
-    server: AudioSideChannelServer,
+    sink: SideChannelSink<InputAudioSamples>,
 }
 
 impl AudioSideChannel {
-    pub fn new(
+    pub(super) fn unix_socket(
         ctx: &Arc<PipelineCtx>,
         input_ref: &Ref<InputId>,
         socket_dir: &Path,
     ) -> Option<Self> {
         let path = socket_dir.join(format!("audio_{}.sock", input_ref.id()));
         info!(?path, "Starting audio side channel");
-        let server = AudioSideChannelServer::new(path, input_ref.id())?;
+        let server = SideChannelServer::new_audio(path, input_ref.id())?;
         Some(Self {
             track_offset: TrackOffset::default(),
             start_pts: ctx.queue_ctx.start_pts.clone(),
-            server,
+            sink: SideChannelSink::UnixSocket(server),
         })
+    }
+
+    pub(super) fn native(ctx: &Arc<PipelineCtx>, sender: Sender<InputAudioSamples>) -> Self {
+        Self {
+            track_offset: TrackOffset::default(),
+            start_pts: ctx.queue_ctx.start_pts.clone(),
+            sink: SideChannelSink::Native(sender),
+        }
     }
 
     pub(super) fn with_track_offset(&self, track_offset: &TrackOffset) -> Self {
@@ -96,8 +132,8 @@ impl AudioSideChannel {
             return;
         };
         let mut batch = batch.clone();
-        batch.start_pts = (batch.start_pts + offset).saturating_sub(start_pts);
-        if let Err(TrySendError::Full(_)) = self.server.sender.try_send(batch) {
+        batch.start_pts = batch.start_pts + offset - start_pts;
+        if let Err(TrySendError::Full(_)) = self.sink.sender().try_send(batch) {
             debug!("Audio side channel: dropping samples, channel full");
         }
     }

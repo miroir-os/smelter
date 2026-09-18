@@ -23,9 +23,10 @@ pub struct FdkAacEncoder {
     output_buffer: Vec<u8>,
     sample_rate: u32,
     samples_per_frame: u32,
+    codec_delay: Duration,
 
     // This logic relies on the fact that input samples will always be continuous.
-    first_input_pts: Option<Duration>,
+    first_input_pts: Option<Timestamp>,
     encoded_samples: u64,
 }
 
@@ -69,10 +70,14 @@ impl AudioEncoder for FdkAacEncoder {
                 fdk::AACENC_PARAM_AACENC_SAMPLERATE,
                 options.sample_rate,
             ))?;
+            let transmux = match options.bitstream_format {
+                AacBitstreamFormat::Raw => fdk::TRANSPORT_TYPE_TT_MP4_RAW,
+                AacBitstreamFormat::Adts => fdk::TRANSPORT_TYPE_TT_MP4_ADTS,
+            };
             check(fdk::aacEncoder_SetParam(
                 encoder,
                 fdk::AACENC_PARAM_AACENC_TRANSMUX,
-                0,
+                transmux as u32,
             ))?;
             check(fdk::aacEncoder_SetParam(
                 encoder,
@@ -104,20 +109,24 @@ impl AudioEncoder for FdkAacEncoder {
             info = maybe_info.assume_init();
         }
 
+        let codec_delay = Duration::from_secs_f64(info.nDelay as f64 / options.sample_rate as f64);
         Ok((
             Self {
                 encoder,
                 input_buffer: Vec::new(),
                 output_buffer: vec![0; info.maxOutBufBytes as usize],
                 sample_rate: options.sample_rate,
+                codec_delay,
                 first_input_pts: None,
                 encoded_samples: 0,
                 samples_per_frame: info.frameLength,
             },
             AudioEncoderConfig {
-                extradata: Some(Bytes::copy_from_slice(
-                    &info.confBuf[0..(info.confSize as usize)],
-                )),
+                // FDK leaves `confSize == 0` in ADTS mode: the decoder config is
+                // carried inline in each frame, so there's no out-of-band ASC.
+                extradata: (info.confSize > 0)
+                    .then(|| Bytes::copy_from_slice(&info.confBuf[0..(info.confSize as usize)])),
+                initial_padding: Some(codec_delay),
             },
         ))
     }
@@ -218,15 +227,14 @@ impl FdkAacEncoder {
 
             self.input_buffer.drain(..(out_args.numInSamples as usize));
 
-            let encoded_bytes = out_args.numOutBytes as usize;
-            if encoded_bytes > 0 {
-                let pts = self.first_input_pts.unwrap_or_default()
-                    + Duration::from_secs_f64(
-                        self.encoded_samples as f64 / self.sample_rate as f64,
-                    );
-
+            if out_args.numOutBytes > 0 {
                 // assume that encoder is always producing batches representing full frame
+                let frame_start = self.encoded_samples;
                 self.encoded_samples += self.samples_per_frame as u64;
+
+                let first_pts = self.first_input_pts.unwrap_or_default();
+                let offset = Duration::from_secs_f64(frame_start as f64 / self.sample_rate as f64);
+                let pts = first_pts + offset - self.codec_delay;
 
                 output.push(EncodedOutputChunk {
                     data: Bytes::copy_from_slice(

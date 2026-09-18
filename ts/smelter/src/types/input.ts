@@ -2,10 +2,11 @@ import type * as Api from '../api.js';
 import type { InputHlsDecoderMap } from './input/hls.js';
 import type { InputMp4DecoderMap } from './input/mp4.js';
 import type { InputRtpAudioOptions, InputRtpVideoOptions } from './input/rtp.js';
-import type { SideChannel } from './input/common.js';
+import type { InputBuffer, SideChannel } from './input/common.js';
 import type { InputWhipVideoOptions } from './input/whip.js';
 import type { InputWhepVideoOptions } from './input/whep.js';
 import type { InputRtmpDecoderMap } from './input/rtmp.js';
+import type { InputMoqDecoderMap } from './input/moq.js';
 
 export * from './input/mp4.js';
 export * from './input/hls.js';
@@ -13,6 +14,7 @@ export * from './input/whip.js';
 export * from './input/whep.js';
 export * from './input/rtp.js';
 export * from './input/rtmp.js';
+export * from './input/moq.js';
 export * from './input/common.js';
 
 export type RegisterRtpInput = {
@@ -33,12 +35,14 @@ export type RegisterRtpInput = {
    */
   audio?: InputRtpAudioOptions | null;
   /**
-   * (**default=`false`**) If input is required and the stream is not delivered
-   * on time, then Smelter will delay producing output frames.
+   * If input is required and the stream is not delivered on time, then Smelter will delay producing
+   * output frames.
+   *
+   * Defaults to `false`.
    */
   required?: boolean | null;
   /**
-   * Offset in milliseconds relative to the pipeline start (start request). If the offset is
+   * Offset in milliseconds relative to the pipeline start (`Smelter.start()`). If the offset is
    * not defined then the stream will be synchronized based on the delivery time of the initial
    * frames.
    */
@@ -69,17 +73,19 @@ export type RegisterMp4Input = {
    */
   blob?: any;
   /**
-   * (**default=`false`**) If input should be played in the loop. <span class="badge badge--primary">Added in v0.4.0</span>
+   * If input should be played in the loop. Defaults to `false`.
    */
   loop?: boolean | null;
   /**
-   * (**default=`false`**) If input is required and frames are not processed
-   * on time, then Smelter will delay producing output frames.
+   * If input is required and frames are not processed on time, then Smelter will delay producing
+   * output frames.
+   *
+   * Defaults to `false`.
    */
   required?: boolean | null;
   /**
-   * Offset in milliseconds relative to the pipeline start (start request). If offset is
-   * not defined then stream is synchronized based on the first frames delivery time.
+   * Offset in milliseconds relative to the pipeline start (`Smelter.start()`). If offset is not
+   * defined then stream is synchronized based on the first frames delivery time.
    */
   offsetMs?: number | null;
   /**
@@ -103,13 +109,15 @@ export type RegisterHlsInput = {
    */
   url: string;
   /**
-   * (**default=`false`**) If input is required and frames are not processed
-   * on time, then Smelter will delay producing output frames.
+   * If input is required and frames are not processed on time, then Smelter will delay producing
+   * output frames.
+   *
+   * Defaults to `false`.
    */
   required?: boolean | null;
   /**
-   * Offset in milliseconds relative to the pipeline start (start request). If offset is
-   * not defined then stream is synchronized based on the first frames delivery time.
+   * Offset in milliseconds relative to the pipeline start (`Smelter.start()`). If offset is not
+   * defined then stream is synchronized based on the first frames delivery time.
    */
   offsetMs?: number | null;
   /**
@@ -120,6 +128,12 @@ export type RegisterHlsInput = {
    * Enable side channel for video and/or audio track.
    */
   sideChannel?: SideChannel;
+  /**
+   * Input buffer configuration.
+   *
+   * Defaults: `desiredMs=10000`, `minMs=2000`, `maxMs=20000`.
+   */
+  buffer?: InputBuffer | null;
 };
 
 export type RegisterWhipServerInput = {
@@ -133,8 +147,10 @@ export type RegisterWhipServerInput = {
    */
   bearerToken?: string;
   /**
-   * (**default=`false`**) If input is required and the stream is not delivered
-   * on time, then Smelter will delay producing output frames.
+   * If input is required and the stream is not delivered on time, then Smelter will delay producing
+   * output frames.
+   *
+   * Defaults to `false`.
    */
   required?: boolean | null;
   /**
@@ -163,8 +179,10 @@ export type RegisterWhepClientInput = {
    */
   video?: InputWhepVideoOptions | null;
   /**
-   * (**default=`false`**) If input is required and the stream is not delivered
-   * on time, then Smelter will delay producing output frames.
+   * If input is required and the stream is not delivered on time, then Smelter will delay producing
+   * output frames.
+   *
+   * Defaults to `false`.
    */
   required?: boolean | null;
   /**
@@ -189,17 +207,83 @@ export type RegisterRtmpServerInput = {
    */
   streamKey: string;
   /**
-   * (**default=`false`**) If input is required and the stream is not delivered on time, then Smelter will delay producing output frames.
+   * If input is required and the stream is not delivered on time, then Smelter will delay producing
+   * output frames.
+   *
+   * Defaults to `false`.
    */
   required?: boolean | null;
   /**
-   * Offset in milliseconds relative to the pipeline start (start request). If the offset is not defined then the stream will be synchronized based on the delivery time of the initial frames.
+   * Offset in milliseconds relative to the pipeline start (`Smelter.start()`). If the offset is
+   * not defined then the stream will be synchronized based on the delivery time of the initial
+   * frames.
    */
   offsetMs?: number | null;
   /**
    * Assigns which decoder should be used for media encoded with a specific codec.
    */
   decoderMap?: InputRtmpDecoderMap | null;
+  /**
+   * Enable side channel for video and/or audio track.
+   */
+  sideChannel?: SideChannel;
+  /**
+   * (**default=`"realtime"`**) Defines if stream is real-time.
+   */
+  ingestMode?: Api.RtmpIngestMode | null;
+  /**
+   * Input buffer configuration.
+   *
+   * Defaults: `desiredMs=2000`, `minMs=1000`, `maxMs=5000`.
+   */
+  buffer?: InputBuffer | null;
+};
+
+export type RegisterMoqServerInput = {
+  type: 'moq_server';
+  /**
+   * Token used for authentication in MoQ server input. The broadcaster must provide it as a
+   * `token` query parameter when connecting.
+   */
+  authToken: string;
+  /**
+   * If input is required and the stream is not delivered on time, then Smelter will delay producing
+   * output frames.
+   *
+   * Defaults to `false`.
+   */
+  required?: boolean | null;
+  /**
+   * Assigns which decoder should be used for media encoded with a specific codec.
+   */
+  decoderMap?: InputMoqDecoderMap | null;
+  /**
+   * Enable side channel for video and/or audio track.
+   */
+  sideChannel?: SideChannel;
+};
+
+export type RegisterMoqClientInput = {
+  type: 'moq_client';
+  /**
+   * URL of the MoQ relay to connect to.
+   */
+  endpointUrl: string;
+  /**
+   * Path of the broadcast to subscribe to on the relay.
+   */
+  broadcastPath: string;
+  /**
+   * If input is required and the stream is not delivered on time, then Smelter will delay producing
+   * output frames.
+   *
+   * Defaults to `false`.
+   */
+  required?: boolean | null;
+  /**
+   * Assigns which decoder should be used for media encoded with a specific codec.
+   */
+  decoderMap?: InputMoqDecoderMap | null;
   /**
    * Enable side channel for video and/or audio track.
    */
@@ -234,12 +318,16 @@ export type RegisterV4l2Input = {
   /**
    * The framerate that will be negotiated with the device.
    *
-   * Must by either an unsigned integer, or a string in the \"NUM/DEN\" format, where NUM and DEN are both unsigned integers.
-   * If not provided, the input will use the default framerate for the given format and resolution.
+   * Must by either an unsigned integer, or a string in the \"NUM/DEN\" format, where NUM and DEN
+   * are both unsigned integers. If not provided, the input will use the default framerate for the
+   * given format and resolution.
    */
   framerate?: Api.Framerate | null;
   /**
-   * (**default=`false`**) If input is required and frames are not processed on time, then Smelter will delay producing output frames.
+   * If input is required and frames are not processed on time, then Smelter will delay producing
+   * output frames.
+   *
+   * Defaults to `false`.
    */
   required?: boolean | null;
   /**

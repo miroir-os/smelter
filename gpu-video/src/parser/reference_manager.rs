@@ -9,7 +9,7 @@ use h264_reader::nal::{
     sps::SeqParameterSet,
 };
 
-use crate::{parameters::MissedFrameHandling, parser::decoder_instructions::DecoderInstruction};
+use crate::{parameters::CorruptedStateHandling, parser::decoder_instructions::DecoderInstruction};
 
 use super::nalu_parser::{Slice, SpsExt};
 
@@ -27,8 +27,10 @@ pub enum ReferenceManagementError {
     #[error("The H.264 bytestream is not spec compliant: {0}.")]
     IncorrectData(String),
 
-    #[error("Missing frame. Decoder is in a corrupted state. Waiting for IDR frame")]
-    MissingFrame,
+    /// Corrupted state can be caused by missing frames or invalid bitstream. This error can be only
+    /// cleared by decoding a valid IDR frame.
+    #[error("Decoder is in a corrupted state. Waiting for IDR frame")]
+    CorruptedState,
 
     #[error(
         "A non-existing short-term reference remains in the active reference picture list after the modification process"
@@ -57,8 +59,8 @@ pub(crate) struct ReferenceContext {
     MaxLongTermFrameIdx: MaxLongTermFrameIdx,
     prevFrameNumOffset: i64,
     previous_picture_included_mmco_equal_5: bool,
-    detected_missed_frames: bool,
-    missed_frame_handling: MissedFrameHandling,
+    detected_corrupted_state: bool,
+    corrupted_state_handling: CorruptedStateHandling,
 }
 
 #[derive(Debug, Default)]
@@ -69,9 +71,9 @@ enum MaxLongTermFrameIdx {
 }
 
 impl ReferenceContext {
-    pub fn new(missed_frame_handling: MissedFrameHandling) -> Self {
+    pub fn new(missed_frame_handling: CorruptedStateHandling) -> Self {
         Self {
-            missed_frame_handling,
+            corrupted_state_handling: missed_frame_handling,
             ..Default::default()
         }
     }
@@ -93,8 +95,8 @@ impl ReferenceContext {
             MaxLongTermFrameIdx: MaxLongTermFrameIdx::NoLongTermFrameIndices,
             prevFrameNumOffset: 0,
             previous_picture_included_mmco_equal_5: false,
-            detected_missed_frames: false,
-            missed_frame_handling: self.missed_frame_handling,
+            detected_corrupted_state: false,
+            corrupted_state_handling: self.corrupted_state_handling,
         };
     }
 
@@ -142,8 +144,8 @@ impl ReferenceContext {
         id
     }
 
-    pub(crate) fn mark_missed_frames(&mut self) {
-        self.detected_missed_frames = true;
+    pub(crate) fn mark_corrupted_state(&mut self) {
+        self.detected_corrupted_state = true;
     }
 
     pub(crate) fn put_picture(
@@ -160,7 +162,10 @@ impl ReferenceContext {
             &header.dec_ref_pic_marking,
             Some(DecRefPicMarking::Idr { .. })
         );
-        if is_ref_frame && !is_idr && self.missed_frame_handling == MissedFrameHandling::Strict {
+        if is_ref_frame
+            && !is_idr
+            && self.corrupted_state_handling == CorruptedStateHandling::Strict
+        {
             self.verify_frame_num(&sps, &header)?;
         }
 
@@ -960,9 +965,9 @@ impl ReferenceContext {
         let is_expected_frame_num = !sps.gaps_in_frame_num_value_allowed_flag
             && header.frame_num != self.PrevRefFrameNum
             && header.frame_num != ((self.PrevRefFrameNum as i64 + 1) % sps.max_frame_num()) as u16;
-        if is_expected_frame_num || self.detected_missed_frames {
-            self.detected_missed_frames = true;
-            return Err(ReferenceManagementError::MissingFrame);
+        if is_expected_frame_num || self.detected_corrupted_state {
+            self.detected_corrupted_state = true;
+            return Err(ReferenceManagementError::CorruptedState);
         }
 
         Ok(())
@@ -1268,20 +1273,31 @@ impl SliceHeaderExt for SliceHeader {
     }
 }
 
-#[derive(Clone, derivative::Derivative)]
-#[derivative(Debug)]
+#[derive(Clone)]
 pub struct DecodeInformation {
     pub(crate) reference_list_l0: Option<Vec<ReferencePictureInfo>>,
     pub(crate) reference_list_l1: Option<Vec<ReferencePictureInfo>>,
-    #[derivative(Debug = "ignore")]
     pub(crate) rbsp_bytes: Vec<u8>,
     pub(crate) slice_indices: Vec<usize>,
-    #[derivative(Debug = "ignore")]
     pub(crate) header: Arc<SliceHeader>,
     pub(crate) sps_id: u8,
     pub(crate) pps_id: u8,
     pub(crate) picture_info: PictureInfo,
     pub(crate) pts: Option<u64>,
+}
+
+impl std::fmt::Debug for DecodeInformation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecodeInformation")
+            .field("reference_list_l0", &self.reference_list_l0)
+            .field("reference_list_l1", &self.reference_list_l1)
+            .field("slice_indices", &self.slice_indices)
+            .field("sps_id", &self.sps_id)
+            .field("pps_id", &self.pps_id)
+            .field("picture_info", &self.picture_info)
+            .field("pts", &self.pts)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

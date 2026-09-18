@@ -1,6 +1,4 @@
-use core::slice;
 use ffmpeg_next::{format::Pixel, frame};
-use std::time::Duration;
 
 use smelter_render::FrameData;
 
@@ -83,19 +81,6 @@ fn write_plane_to_av_frame(frame: &mut frame::Video, plane: usize, data: &[u8]) 
         .for_each(|(data, target)| target[..width].copy_from_slice(data));
 }
 
-pub(super) fn read_extradata(encoder: &ffmpeg_next::codec::encoder::Video) -> Option<bytes::Bytes> {
-    unsafe {
-        let encoder_ptr = encoder.0.0.0.as_ptr();
-        let size = (*encoder_ptr).extradata_size;
-        if size > 0 {
-            let extradata_slice = slice::from_raw_parts((*encoder_ptr).extradata, size as usize);
-            Some(bytes::Bytes::copy_from_slice(extradata_slice))
-        } else {
-            None
-        }
-    }
-}
-
 pub(super) fn encoded_chunk_from_av_packet(
     packet: &ffmpeg_next::Packet,
     kind: MediaKind,
@@ -106,7 +91,7 @@ pub(super) fn encoded_chunk_from_av_packet(
         None => return Err(ChunkFromFfmpegError::NoData),
     };
 
-    let rescale = |v: i64| Duration::from_secs_f64((v as f64) * (1.0 / time_base as f64));
+    let rescale = |v: i64| Timestamp::from_secs_f64((v as f64) * (1.0 / time_base as f64));
 
     let Some(pts) = packet.pts().map(rescale) else {
         return Err(ChunkFromFfmpegError::NoPts);

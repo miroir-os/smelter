@@ -1,9 +1,6 @@
 use tracing::debug;
 
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, time::Instant};
 
 use crate::queue::QueueVideoOutput;
 
@@ -38,18 +35,19 @@ impl VideoQueue {
     /// or not. It should not be called before pipeline start.
     pub(super) fn get_frames_batch(
         &mut self,
-        buffer_pts: Duration,
-        queue_start_pts: Duration,
+        buffer_pts: Timestamp,
+        queue_start_pts: Timestamp,
     ) -> QueueVideoOutput {
         let mut required = false;
         let frames = self
             .inputs
             .iter()
             .filter_map(|(input_id, weak)| {
-                let frame_event =
-                    weak.video(|input| input.get_frame(buffer_pts, queue_start_pts))??;
-                required = required || frame_event.required;
-                Some((input_id.clone(), frame_event.event))
+                weak.video(|input| {
+                    let frame_event = input.get_frame(buffer_pts, queue_start_pts);
+                    required = required || input.required() || frame_event.is_eos;
+                    Some((input_id.clone(), frame_event))
+                })?
             })
             .collect();
 
@@ -62,8 +60,8 @@ impl VideoQueue {
 
     pub(super) fn should_push_next_frameset(
         &mut self,
-        next_pts: Duration,
-        queue_start_pts: Duration,
+        next_pts: Timestamp,
+        queue_start_pts: Timestamp,
     ) -> bool {
         self.inputs
             .values()

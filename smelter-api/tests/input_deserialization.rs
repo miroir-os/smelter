@@ -7,7 +7,7 @@ use smelter_api::*;
 use smelter_core::QueueInputOptions;
 use smelter_core::codecs::VideoDecoderOptions;
 use smelter_core::protocols::{
-    HlsInputOptions, HlsInputVideoDecoders, Mp4InputOptions, Mp4InputSource, Mp4InputVideoDecoders,
+    HlsInputDecoders, HlsInputOptions, Mp4InputOptions, Mp4InputSource, Mp4InputVideoDecoders,
     PortOrRange, RtmpServerInputDecoders, RtmpServerInputOptions, RtpAudioOptions, RtpInputOptions,
     RtpInputTransportProtocol, WebrtcVideoDecoderOptions, WhepInputOptions, WhipInputOptions,
 };
@@ -20,8 +20,8 @@ type CoreInput = smelter_core::RegisterInputOptions;
 fn default_queue() -> QueueInputOptions {
     QueueInputOptions {
         required: false,
-        video_side_channel: false,
-        audio_side_channel: false,
+        video_side_channel: false.into(),
+        audio_side_channel: false.into(),
         side_channel_delay: Duration::ZERO,
     }
 }
@@ -149,6 +149,8 @@ fn rtmp_minimal() {
             stream_key: Arc::from("stream_1"),
             decoders: RtmpServerInputDecoders { h264: None },
             queue_options: default_queue(),
+            is_live: true,
+            buffer: Default::default(),
         }),
     );
 }
@@ -176,10 +178,12 @@ fn rtmp_with_all_options() {
             },
             queue_options: QueueInputOptions {
                 required: true,
-                video_side_channel: true,
-                audio_side_channel: false,
+                video_side_channel: true.into(),
+                audio_side_channel: false.into(),
                 side_channel_delay: Duration::ZERO,
             },
+            is_live: true,
+            buffer: Default::default(),
         }),
     );
 }
@@ -201,6 +205,8 @@ fn rtmp_vulkan_decoder() {
                 h264: Some(VideoDecoderOptions::VulkanH264),
             },
             queue_options: default_queue(),
+            is_live: true,
+            buffer: Default::default(),
         }),
     );
 }
@@ -327,8 +333,8 @@ fn rtp_video_and_audio() {
             audio: Some(RtpAudioOptions::Opus),
             queue_options: QueueInputOptions {
                 required: true,
-                video_side_channel: true,
-                audio_side_channel: false,
+                video_side_channel: true.into(),
+                audio_side_channel: false.into(),
                 side_channel_delay: Duration::ZERO,
             },
             offset: Some(Duration::from_millis(500)),
@@ -570,8 +576,8 @@ fn mp4_with_all_options() {
             offset: Some(Duration::from_secs(1)),
             queue_options: QueueInputOptions {
                 required: true,
-                video_side_channel: false,
-                audio_side_channel: true,
+                video_side_channel: false.into(),
+                audio_side_channel: true.into(),
                 side_channel_delay: Duration::ZERO,
             },
         }),
@@ -678,8 +684,8 @@ fn whip_with_all_options() {
             jitter_buffer_size: Some(Duration::from_millis(200)),
             queue_options: QueueInputOptions {
                 required: true,
-                video_side_channel: true,
-                audio_side_channel: true,
+                video_side_channel: true.into(),
+                audio_side_channel: true.into(),
                 side_channel_delay: Duration::ZERO,
             },
         }),
@@ -782,8 +788,8 @@ fn whep_with_all_options() {
             jitter_buffer_size: Some(Duration::from_millis(300)),
             queue_options: QueueInputOptions {
                 required: true,
-                video_side_channel: true,
-                audio_side_channel: false,
+                video_side_channel: true.into(),
+                audio_side_channel: false.into(),
                 side_channel_delay: Duration::ZERO,
             },
         }),
@@ -822,9 +828,10 @@ fn hls_minimal() {
         }),
         CoreInput::Hls(HlsInputOptions {
             url: Arc::from("https://example.com/stream.m3u8"),
-            video_decoders: HlsInputVideoDecoders { h264: None },
+            decoder_options: HlsInputDecoders { h264: None },
             queue_options: default_queue(),
             offset: None,
+            buffer: Default::default(),
         }),
     );
 }
@@ -845,16 +852,17 @@ fn hls_with_all_options() {
         }),
         CoreInput::Hls(HlsInputOptions {
             url: Arc::from("https://example.com/stream.m3u8"),
-            video_decoders: HlsInputVideoDecoders {
+            decoder_options: HlsInputDecoders {
                 h264: Some(VideoDecoderOptions::FfmpegH264),
             },
             queue_options: QueueInputOptions {
                 required: true,
-                video_side_channel: true,
-                audio_side_channel: true,
+                video_side_channel: true.into(),
+                audio_side_channel: true.into(),
                 side_channel_delay: Duration::ZERO,
             },
             offset: Some(Duration::from_millis(500)),
+            buffer: Default::default(),
         }),
     );
 }
@@ -872,11 +880,12 @@ fn hls_vulkan_decoder() {
         }),
         CoreInput::Hls(HlsInputOptions {
             url: Arc::from("https://example.com/stream.m3u8"),
-            video_decoders: HlsInputVideoDecoders {
+            decoder_options: HlsInputDecoders {
                 h264: Some(VideoDecoderOptions::VulkanH264),
             },
             queue_options: default_queue(),
             offset: None,
+            buffer: Default::default(),
         }),
     );
 }
@@ -934,8 +943,8 @@ fn v4l2_with_all_options() {
             framerate: Some(smelter_render::Framerate { num: 30, den: 1 }),
             queue_options: QueueInputOptions {
                 required: true,
-                video_side_channel: true,
-                audio_side_channel: false,
+                video_side_channel: true.into(),
+                audio_side_channel: false.into(),
                 side_channel_delay: Duration::ZERO,
             },
         }),

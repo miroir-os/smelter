@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use smelter_api::*;
+use smelter_core::Timestamp;
 
 type CoreOutput = smelter_core::RegisterOutputOptions;
 
@@ -134,6 +135,14 @@ fn check_hls_err(raw: serde_json::Value, expected_msg: &str) {
 }
 
 #[track_caller]
+fn check_moq(raw: serde_json::Value, expected: CoreOutput) {
+    let output = raw.get("output").unwrap().clone();
+    let api: MoqClientOutput = serde_json::from_value(output).unwrap();
+    let result = CoreOutput::try_from(api).unwrap();
+    assert_eq!(result, expected);
+}
+
+#[track_caller]
 fn check_serde_err<T: serde::de::DeserializeOwned>(raw: serde_json::Value) {
     let output = raw.get("output").unwrap().clone();
     assert!(serde_json::from_value::<T>(output).is_err());
@@ -216,6 +225,7 @@ fn rtmp_audio_only() {
                         smelter_core::codecs::FdkAacEncoderOptions {
                             channels: smelter_core::AudioChannels::Stereo,
                             sample_rate: 44100,
+                            bitstream_format: smelter_core::codecs::AacBitstreamFormat::Raw,
                         },
                     )),
                 },
@@ -285,6 +295,7 @@ fn rtmp_video_and_audio() {
                         smelter_core::codecs::FdkAacEncoderOptions {
                             channels: smelter_core::AudioChannels::Stereo,
                             sample_rate: 44100,
+                            bitstream_format: smelter_core::codecs::AacBitstreamFormat::Raw,
                         },
                     )),
                 },
@@ -1051,6 +1062,7 @@ fn mp4_video_only() {
                     )),
                     audio: None,
                     raw_options: vec![],
+                    start_at: None,
                 },
             ),
             video: Some(default_video()),
@@ -1080,9 +1092,11 @@ fn mp4_audio_only() {
                         smelter_core::codecs::FdkAacEncoderOptions {
                             channels: smelter_core::AudioChannels::Stereo,
                             sample_rate: 48000,
+                            bitstream_format: smelter_core::codecs::AacBitstreamFormat::Raw,
                         },
                     )),
                     raw_options: vec![],
+                    start_at: None,
                 },
             ),
             video: None,
@@ -1136,9 +1150,11 @@ fn mp4_video_and_audio_with_ffmpeg_options() {
                         smelter_core::codecs::FdkAacEncoderOptions {
                             channels: smelter_core::AudioChannels::Mono,
                             sample_rate: 44100,
+                            bitstream_format: smelter_core::codecs::AacBitstreamFormat::Raw,
                         },
                     )),
                     raw_options: vec![(Arc::from("movflags"), Arc::from("faststart"))],
+                    start_at: None,
                 },
             ),
             video: Some(default_video()),
@@ -1183,10 +1199,46 @@ fn mp4_vulkan_encoder() {
                     )),
                     audio: None,
                     raw_options: vec![],
+                    start_at: None,
                 },
             ),
             video: Some(default_video()),
             audio: None,
+        },
+    );
+}
+
+#[test]
+fn mp4_start_at() {
+    check_mp4(
+        json!({
+            "output": {
+                "path": "/tmp/output.mp4",
+                "start_at_ms": 2500.0,
+                "audio": {
+                    "encoder": { "type": "aac" },
+                    "initial": audio_scene()
+                }
+            }
+        }),
+        CoreOutput {
+            output_options: smelter_core::ProtocolOutputOptions::Mp4(
+                smelter_core::protocols::Mp4OutputOptions {
+                    output_path: Arc::from(Path::new("/tmp/output.mp4")),
+                    video: None,
+                    audio: Some(smelter_core::codecs::AudioEncoderOptions::FdkAac(
+                        smelter_core::codecs::FdkAacEncoderOptions {
+                            channels: smelter_core::AudioChannels::Stereo,
+                            sample_rate: 44100,
+                            bitstream_format: smelter_core::codecs::AacBitstreamFormat::Raw,
+                        },
+                    )),
+                    raw_options: vec![],
+                    start_at: Some(Timestamp::from_millis(2500)),
+                },
+            ),
+            video: None,
+            audio: Some(default_audio()),
         },
     );
 }
@@ -1200,6 +1252,23 @@ fn err_mp4_no_video_no_audio() {
             }
         }),
         "At least one of \"video\" and \"audio\" fields have to be specified.",
+    );
+}
+
+#[test]
+fn err_mp4_negative_start_at() {
+    check_mp4_err(
+        json!({
+            "output": {
+                "path": "/tmp/output.mp4",
+                "start_at_ms": -1.0,
+                "audio": {
+                    "encoder": { "type": "aac" },
+                    "initial": audio_scene()
+                }
+            }
+        }),
+        "Start time cannot be negative.",
     );
 }
 
@@ -1667,6 +1736,7 @@ fn hls_video_only() {
                     )),
                     audio: None,
                     raw_options: vec![],
+                    start_at: None,
                 },
             ),
             video: Some(default_video()),
@@ -1697,9 +1767,11 @@ fn hls_audio_only() {
                         smelter_core::codecs::FdkAacEncoderOptions {
                             channels: smelter_core::AudioChannels::Stereo,
                             sample_rate: 48000,
+                            bitstream_format: smelter_core::codecs::AacBitstreamFormat::Raw,
                         },
                     )),
                     raw_options: vec![],
+                    start_at: None,
                 },
             ),
             video: None,
@@ -1749,9 +1821,11 @@ fn hls_video_and_audio_with_playlist_size() {
                         smelter_core::codecs::FdkAacEncoderOptions {
                             channels: smelter_core::AudioChannels::Stereo,
                             sample_rate: 44100,
+                            bitstream_format: smelter_core::codecs::AacBitstreamFormat::Raw,
                         },
                     )),
                     raw_options: vec![],
+                    start_at: None,
                 },
             ),
             video: Some(default_video()),
@@ -1792,6 +1866,7 @@ fn hls_vulkan_encoder() {
                     )),
                     audio: None,
                     raw_options: vec![],
+                    start_at: None,
                 },
             ),
             video: Some(default_video()),
@@ -1844,12 +1919,50 @@ fn hls_video_and_audio_with_ffmpeg_options() {
                         smelter_core::codecs::FdkAacEncoderOptions {
                             channels: smelter_core::AudioChannels::Stereo,
                             sample_rate: 44100,
+                            bitstream_format: smelter_core::codecs::AacBitstreamFormat::Raw,
                         },
                     )),
                     raw_options: vec![(Arc::from("hls_list_size"), Arc::from("5"))],
+                    start_at: None,
                 },
             ),
             video: Some(default_video()),
+            audio: Some(default_audio()),
+        },
+    );
+}
+
+#[test]
+fn hls_start_at() {
+    check_hls(
+        json!({
+            "output": {
+                "path": "/tmp/stream.m3u8",
+                "start_at_ms": 0.0,
+                "audio": {
+                    "encoder": { "type": "aac", "sample_rate": 48000 },
+                    "initial": audio_scene()
+                }
+            }
+        }),
+        CoreOutput {
+            output_options: smelter_core::ProtocolOutputOptions::Hls(
+                smelter_core::protocols::HlsOutputOptions {
+                    output_path: Arc::from(Path::new("/tmp/stream.m3u8")),
+                    max_playlist_size: None,
+                    video: None,
+                    audio: Some(smelter_core::codecs::AudioEncoderOptions::FdkAac(
+                        smelter_core::codecs::FdkAacEncoderOptions {
+                            channels: smelter_core::AudioChannels::Stereo,
+                            sample_rate: 48000,
+                            bitstream_format: smelter_core::codecs::AacBitstreamFormat::Raw,
+                        },
+                    )),
+                    raw_options: vec![],
+                    start_at: Some(Timestamp::ZERO),
+                },
+            ),
+            video: None,
             audio: Some(default_audio()),
         },
     );
@@ -1864,6 +1977,23 @@ fn err_hls_no_video_no_audio() {
             }
         }),
         "At least one of \"video\" and \"audio\" fields have to be specified.",
+    );
+}
+
+#[test]
+fn err_hls_negative_start_at() {
+    check_hls_err(
+        json!({
+            "output": {
+                "path": "/tmp/stream.m3u8",
+                "start_at_ms": -0.5,
+                "audio": {
+                    "encoder": { "type": "aac" },
+                    "initial": audio_scene()
+                }
+            }
+        }),
+        "Start time cannot be negative.",
     );
 }
 
@@ -1957,4 +2087,92 @@ fn err_serde_hls_missing_path() {
             }
         }
     }));
+}
+
+fn moq_aac_request(container: Option<&str>) -> serde_json::Value {
+    let mut output = json!({
+        "endpoint_url": "https://localhost:443",
+        "broadcast_path": "anon/test",
+        "audio": {
+            "encoder": { "type": "aac" },
+            "initial": audio_scene()
+        }
+    });
+    if let Some(container) = container {
+        output
+            .as_object_mut()
+            .unwrap()
+            .insert("container".to_string(), json!(container));
+    }
+    json!({ "output": output })
+}
+
+fn moq_aac_expected(
+    container: smelter_core::protocols::MoqOutputContainer,
+    bitstream_format: smelter_core::codecs::AacBitstreamFormat,
+) -> CoreOutput {
+    CoreOutput {
+        output_options: smelter_core::ProtocolOutputOptions::MoqClient(
+            smelter_core::protocols::MoqClientOutputOptions {
+                endpoint_url: "https://localhost:443".into(),
+                broadcast_path: "anon/test".into(),
+                container,
+                video: None,
+                audio: Some(smelter_core::codecs::AudioEncoderOptions::FdkAac(
+                    smelter_core::codecs::FdkAacEncoderOptions {
+                        channels: smelter_core::AudioChannels::Stereo,
+                        sample_rate: 44100,
+                        bitstream_format,
+                    },
+                )),
+            },
+        ),
+        video: None,
+        audio: Some(default_audio()),
+    }
+}
+
+#[test]
+fn moq_client_aac_cmaf() {
+    check_moq(
+        moq_aac_request(Some("cmaf")),
+        moq_aac_expected(
+            smelter_core::protocols::MoqOutputContainer::Cmaf,
+            smelter_core::codecs::AacBitstreamFormat::Raw,
+        ),
+    );
+}
+
+#[test]
+fn moq_client_aac_legacy() {
+    check_moq(
+        moq_aac_request(Some("legacy")),
+        moq_aac_expected(
+            smelter_core::protocols::MoqOutputContainer::Legacy,
+            smelter_core::codecs::AacBitstreamFormat::Adts,
+        ),
+    );
+}
+
+#[test]
+fn moq_client_aac_loc() {
+    check_moq(
+        moq_aac_request(Some("loc")),
+        moq_aac_expected(
+            smelter_core::protocols::MoqOutputContainer::Loc,
+            smelter_core::codecs::AacBitstreamFormat::Adts,
+        ),
+    );
+}
+
+#[test]
+fn moq_client_aac_default_container() {
+    // No container specified defaults to CMAF, which requires raw access units.
+    check_moq(
+        moq_aac_request(None),
+        moq_aac_expected(
+            smelter_core::protocols::MoqOutputContainer::Cmaf,
+            smelter_core::codecs::AacBitstreamFormat::Raw,
+        ),
+    );
 }

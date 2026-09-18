@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use super::SideChannel;
+use super::{InputBuffer, SideChannel};
 
 /// Parameters for an input stream from HLS source.
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, ToSchema)]
@@ -12,8 +12,10 @@ use super::SideChannel;
 pub struct HlsInput {
     /// URL to HLS playlist
     pub url: Arc<str>,
-    /// (**default=`false`**) If input is required and the stream is not delivered
-    /// on time, then Smelter will delay producing output frames.
+    /// If input is required and the stream is not delivered on time, then Smelter will delay
+    /// producing output frames.
+    ///
+    /// Defaults to `false`.
     pub required: Option<bool>,
     /// Offset in milliseconds relative to the pipeline start (start request). If the offset is
     /// not defined then the stream will be synchronized based on the delivery time of the initial
@@ -23,6 +25,10 @@ pub struct HlsInput {
     pub decoder_map: Option<HashMap<InputHlsCodec, HlsVideoDecoderOptions>>,
     /// Enable side channel for video and/or audio track.
     pub side_channel: Option<SideChannel>,
+    /// Input buffer configuration.
+    ///
+    /// Defaults: `desired_ms=10000`, `min_ms=2000`, `max_ms=20000`.
+    pub buffer: Option<InputBuffer>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, ToSchema, PartialEq, Eq, Hash)]

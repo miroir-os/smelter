@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use glyphon::fontdb;
 use tracing::trace;
@@ -43,9 +42,9 @@ pub mod renderers;
 pub struct RendererOptions {
     pub chromium_context: Option<Arc<ChromiumContext>>,
     pub framerate: Framerate,
-    pub stream_fallback_timeout: Duration,
     pub load_system_fonts: bool,
     pub rendering_mode: RenderingMode,
+    pub max_layouts_count: usize,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
 }
@@ -63,8 +62,6 @@ struct InnerRenderer {
 
     renderers: Renderers,
 
-    stream_fallback_timeout: Duration,
-
     wgpu_ctx: Arc<WgpuCtx>,
 }
 
@@ -72,7 +69,6 @@ pub(crate) struct RenderCtx<'a> {
     pub(crate) wgpu_ctx: &'a Arc<WgpuCtx>,
     pub(crate) text_renderer_ctx: &'a TextRendererCtx,
     pub(crate) renderers: &'a Renderers,
-    pub(crate) stream_fallback_timeout: Duration,
 }
 
 pub(crate) struct RegisterCtx {
@@ -202,8 +198,7 @@ impl InnerRenderer {
                 opts.load_system_fonts,
             )),
             render_graph: RenderGraph::empty(),
-            renderers: Renderers::new(wgpu_ctx)?,
-            stream_fallback_timeout: opts.stream_fallback_timeout,
+            renderers: Renderers::new(wgpu_ctx, opts.max_layouts_count)?,
             scene: SceneState::new(),
             chromium_context: opts.chromium_context,
         })
@@ -224,7 +219,6 @@ impl InnerRenderer {
             wgpu_ctx: &self.wgpu_ctx,
             text_renderer_ctx: &self.text_renderer_ctx,
             renderers: &self.renderers,
-            stream_fallback_timeout: self.stream_fallback_timeout,
         };
 
         let scope = WgpuErrorScope::push(&ctx.wgpu_ctx.device);
@@ -270,7 +264,6 @@ impl InnerRenderer {
                 wgpu_ctx: &self.wgpu_ctx,
                 text_renderer_ctx: &self.text_renderer_ctx,
                 renderers: &self.renderers,
-                stream_fallback_timeout: self.stream_fallback_timeout,
             },
             output_node,
             output_format,

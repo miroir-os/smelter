@@ -11,7 +11,6 @@ use ffmpeg_next::{
     codec::{Context, Id},
     media::Type,
 };
-use smelter_render::Frame;
 use tracing::{error, info, trace, warn};
 
 const TIME_BASE: i32 = 1_000_000;
@@ -54,8 +53,10 @@ impl VideoDecoder for FfmpegVp9Decoder {
 impl VideoDecoderInstance for FfmpegVp9Decoder {
     fn decode(&mut self, event: EncodedInputEvent) -> Vec<Frame> {
         trace!(?event, "FFmpeg VP9 decoder received a chunk.");
-        let EncodedInputEvent::Chunk(chunk) = event else {
-            return vec![];
+        let chunk = match event {
+            EncodedInputEvent::Chunk(chunk) => chunk,
+            EncodedInputEvent::Discontinuity => return self.flush(),
+            EncodedInputEvent::LostData | EncodedInputEvent::AuDelimiter => return vec![],
         };
 
         let av_packet = match create_av_packet(chunk, VideoCodec::Vp9, TIME_BASE) {
@@ -77,8 +78,12 @@ impl VideoDecoderInstance for FfmpegVp9Decoder {
     }
 
     fn flush(&mut self) -> Vec<Frame> {
+        // Signal end of stream so the decoder drains the frames it holds back.
+        let _ = self.decoder.send_eof();
+        let frames = self.read_all_frames();
+        // Reset decoder state, so it can accept a new stream (e.g. after discontinuity).
         self.decoder.flush();
-        self.read_all_frames()
+        frames
     }
 }
 

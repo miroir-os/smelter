@@ -80,7 +80,6 @@ impl RtmpClientOutput {
             kind: OutputProtocolKind::Rtmp,
         });
 
-        let client = Self::establish_connection(options.connection, &video_config, &audio_config)?;
         std::thread::Builder::new()
             .name(format!("RTMP sender thread for output {output_ref}"))
             .spawn(move || {
@@ -92,9 +91,19 @@ impl RtmpClientOutput {
                     output_ref: output_ref.clone(),
                 };
                 let result =
-                    run_rtmp_output_thread(client, video_config, audio_config, stats_sender);
+                    Self::establish_connection(options.connection, &video_config, &audio_config)
+                        .and_then(|client| {
+                            run_rtmp_output_thread(client, video_config, audio_config, stats_sender)
+                                .map_err(Into::into)
+                        });
                 if let Err(err) = result {
-                    warn!("{}", ErrorStack::new(&err).into_string())
+                    let err = Arc::new(err);
+                    warn!("{}", ErrorStack::new(err.as_ref()).into_string());
+                    ctx.event_emitter.emit(Event::OutputError {
+                        output_id: output_ref.id().clone(),
+                        severity: ErrorSeverity::Critical,
+                        err: OutputRuntimeError::Rtmp(err),
+                    });
                 }
 
                 ctx.event_emitter
@@ -299,8 +308,8 @@ fn video_chunk_to_event(chunk: EncodedOutputChunk, codec: RtmpVideoCodec) -> Vid
     VideoData {
         track_id: TrackId::PRIMARY,
         codec,
-        pts: chunk.pts,
-        dts: chunk.dts.unwrap_or(chunk.pts),
+        pts: chunk.pts.to_duration_saturating(),
+        dts: chunk.dts.unwrap_or(chunk.pts).to_duration_saturating(),
         data: chunk.data,
         is_keyframe: chunk.is_keyframe,
     }
@@ -310,7 +319,7 @@ fn audio_chunk_to_event(chunk: EncodedOutputChunk, codec: RtmpAudioCodec) -> Aud
     AudioData {
         track_id: TrackId::PRIMARY,
         codec,
-        pts: chunk.pts,
+        pts: chunk.pts.to_duration_saturating(),
         data: chunk.data,
     }
 }

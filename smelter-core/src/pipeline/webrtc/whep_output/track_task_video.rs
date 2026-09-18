@@ -1,14 +1,13 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use crossbeam_channel::Sender;
-use smelter_render::Frame;
 use tokio::sync::broadcast;
 use tracing::warn;
 
 use crate::{
     pipeline::{
         encoder::{VideoEncoder, VideoEncoderConfig, VideoEncoderStream},
-        webrtc::whep_output::WhepOutputStatsSender,
+        webrtc::whep_output::output::WhepOutputStatsSender,
     },
     utils::{InitializableThread, ThreadMetadata},
 };

@@ -103,7 +103,7 @@ pub fn pipeline_options_from_config(
     chromium_context: &Option<Arc<ChromiumContext>>,
 ) -> PipelineOptions {
     PipelineOptions {
-        stream_fallback_timeout: opt.stream_fallback_timeout,
+        stale_frame_timeout: opt.stale_frame_timeout,
         download_root: opt.download_root.clone(),
         default_buffer_duration: opt.default_buffer_duration,
 
@@ -117,6 +117,7 @@ pub fn pipeline_options_from_config(
         output_framerate: opt.output_framerate,
 
         rendering_mode: opt.rendering_mode,
+        max_layouts_count: opt.render_max_layouts_count,
         tokio_rt: Some(tokio_rt.clone()),
 
         chromium_context: chromium_context.clone(),
@@ -157,5 +158,7 @@ pub fn pipeline_options_from_config(
             },
             false => PipelineMoqServerOptions::Disable,
         },
+
+        moq_disable_tls_verification: opt.moq_disable_tls_verification,
     }
 }

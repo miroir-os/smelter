@@ -1,11 +1,11 @@
 use crate::common_core::prelude as core;
 use crate::*;
 
-impl TryFrom<MoqInputServer> for core::RegisterInputOptions {
+impl TryFrom<MoqServerInput> for core::RegisterInputOptions {
     type Error = TypeError;
 
-    fn try_from(value: MoqInputServer) -> Result<Self, Self::Error> {
-        let MoqInputServer {
+    fn try_from(value: MoqServerInput) -> Result<Self, Self::Error> {
+        let MoqServerInput {
             auth_token,
             required,
             decoder_map,
@@ -17,20 +17,24 @@ impl TryFrom<MoqInputServer> for core::RegisterInputOptions {
 
         let h264 = decoder_map
             .as_ref()
-            .and_then(|decoders| decoders.get(&InputMoqCodec::H264))
+            .and_then(|decoders| decoders.get(&InputMoqServerCodec::H264))
             .map(|decoder| match decoder {
-                MoqVideoDecoderOptions::FfmpegH264 => Ok(core::VideoDecoderOptions::FfmpegH264),
-                MoqVideoDecoderOptions::VulkanH264 => Ok(core::VideoDecoderOptions::VulkanH264),
+                MoqServerVideoDecoderOptions::FfmpegH264 => {
+                    Ok(core::VideoDecoderOptions::FfmpegH264)
+                }
+                MoqServerVideoDecoderOptions::VulkanH264 => {
+                    Ok(core::VideoDecoderOptions::VulkanH264)
+                }
             })
             .transpose()?;
 
         let input_options = core::MoqServerInputOptions {
             auth_token,
-            decoders: core::MoqServerInputDecoders { h264 },
+            decoders: core::MoqInputDecoders { h264 },
             queue_options: core::QueueInputOptions {
                 required: required.unwrap_or(false),
-                video_side_channel: side_channel.video.unwrap_or(false),
-                audio_side_channel: side_channel.audio.unwrap_or(false),
+                video_side_channel: side_channel.video.unwrap_or(false).into(),
+                audio_side_channel: side_channel.audio.unwrap_or(false).into(),
                 side_channel_delay,
             },
         };

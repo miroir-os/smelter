@@ -61,8 +61,8 @@ impl TryFrom<RtpInput> for core::RegisterInputOptions {
             buffer_duration,
             queue_options: core::QueueInputOptions {
                 required,
-                video_side_channel: side_channel.video.unwrap_or(false),
-                audio_side_channel: side_channel.audio.unwrap_or(false),
+                video_side_channel: side_channel.video.unwrap_or(false).into(),
+                audio_side_channel: side_channel.audio.unwrap_or(false).into(),
                 side_channel_delay,
             },
             offset,
@@ -107,7 +107,8 @@ impl TryFrom<InputRtpAudioOptions> for core::RtpAudioOptions {
     }
 }
 
-/// [RFC 3640, section 4.1. MIME Type Registration (`config` subsection)](https://datatracker.ietf.org/doc/html/rfc3640#section-4.1)
+/// RFC 3640, section 4.1. MIME Type Registration (`config` subsection):
+/// https://datatracker.ietf.org/doc/html/rfc3640#section-4.1
 fn parse_hexadecimal_octet_string(s: &str) -> Result<Bytes, TypeError> {
     const NOT_ALL_HEX: &str = "Not all of the provided string are hex digits.";
     if !s.chars().all(|c| char::is_ascii_hexdigit(&c)) {

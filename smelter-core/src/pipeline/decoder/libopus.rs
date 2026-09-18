@@ -58,6 +58,13 @@ impl AudioDecoder for OpusDecoder {
                 return Ok(vec![]);
             }
             EncodedInputEvent::AuDelimiter => return Ok(vec![]),
+            EncodedInputEvent::Discontinuity => {
+                self.unhandled_lost_packets = 0;
+                if let Err(err) = self.decoder.reset_state() {
+                    debug!("Failed to reset opus decoder state: {err}");
+                }
+                return Ok(vec![]);
+            }
         };
 
         trace!(?encoded_chunk, "libopus decoder received a chunk.");
@@ -162,7 +169,7 @@ impl OpusDecoder {
         // and ends immediately before the current chunk. Older dropped packets
         // stay as a gap in the timeline.
         let recovered_duration = packet_duration * recovered_packets;
-        let start_pts = encoded_chunk.pts.saturating_sub(recovered_duration);
+        let start_pts = encoded_chunk.pts - recovered_duration;
 
         let samples = Self::read_buffer(&self.decoded_samples_buffer, decoded_samples_count);
         Ok(Some(InputAudioSamples {

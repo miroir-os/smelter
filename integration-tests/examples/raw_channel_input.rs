@@ -23,7 +23,7 @@ use smelter_core::{
     *,
 };
 use smelter_render::{
-    Frame, FrameData, InputId, OutputId, Resolution,
+    FrameData, InputId, OutputId, Resolution,
     error::ErrorStack,
     scene::{Component, InputStreamComponent},
 };
@@ -97,9 +97,8 @@ fn main() {
         RawDataInputOptions {
             video: true,
             audio: false,
-            buffer_duration: None,
             required: true,
-            offset: Some(Duration::ZERO),
+            offset: QueueTrackOffset::FromStart(Duration::ZERO),
         },
     )
     .unwrap();
@@ -112,7 +111,7 @@ fn main() {
 
     let video_sender = sender.video.unwrap();
     for frame in frames {
-        video_sender.send(PipelineEvent::Data(frame)).unwrap();
+        video_sender.send(frame).unwrap();
     }
     thread::sleep(Duration::from_millis(30000));
 }
@@ -131,7 +130,7 @@ fn generate_frames(device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<Frame> {
         frames.push(Frame {
             data: FrameData::Rgba8UnormWgpuTexture(texture_a.clone()),
             resolution,
-            pts: Duration::from_millis(i * 20),
+            pts: Timestamp::from_millis(i as i64 * 20),
         })
     }
 
@@ -139,7 +138,7 @@ fn generate_frames(device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<Frame> {
         frames.push(Frame {
             data: FrameData::Rgba8UnormWgpuTexture(texture_b.clone()),
             resolution,
-            pts: Duration::from_millis(i * 20),
+            pts: Timestamp::from_millis(i as i64 * 20),
         })
     }
 
@@ -147,7 +146,7 @@ fn generate_frames(device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<Frame> {
         frames.push(Frame {
             data: FrameData::Rgba8UnormWgpuTexture(texture_c.clone()),
             resolution,
-            pts: Duration::from_millis(i * 20),
+            pts: Timestamp::from_millis(i as i64 * 20),
         })
     }
 
@@ -155,7 +154,7 @@ fn generate_frames(device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<Frame> {
         frames.push(Frame {
             data: FrameData::Rgba8UnormWgpuTexture(texture_a.clone()),
             resolution,
-            pts: Duration::from_millis(i * 20),
+            pts: Timestamp::from_millis(i as i64 * 20),
         })
     }
 
@@ -163,7 +162,7 @@ fn generate_frames(device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<Frame> {
         frames.push(Frame {
             data: FrameData::Rgba8UnormWgpuTexture(texture_b.clone()),
             resolution,
-            pts: Duration::from_millis(i * 20),
+            pts: Timestamp::from_millis(i as i64 * 20),
         })
     }
 
@@ -171,7 +170,7 @@ fn generate_frames(device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<Frame> {
         frames.push(Frame {
             data: FrameData::Rgba8UnormWgpuTexture(texture_c.clone()),
             resolution,
-            pts: Duration::from_millis(i * 20),
+            pts: Timestamp::from_millis(i as i64 * 20),
         })
     }
 

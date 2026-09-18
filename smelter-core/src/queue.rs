@@ -27,10 +27,8 @@ use crate::audio_mixer::InputSamplesSet;
 
 use crate::prelude::*;
 
-pub use self::queue_input::QueueInputOptions;
-pub(crate) use self::queue_input::{
-    QueueInput, QueueSender, QueueTrackOffset, QueueTrackOptions, WeakQueueInput,
-};
+pub use self::queue_input::{InputSideChannel, QueueInputOptions, QueueTrackOffset};
+pub(crate) use self::queue_input::{QueueInput, QueueSender, QueueTrackOptions, WeakQueueInput};
 
 use self::{
     audio_queue::AudioQueue,
@@ -82,6 +80,8 @@ impl From<&PipelineOptions> for QueueOptions {
 ///   from the input side is preserved.
 /// - Multiple tracks can be queued back-to-back via `queue_new_track`; the next one starts
 ///   once the current one is done. Callers can force an early swap with `abort_old_track`.
+///   At most `MAX_PENDING_TRACKS` tracks can be pending; `queue_new_track` blocks until
+///   there is room.
 ///
 /// - Offset initialization:
 ///   - `Pts(d)`: `track_offset` is set to `d` at construction; it never changes.
@@ -154,10 +154,15 @@ pub struct QueueContext {
 }
 
 impl QueueContext {
-    pub(crate) fn effective_last_pts(&self) -> Duration {
+    pub(crate) fn effective_last_pts(&self) -> Timestamp {
         self.last_pts
             .value()
-            .unwrap_or_else(|| self.sync_point.elapsed())
+            .unwrap_or_else(|| self.sync_point.timestamp_now())
+    }
+
+    // PTS of queue start time
+    pub fn start_pts(&self) -> Option<Timestamp> {
+        self.start_pts.value()
     }
 }
 
@@ -165,8 +170,24 @@ impl QueueContext {
 pub(super) struct QueueVideoOutput {
     // If required this batch can't be dropped even if processing is behind
     pub(super) required: bool,
-    pub(super) pts: Duration,
-    pub(super) frames: HashMap<InputId, PipelineEvent<Frame>>,
+    pub(super) pts: Timestamp,
+    pub(super) frames: HashMap<InputId, QueueVideoFrame>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct QueueVideoFrame {
+    pub frame: Option<Frame>,
+    /// Track on this input ended.
+    pub is_eos: bool,
+}
+
+impl QueueVideoFrame {
+    pub(super) fn empty() -> Self {
+        Self {
+            frame: None,
+            is_eos: false,
+        }
+    }
 }
 
 impl From<QueueVideoOutput> for FrameSet<InputId> {
@@ -175,22 +196,35 @@ impl From<QueueVideoOutput> for FrameSet<InputId> {
             frames: value
                 .frames
                 .into_iter()
-                .filter_map(|(key, value)| match value {
-                    PipelineEvent::Data(data) => Some((key, data)),
-                    PipelineEvent::EOS => None,
-                })
+                .filter_map(|(key, value)| Some((key, value.frame?.into())))
                 .collect(),
-            pts: value.pts,
+            pts: value.pts.to_duration_saturating(),
         }
     }
 }
 
 #[derive(Debug)]
 pub(super) struct QueueAudioOutput {
-    pub samples: HashMap<InputId, PipelineEvent<Vec<InputAudioSamples>>>,
-    pub start_pts: Duration,
-    pub end_pts: Duration,
+    pub samples: HashMap<InputId, QueueAudioSamples>,
+    pub start_pts: Timestamp,
+    pub end_pts: Timestamp,
     pub required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct QueueAudioSamples {
+    pub samples: Vec<InputAudioSamples>,
+    /// Track on this input ended.
+    pub is_eos: bool,
+}
+
+impl QueueAudioSamples {
+    pub(super) fn empty() -> Self {
+        Self {
+            samples: vec![],
+            is_eos: false,
+        }
+    }
 }
 
 impl From<QueueAudioOutput> for InputSamplesSet {
@@ -199,10 +233,7 @@ impl From<QueueAudioOutput> for InputSamplesSet {
             samples: value
                 .samples
                 .into_iter()
-                .filter_map(|(key, value)| match value {
-                    PipelineEvent::Data(data) => Some((key, data)),
-                    PipelineEvent::EOS => None,
-                })
+                .map(|(key, value)| (key, value.samples))
                 .collect(),
             start_pts: value.start_pts,
             end_pts: value.end_pts,
@@ -212,8 +243,18 @@ impl From<QueueAudioOutput> for InputSamplesSet {
 
 pub struct ScheduledEvent {
     /// Public PTS value (relative to start, not to the sync_point)
-    pts: Duration,
+    pts: Timestamp,
     callback: Box<dyn FnOnce() + Send>,
+    late_policy: LateEventPolicy,
+}
+
+/// Defines what happens when an event is scheduled for a PTS the queue already passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LateEventPolicy {
+    /// Follow the `run_late_scheduled_events` queue option.
+    Default,
+    /// Run the event anyway, on the next queue tick.
+    AlwaysRun,
 }
 
 impl<T: Clone> Clone for PipelineEvent<T> {
@@ -304,7 +345,7 @@ impl Queue {
         audio_sender: Sender<QueueAudioOutput>,
     ) {
         if let Some(sender) = self.start_sender.lock().unwrap().take() {
-            let queue_start_pts = self.queue_ctx.sync_point.elapsed();
+            let queue_start_pts = self.queue_ctx.sync_point.timestamp_now();
             self.queue_ctx.start_pts.update(queue_start_pts);
             sender
                 .send(QueueStartEvent {
@@ -316,9 +357,18 @@ impl Queue {
         }
     }
 
-    pub fn schedule_event(&self, pts: Duration, callback: Box<dyn FnOnce() + Send>) {
+    pub fn schedule_event(
+        &self,
+        pts: Timestamp,
+        late_policy: LateEventPolicy,
+        callback: Box<dyn FnOnce() + Send>,
+    ) {
         self.scheduled_event_sender
-            .send(ScheduledEvent { pts, callback })
+            .send(ScheduledEvent {
+                pts,
+                callback,
+                late_policy,
+            })
             .unwrap();
     }
 }
@@ -333,14 +383,18 @@ impl Debug for ScheduledEvent {
 }
 
 #[derive(Debug, Default, Clone)]
-pub(super) struct SharedPts(Arc<RwLock<Option<Duration>>>);
+pub(super) struct SharedPts(Arc<RwLock<Option<Timestamp>>>);
 
 impl SharedPts {
-    fn update(&self, pts: Duration) {
-        *self.0.write().unwrap() = Some(pts);
+    /// Monotonic, PTS never goes back (e.g. when a late scheduled event is handled).
+    fn update(&self, pts: Timestamp) {
+        let mut guard = self.0.write().unwrap();
+        if guard.is_none_or(|current| pts > current) {
+            *guard = Some(pts);
+        }
     }
 
-    fn value(&self) -> Option<Duration> {
+    fn value(&self) -> Option<Timestamp> {
         *self.0.read().unwrap()
     }
 }

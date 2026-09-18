@@ -171,6 +171,7 @@ async fn init_whep_client(
     pc.set_remote_description(answer).await?;
 
     let queue_input = QueueInput::new(&ctx, &input_ref, options.queue_options);
+    queue_input.set_stale_frame_timeout(ctx.stale_frame_timeout);
     {
         let input_ref = input_ref.clone();
         let ctx = ctx.clone();
@@ -187,7 +188,7 @@ async fn init_whep_client(
         let (mut video_sender, mut audio_sender) = queue_input.queue_new_track(QueueTrackOptions {
             video: true,
             audio: true,
-            offset: QueueTrackOffset::Pts(Duration::ZERO),
+            offset: QueueTrackOffset::Pts(Timestamp::ZERO),
         });
 
         pc.on_track(move |track_ctx| {

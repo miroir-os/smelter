@@ -81,6 +81,7 @@ pub async fn status_handler(
                 InputProtocolKind::Whep => "whep",
                 InputProtocolKind::Hls => "hls",
                 InputProtocolKind::MoqServer => "moq_server",
+                InputProtocolKind::MoqClient => "moq_client",
                 InputProtocolKind::V4l2 => "v4l2",
                 InputProtocolKind::DeckLink => "decklink",
                 InputProtocolKind::RawDataChannel => "raw_data",
@@ -102,6 +103,7 @@ pub async fn status_handler(
                 OutputProtocolKind::Whip => "whip",
                 OutputProtocolKind::Whep => "whep",
                 OutputProtocolKind::Hls => "hls",
+                OutputProtocolKind::MoqClient => "moq_client",
                 OutputProtocolKind::EncodedDataChannel => "encoded_data",
                 OutputProtocolKind::RawDataChannel => "raw_data",
             };

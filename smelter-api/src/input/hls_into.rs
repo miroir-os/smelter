@@ -13,6 +13,7 @@ impl TryFrom<HlsInput> for core::RegisterInputOptions {
             offset_ms,
             decoder_map,
             side_channel,
+            buffer,
         } = value;
 
         let (required, offset) = new_queue_options(required, offset_ms)?;
@@ -28,18 +29,20 @@ impl TryFrom<HlsInput> for core::RegisterInputOptions {
             })
             .transpose()?;
 
-        let video_decoders = core::HlsInputVideoDecoders { h264 };
-
         let input_options = core::HlsInputOptions {
             url,
-            video_decoders,
+            decoder_options: core::HlsInputDecoders { h264 },
             queue_options: core::QueueInputOptions {
                 required,
-                video_side_channel: side_channel.video.unwrap_or(false),
-                audio_side_channel: side_channel.audio.unwrap_or(false),
+                video_side_channel: side_channel.video.unwrap_or(false).into(),
+                audio_side_channel: side_channel.audio.unwrap_or(false).into(),
                 side_channel_delay,
             },
             offset,
+            buffer: buffer
+                .map(TryInto::try_into)
+                .transpose()?
+                .unwrap_or_default(),
         };
 
         Ok(core::RegisterInputOptions::Hls(input_options))

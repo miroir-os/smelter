@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use bytes::BytesMut;
 use gpu_video::parser::h264::{
     AccessUnit, H264Parser, ParsedNalu, nal_types::slice::DecRefPicMarking,
@@ -28,18 +26,18 @@ impl H264AuSplitter {
             .parser
             .parse(&chunk.data, Some(chunk.pts.as_micros() as u64))?;
 
-        self.process_au(access_units, chunk.present)
+        self.process_au(access_units, chunk.decode_only)
     }
 
     pub fn flush(&mut self) -> Result<Vec<EncodedInputChunk>, AuSplitterError> {
         let access_units = self.parser.flush()?;
-        self.process_au(access_units, true)
+        self.process_au(access_units, false)
     }
 
     fn process_au(
         &mut self,
         access_units: Vec<AccessUnit>,
-        present: bool,
+        decode_only: bool,
     ) -> Result<Vec<EncodedInputChunk>, AuSplitterError> {
         let mut chunks = Vec::new();
         for au in access_units {
@@ -60,10 +58,10 @@ impl H264AuSplitter {
 
             chunks.push(EncodedInputChunk {
                 data: data.freeze(),
-                pts: Duration::from_micros(pts),
+                pts: Timestamp::from_micros(pts as i64),
                 dts: None,
                 kind: MediaKind::Video(VideoCodec::H264),
-                present,
+                decode_only,
             });
         }
 

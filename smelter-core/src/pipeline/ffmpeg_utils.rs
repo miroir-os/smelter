@@ -1,6 +1,171 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, slice, time::Duration};
 
-use ffmpeg_next::{Dictionary, StreamMut, ffi::AVCodecParameters};
+use ffmpeg_next::{Dictionary, Stream, StreamMut, codec::encoder, ffi::AVCodecParameters};
+use tracing::warn;
+
+use crate::{prelude::*, queue::QueueContext};
+
+// With slow preset and disable sliced threads the encoder delay can be substantial.
+// e.g. rc_lookahead 60  + 16 thread machine would have delay of about 100 frames, which
+// at 24fps makes 4.2 seconds
+const OFFSET_RESOLUTION_TIMEOUT: Duration = Duration::from_millis(5000);
+
+/// Timestamp offset subtracted from every chunk on output.
+///
+/// Offset is resolved in this order:
+/// - `start_at` - output start in pts counted from queue start. Packets are in units relative
+///   to queue sync_point, so offset is `start_at + queue_ctx.start_pts`. Nothing is buffered
+///   in that case, the offset does not depend on the chunks.
+/// - If only one track is present, take offset from first packet
+/// - If both tracks are present, buffer until first packet of each kind is present and select
+///   the lowest
+///   - Wait at most `OFFSET_RESOLUTION_TIMEOUT` for that, if not fallback to first pts
+pub(crate) struct TimestampOffset {
+    queue_ctx: QueueContext,
+    /// Relative to the queue start, not to the sync point the chunk PTS use.
+    start_at: Option<Timestamp>,
+    /// Encoder priming that precedes the first audio chunk. The offset anchors on the content
+    /// start, so the priming frames get negative timestamps and the muxer emits an edit list
+    /// that skips them.
+    audio_initial_padding: Duration,
+    state: State,
+}
+
+enum State {
+    Resolved(Timestamp),
+    Pending {
+        waiting_for_video: bool,
+        waiting_for_audio: bool,
+        lowest_pts: Option<Timestamp>,
+        buffered: Vec<EncodedOutputChunk>,
+    },
+}
+
+impl TimestampOffset {
+    pub fn new(
+        queue_ctx: QueueContext,
+        start_at: Option<Timestamp>,
+        has_video: bool,
+        has_audio: bool,
+        audio_initial_padding: Option<Duration>,
+    ) -> Self {
+        Self {
+            queue_ctx,
+            audio_initial_padding: audio_initial_padding.unwrap_or_default(),
+            start_at,
+            // Not resolved here even when `start_at` is set, we need to wait for queue start
+            state: State::Pending {
+                waiting_for_video: has_video,
+                waiting_for_audio: has_audio,
+                lowest_pts: None,
+                buffered: Vec::new(),
+            },
+        }
+    }
+
+    /// Chunks ready to be written, each with the offset to apply. Empty while the offset
+    /// is still pending, in which case the chunk is buffered until it resolves.
+    pub fn resolve(&mut self, chunk: EncodedOutputChunk) -> Vec<(Timestamp, EncodedOutputChunk)> {
+        let (waiting_for_video, waiting_for_audio, lowest_pts, buffered) = match &mut self.state {
+            State::Resolved(offset) => return vec![(*offset, chunk)],
+            State::Pending {
+                waiting_for_video,
+                waiting_for_audio,
+                lowest_pts,
+                buffered,
+            } => (waiting_for_video, waiting_for_audio, lowest_pts, buffered),
+        };
+
+        let content_pts = match chunk.kind {
+            MediaKind::Video(_) => {
+                *waiting_for_video = false;
+                chunk.pts
+            }
+            MediaKind::Audio(_) => {
+                *waiting_for_audio = false;
+                chunk.pts + self.audio_initial_padding
+            }
+        };
+        let lowest = match *lowest_pts {
+            Some(lowest) => Timestamp::min(lowest, content_pts),
+            None => content_pts,
+        };
+        *lowest_pts = Some(lowest);
+
+        let timed_out = content_pts > lowest + OFFSET_RESOLUTION_TIMEOUT;
+        if timed_out {
+            warn!(
+                ?lowest,
+                waiting_for_video = *waiting_for_video,
+                waiting_for_audio = *waiting_for_audio,
+                "Timed out waiting for the first chunk of the other track, anchoring output timestamps on what arrived so far."
+            );
+        }
+        buffered.push(chunk);
+
+        let still_waiting = *waiting_for_video || *waiting_for_audio;
+        let start_at_known = self.start_at.is_some() && self.queue_ctx.start_pts().is_some();
+        if still_waiting && !timed_out && !start_at_known {
+            return Vec::new();
+        }
+        self.force_resolve(lowest)
+    }
+
+    /// A track ended; stop waiting for a first chunk it is never going to produce. Returns
+    /// the buffered chunks if this was the last track the offset was waiting on.
+    pub fn on_track_eos(&mut self, kind: MediaKind) -> Vec<(Timestamp, EncodedOutputChunk)> {
+        let (waiting_for_video, waiting_for_audio, lowest_pts) = match &mut self.state {
+            // Already anchored, so nothing was buffered.
+            State::Resolved(_) => return Vec::new(),
+            State::Pending {
+                waiting_for_video,
+                waiting_for_audio,
+                lowest_pts,
+                ..
+            } => (waiting_for_video, waiting_for_audio, lowest_pts),
+        };
+
+        match kind {
+            MediaKind::Video(_) => *waiting_for_video = false,
+            MediaKind::Audio(_) => *waiting_for_audio = false,
+        }
+        // Nothing to anchor on yet — stay pending until some chunk shows up.
+        let Some(lowest) = *lowest_pts else {
+            return Vec::new();
+        };
+        if *waiting_for_video || *waiting_for_audio {
+            return Vec::new();
+        }
+        self.force_resolve(lowest)
+    }
+
+    /// The packet stream ended before the offset resolved on its own. Anchor on whatever
+    /// arrived so far, so buffered chunks are not lost.
+    pub fn flush(&mut self) -> Vec<(Timestamp, EncodedOutputChunk)> {
+        let lowest_pts = match &self.state {
+            State::Resolved(_) => return Vec::new(),
+            State::Pending { lowest_pts, .. } => *lowest_pts,
+        };
+        // Nothing ever arrived, so there is nothing buffered either.
+        let Some(lowest) = lowest_pts else {
+            return Vec::new();
+        };
+        self.force_resolve(lowest)
+    }
+
+    fn force_resolve(&mut self, lowest_pts: Timestamp) -> Vec<(Timestamp, EncodedOutputChunk)> {
+        let offset = match (self.start_at, self.queue_ctx.start_pts()) {
+            (Some(start_at), Some(queue_start_pts)) => queue_start_pts + start_at,
+            _ => lowest_pts,
+        };
+
+        let buffered = match std::mem::replace(&mut self.state, State::Resolved(offset)) {
+            State::Pending { buffered, .. } => buffered,
+            State::Resolved(_) => Vec::new(),
+        };
+        buffered.into_iter().map(|chunk| (offset, chunk)).collect()
+    }
+}
 
 #[derive(Debug, Default)]
 pub(super) struct FfmpegOptions(HashMap<String, String>);
@@ -45,5 +210,42 @@ impl StreamMutExt for StreamMut<'_> {
     fn update_codecpar<F: FnOnce(&mut AVCodecParameters)>(&mut self, func: F) {
         let codecpar = unsafe { &mut *(*self.as_mut_ptr()).codecpar };
         func(codecpar);
+    }
+}
+
+/// Reads the codec configuration ffmpeg keeps as `extradata` (e.g. the AVC
+/// decoder configuration record of an H.264 track).
+pub(crate) trait ReadExtradataExt {
+    /// Copies the extradata out; `None` when there is none.
+    fn read_extradata(&self) -> Option<bytes::Bytes>;
+}
+
+impl ReadExtradataExt for Stream<'_> {
+    fn read_extradata(&self) -> Option<bytes::Bytes> {
+        unsafe {
+            let codecpar = &*(*self.as_ptr()).codecpar;
+            copy_extradata(codecpar.extradata, codecpar.extradata_size)
+        }
+    }
+}
+
+impl ReadExtradataExt for encoder::Video {
+    fn read_extradata(&self) -> Option<bytes::Bytes> {
+        unsafe {
+            let encoder = &*self.0.0.0.as_ptr();
+            copy_extradata(encoder.extradata, encoder.extradata_size)
+        }
+    }
+}
+
+/// # Safety
+///
+/// `extradata` has to point at `size` readable bytes.
+unsafe fn copy_extradata(extradata: *const u8, size: i32) -> Option<bytes::Bytes> {
+    match size > 0 {
+        true => Some(bytes::Bytes::copy_from_slice(unsafe {
+            slice::from_raw_parts(extradata, size as usize)
+        })),
+        false => None,
     }
 }

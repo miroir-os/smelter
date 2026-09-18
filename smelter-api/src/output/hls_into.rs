@@ -11,6 +11,7 @@ impl TryFrom<HlsOutput> for core::RegisterOutputOptions {
             video,
             audio,
             ffmpeg_options,
+            start_at_ms,
         } = request;
 
         if video.is_none() && audio.is_none() {
@@ -66,6 +67,7 @@ impl TryFrom<HlsOutput> for core::RegisterOutputOptions {
             video: video_encoder_options,
             audio: audio_encoder_options,
             raw_options: ffmpeg_options.unwrap_or_default().into_iter().collect(),
+            start_at: timestamp_from_start_at(start_at_ms)?,
         });
 
         Ok(Self {
@@ -129,6 +131,7 @@ impl HlsAudioEncoderOptions {
                 core::AudioEncoderOptions::FdkAac(core::FdkAacEncoderOptions {
                     channels: channels.into(),
                     sample_rate: sample_rate.unwrap_or(44100),
+                    bitstream_format: core::AacBitstreamFormat::Raw,
                 })
             }
         }

@@ -4,7 +4,7 @@ use axum::extract::{Path, State};
 use glyphon::fontdb::Source;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use smelter_core::{InputInitInfo, Pipeline, protocols::Port};
+use smelter_core::{InputInitInfo, Pipeline, RegisterOutputOptions, protocols::Port};
 use utoipa::ToSchema;
 
 use crate::{
@@ -13,9 +13,10 @@ use crate::{
     state::Response,
 };
 use smelter_api::{
-    DeckLink, HlsInput, HlsOutput, ImageSpec, InputId, MoqInputServer, Mp4Input, Mp4Output,
-    OutputId, RendererId, RtmpInput, RtmpOutput, RtpInput, RtpOutput, ShaderSpec, V4l2Input,
-    WebRendererSpec, WhepInput, WhepOutput, WhipInput, WhipOutput,
+    DeckLink, HlsInput, HlsOutput, ImageSpec, InputId, MoqClientInput, MoqClientOutput,
+    MoqServerInput, Mp4Input, Mp4Output, OutputId, RendererId, RtmpInput, RtmpOutput, RtpInput,
+    RtpOutput, ShaderSpec, V4l2Input, WebRendererSpec, WhepInput, WhepOutput, WhipInput,
+    WhipOutput,
 };
 
 use super::ApiState;
@@ -25,7 +26,8 @@ use super::ApiState;
 pub enum RegisterInput {
     RtpStream(RtpInput),
     RtmpServer(RtmpInput),
-    MoqServer(MoqInputServer),
+    MoqServer(MoqServerInput),
+    MoqClient(MoqClientInput),
     Mp4(Mp4Input),
     WhipServer(WhipInput),
     WhepClient(WhepInput),
@@ -40,6 +42,7 @@ pub enum RegisterInput {
 pub enum RegisterOutput {
     RtpStream(RtpOutput),
     RtmpClient(RtmpOutput),
+    MoqClient(MoqClientOutput),
     Mp4(Mp4Output),
     WhipClient(WhipOutput),
     WhepServer(WhepOutput),
@@ -72,8 +75,11 @@ pub async fn handle_input(
             RegisterInput::RtmpServer(rtmp) => {
                 Pipeline::register_input(&api.pipeline()?, input_id.into(), rtmp.try_into()?)?
             }
-            RegisterInput::MoqServer(moq) => {
-                Pipeline::register_input(&api.pipeline()?, input_id.into(), moq.try_into()?)?
+            RegisterInput::MoqServer(moq_server) => {
+                Pipeline::register_input(&api.pipeline()?, input_id.into(), moq_server.try_into()?)?
+            }
+            RegisterInput::MoqClient(moq_client) => {
+                Pipeline::register_input(&api.pipeline()?, input_id.into(), moq_client.try_into()?)?
             }
             RegisterInput::Mp4(mp4) => {
                 Pipeline::register_input(&api.pipeline()?, input_id.into(), mp4.try_into()?)?
@@ -139,26 +145,17 @@ pub async fn handle_output(
 ) -> Result<Response, ApiError> {
     let api = api.clone();
     tokio::task::spawn_blocking(move || {
-        let response = match request {
-            RegisterOutput::RtpStream(rtp) => {
-                Pipeline::register_output(&api.pipeline()?, output_id.into(), rtp.try_into()?)?
-            }
-            RegisterOutput::Mp4(mp4) => {
-                Pipeline::register_output(&api.pipeline()?, output_id.into(), mp4.try_into()?)?
-            }
-            RegisterOutput::WhipClient(whip) => {
-                Pipeline::register_output(&api.pipeline()?, output_id.into(), whip.try_into()?)?
-            }
-            RegisterOutput::WhepServer(whep) => {
-                Pipeline::register_output(&api.pipeline()?, output_id.into(), whep.try_into()?)?
-            }
-            RegisterOutput::RtmpClient(rtmp) => {
-                Pipeline::register_output(&api.pipeline()?, output_id.into(), rtmp.try_into()?)?
-            }
-            RegisterOutput::Hls(hls) => {
-                Pipeline::register_output(&api.pipeline()?, output_id.into(), hls.try_into()?)?
-            }
+        let options: RegisterOutputOptions = match request {
+            RegisterOutput::RtpStream(rtp) => rtp.try_into()?,
+            RegisterOutput::Mp4(mp4) => mp4.try_into()?,
+            RegisterOutput::WhipClient(whip) => whip.try_into()?,
+            RegisterOutput::WhepServer(whep) => whep.try_into()?,
+            RegisterOutput::RtmpClient(rtmp) => rtmp.try_into()?,
+            RegisterOutput::Hls(hls) => hls.try_into()?,
+            RegisterOutput::MoqClient(moq_client) => moq_client.try_into()?,
         };
+
+        let response = Pipeline::register_output(&api.pipeline()?, output_id.into(), options)?;
         match response {
             Some(Port(port)) => Ok(Response::RegisteredPort { port: Some(port) }),
             None => Ok(Response::Ok {}),

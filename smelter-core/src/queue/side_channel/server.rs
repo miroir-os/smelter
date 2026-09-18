@@ -12,10 +12,10 @@ use std::{
 
 use bytes::Bytes;
 use crossbeam_channel::{Sender, TrySendError};
-use smelter_render::{Frame, FramePreProcessor, InputId, WgpuCtx};
+use smelter_render::{FramePreProcessor, InputId, WgpuCtx};
 use tracing::{Span, debug, error, info_span};
 
-use crate::prelude::InputAudioSamples;
+use crate::prelude::{Frame, InputAudioSamples};
 
 use super::serialize::{serialize_audio_batch, serialize_rgba_frame};
 
@@ -36,13 +36,23 @@ impl Drop for ServerCleanup {
 }
 
 #[derive(Clone)]
-pub(super) struct VideoSideChannelServer {
-    pub sender: Sender<Frame>,
+pub(super) struct SideChannelServer<T> {
+    sender: Sender<T>,
     _cleanup: Arc<ServerCleanup>,
 }
 
-impl VideoSideChannelServer {
-    pub fn new(socket_path: PathBuf, input_id: &InputId, wgpu_ctx: Arc<WgpuCtx>) -> Option<Self> {
+impl<T> SideChannelServer<T> {
+    pub fn sender(&self) -> &Sender<T> {
+        &self.sender
+    }
+}
+
+impl SideChannelServer<Frame> {
+    pub fn new_video(
+        socket_path: PathBuf,
+        input_id: &InputId,
+        wgpu_ctx: Arc<WgpuCtx>,
+    ) -> Option<Self> {
         let span = info_span!("side_channel", kind = "video", input_id = %input_id);
         let (clients, cleanup) = bind_and_spawn_accept(
             socket_path,
@@ -60,7 +70,7 @@ impl VideoSideChannelServer {
                 while let Ok(frame) = receiver.recv() {
                     let resolution = frame.resolution;
                     let pts = frame.pts;
-                    let rgba_bytes = pre_processor.process_to_bytes(frame, None);
+                    let rgba_bytes = pre_processor.process_to_bytes(frame.into(), None);
                     let data = serialize_rgba_frame(resolution, pts, rgba_bytes);
                     broadcast_to_client_threads(&clients, data);
                 }
@@ -75,14 +85,8 @@ impl VideoSideChannelServer {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct AudioSideChannelServer {
-    pub sender: Sender<InputAudioSamples>,
-    _cleanup: Arc<ServerCleanup>,
-}
-
-impl AudioSideChannelServer {
-    pub fn new(socket_path: PathBuf, input_id: &InputId) -> Option<Self> {
+impl SideChannelServer<InputAudioSamples> {
+    pub fn new_audio(socket_path: PathBuf, input_id: &InputId) -> Option<Self> {
         let span = info_span!("side_channel", kind = "audio", input_id = %input_id);
         let (clients, cleanup) = bind_and_spawn_accept(
             socket_path,

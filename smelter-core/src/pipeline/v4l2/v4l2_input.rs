@@ -1,16 +1,15 @@
 use std::{
     path::Path,
     sync::{Arc, atomic::AtomicBool},
-    time::Duration,
 };
 
 use crossbeam_channel::TrySendError;
-use smelter_render::{FrameData, Framerate, InputId, NvPlanes, Resolution};
+use smelter_render::{FrameData, FramePreProcessor, Framerate, InputId, NvPlanes, Resolution};
 use tracing::{Level, debug, error, info, span, trace, warn};
 
 use crate::{
     pipeline::input::Input,
-    queue::{QueueInput, QueueSender, QueueTrackOffset, QueueTrackOptions},
+    queue::{InputSideChannel, QueueInput, QueueSender, QueueTrackOffset, QueueTrackOptions},
 };
 
 use crate::prelude::*;
@@ -53,9 +52,7 @@ impl TryFrom<FourCC> for V4l2Format {
 ///
 /// - Register track with `QueueTrackOffset::Pts(Duration::ZERO)` which means
 ///   that PTS should be relative to queue `sync_point`.
-/// - PTS of each frame is `sync_point.elapsed() + 20ms` (real-time capture with a
-///   small fixed buffer to account for delivery latency). This effectively syncs
-///   with the queue on every frame.
+/// - PTS of each frame is relative to queue `sync_point` at receipt time.
 /// - Never block on sending.
 ///
 /// ### Unsupported scenarios
@@ -76,17 +73,21 @@ impl V4l2Input {
     ) -> Result<(Input, InputInitInfo, QueueInput), InputInitError> {
         let device_config = V4l2DeviceConfig::initialize(&opts)?;
 
-        let mut stream =
+        let stream =
             MmapStream::with_buffers(&device_config.device, v4l::buffer::Type::VideoCapture, 4)
                 .map_err(V4l2InputError::IoError)?;
-        // the library recommends to skip the first frame
-        stream.next().map_err(V4l2InputError::IoError)?;
+
+        let frame_pre_processor = match &opts.queue_options.video_side_channel {
+            InputSideChannel::Disabled => None,
+            _ => Some(FramePreProcessor::new(ctx.wgpu_ctx.clone())),
+        };
 
         let queue_input = QueueInput::new(&ctx, &input_ref, opts.queue_options);
+        queue_input.set_stale_frame_timeout(ctx.stale_frame_timeout);
         let (Some(video_sender), _) = queue_input.queue_new_track(QueueTrackOptions {
             video: true,
             audio: false,
-            offset: QueueTrackOffset::Pts(Duration::ZERO),
+            offset: QueueTrackOffset::Pts(Timestamp::ZERO),
         }) else {
             return Err(InputInitError::InternalServerError(
                 "Video sender is None in V4L2 input",
@@ -101,6 +102,7 @@ impl V4l2Input {
             sender: video_sender,
             should_close: should_close.clone(),
             stream,
+            frame_pre_processor,
         };
 
         std::thread::Builder::new()
@@ -281,10 +283,14 @@ struct InputState<'a> {
     should_close: Arc<AtomicBool>,
     sender: QueueSender<Frame>,
     stream: v4l::io::mmap::Stream<'a>,
+    /// Only set when a side channel is enabled (avoids duplicated processing).
+    frame_pre_processor: Option<FramePreProcessor>,
 }
 
 impl InputState<'_> {
     fn run(&mut self) {
+        // the library recommends to skip the first frame
+        let mut skip_first = true;
         loop {
             if self.should_close.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
@@ -297,6 +303,11 @@ impl InputState<'_> {
                     continue;
                 }
             };
+
+            if skip_first {
+                skip_first = false;
+                continue;
+            }
 
             let V4l2DeviceConfig {
                 resolution, format, ..
@@ -339,9 +350,20 @@ impl InputState<'_> {
             };
 
             let frame = Frame {
-                pts: self.ctx.queue_ctx.sync_point.elapsed() + Duration::from_millis(20),
-                data,
+                pts: self.ctx.queue_ctx.sync_point.timestamp_now(),
                 resolution: self.config.resolution,
+                data,
+            };
+
+            let frame = match &mut self.frame_pre_processor {
+                Some(pre_processor) => Frame {
+                    resolution: frame.resolution,
+                    pts: frame.pts,
+                    data: FrameData::Rgba8UnormWgpuTexture(
+                        pre_processor.process_to_texture(frame.into(), None),
+                    ),
+                },
+                None => frame,
             };
 
             match self.sender.try_send(frame) {
