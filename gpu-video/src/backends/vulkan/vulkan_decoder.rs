@@ -637,7 +637,6 @@ impl<'a> VulkanDecoder<'a> {
 
         let image = Arc::new(image);
         let image_clone = image.clone();
-        let semaphore = self.tracker.semaphore_tracker.semaphore.clone();
 
         let hal_texture = unsafe {
             hal_device.texture_from_raw(
@@ -659,10 +658,7 @@ impl<'a> VulkanDecoder<'a> {
                     format: wgpu::TextureFormat::NV12,
                     mip_level_count: 1,
                 },
-                Some(Box::new(move || {
-                    drop(semaphore);
-                    drop(image_clone);
-                })),
+                Some(Box::new(move || drop(image_clone))),
                 wgpu::hal::vulkan::TextureMemory::External,
             )
         };

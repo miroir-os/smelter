@@ -315,6 +315,16 @@ impl VulkanWgpuTexturesDecoderH264 {
 }
 
 #[cfg(feature = "wgpu")]
+impl Drop for VulkanWgpuTexturesDecoderH264 {
+    fn drop(&mut self) {
+        let semaphore = self.submission_tracker.semaphore.clone();
+        self.wgpu_queue.submit([]);
+        self.wgpu_queue
+            .on_submitted_work_done(move || drop(semaphore));
+    }
+}
+
+#[cfg(feature = "wgpu")]
 impl crate::decoders::WgpuVideoDecoderBackend for VulkanWgpuTexturesDecoderH264 {
     fn process_event_textures(
         &mut self,
