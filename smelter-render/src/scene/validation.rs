@@ -71,6 +71,10 @@ fn validate_component_ids_uniqueness(outputs: &[&OutputScene]) -> Result<(), Sce
     })
 }
 
+/// Children drive the instance's shared embedding state (frame positions,
+/// shared memory), so only web views with children need exclusive use of it.
+/// Childless views only read the rendered frame and can share an instance
+/// across outputs.
 fn validate_web_renderer_ids_uniqueness(outputs: &[&OutputScene]) -> Result<(), SceneError> {
     let mut web_renderer_ids: HashSet<&RendererId> = HashSet::new();
 
@@ -78,7 +82,9 @@ fn validate_web_renderer_ids_uniqueness(outputs: &[&OutputScene]) -> Result<(), 
         component: &'a Component,
         ids: &mut HashSet<&'a RendererId>,
     ) -> Result<(), SceneError> {
-        if let Component::WebView(web_view) = component {
+        if let Component::WebView(web_view) = component
+            && !web_view.children.is_empty()
+        {
             let instance_id = &web_view.instance_id;
             if ids.contains(instance_id) {
                 return Err(SceneError::WebRendererUsageNotExclusive(
