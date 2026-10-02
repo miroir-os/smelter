@@ -7,7 +7,7 @@ license-file = "../LICENSE"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = []
-decklink = ["dep:decklink"]
+decklink = ["dep:decklink", "dep:ash", "dep:libc"]
 web-renderer = ["smelter-render/web-renderer"]
 gpu-video = ["dep:ash"]
 
@@ -49,6 +49,7 @@ audioadapter-buffers = "2.0.0"
 audioadapter = "2.0.0"
 async-trait = "0.1.89"
 ash = { workspace = true, optional = true }
+libc = { version = "0.2.151", optional = true }
 hang = "0.19"
 moq-msf = "0.2"
 moq-mux = "0.5.6"

@@ -12,7 +12,10 @@ use decklink::{
 use smelter_render::{FrameData, FramePreProcessor, Resolution, error::ErrorStack};
 use tracing::{Span, debug, info, trace, warn};
 
-use crate::pipeline::decklink::format::{BitDepth, Colorspace, Format};
+use crate::pipeline::decklink::{
+    format::{BitDepth, Colorspace, Format},
+    frame_pool::FramePool,
+};
 use crate::queue::QueueSender;
 
 use crate::prelude::*;
@@ -24,6 +27,8 @@ pub(super) struct ChannelCallbackAdapter {
     audio_sender: Option<QueueSender<InputAudioSamples>>,
     /// Only set when a side channel is enabled (avoids duplicated processing).
     frame_pre_processor: Option<Mutex<FramePreProcessor>>,
+    /// Set with `zero_copy`, which requires the pre-processor.
+    frame_pool: Option<Arc<FramePool>>,
     span: Span,
 
     // I'm not sure, but I suspect that holding Arc here would create a circular
@@ -41,6 +46,7 @@ impl ChannelCallbackAdapter {
         video_sender: Option<QueueSender<Frame>>,
         audio_sender: Option<QueueSender<InputAudioSamples>>,
         side_channel_enabled: bool,
+        frame_pool: Option<Arc<FramePool>>,
         input: Weak<decklink::Input>,
         initial_format: Format,
     ) -> Self {
@@ -50,12 +56,32 @@ impl ChannelCallbackAdapter {
             video_sender,
             audio_sender,
             frame_pre_processor,
+            frame_pool,
             span,
             input,
             sync_point: ctx.queue_ctx.sync_point,
             stream_offset: Mutex::new(None),
             last_format: Mutex::new(initial_format),
         }
+    }
+
+    /// Format detection reports the real format through
+    /// `video_input_format_changed`, which enables it in turn.
+    pub(super) fn enable_video(
+        &self,
+        input: &decklink::Input,
+        mode: decklink::DisplayModeType,
+        pixel_format: PixelFormat,
+    ) -> Result<(), decklink::DeckLinkError> {
+        input.enable_video(
+            mode,
+            pixel_format,
+            VideoInputFlags {
+                enable_format_detection: true,
+                ..Default::default()
+            },
+            self.frame_pool.clone().map(|pool| pool as _),
+        )
     }
 
     fn resolve_offset(&self, device_time: Duration) -> Timestamp {
@@ -111,10 +137,17 @@ impl ChannelCallbackAdapter {
 
         let frame = match &self.frame_pre_processor {
             Some(pre_processor) => {
-                let texture = pre_processor
-                    .lock()
-                    .unwrap()
-                    .process_to_texture(frame.into(), None);
+                let buffer = self
+                    .frame_pool
+                    .as_ref()
+                    .and_then(|pool| pool.buffer(&frame));
+                let mut pre_processor = pre_processor.lock().unwrap();
+                let texture = match buffer {
+                    Some(buffer) => {
+                        pre_processor.process_to_texture_from_buffer(frame.into(), &buffer, None)
+                    }
+                    None => pre_processor.process_to_texture(frame.into(), None),
+                };
                 Frame {
                     data: FrameData::Rgba8UnormWgpuTexture(texture),
                     resolution: Resolution { width, height },
@@ -295,14 +328,7 @@ impl ChannelCallbackAdapter {
         info!(?pixel_format, ?flags, ?mode, "Detected new input format");
 
         input.pause_streams()?;
-        input.enable_video(
-            mode,
-            pixel_format,
-            VideoInputFlags {
-                enable_format_detection: true,
-                ..Default::default()
-            },
-        )?;
+        self.enable_video(&input, mode, pixel_format)?;
         input.flush_streams()?;
         input.start_streams()?;
 

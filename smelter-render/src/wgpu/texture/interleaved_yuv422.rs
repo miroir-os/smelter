@@ -52,4 +52,8 @@ impl InterleavedYuv422Texture {
     pub fn upload(&self, ctx: &WgpuCtx, data: &[u8]) {
         self.texture.upload_data(&ctx.queue, data, 4);
     }
+
+    pub fn copy_from_buffer(&self, ctx: &WgpuCtx, buffer: &wgpu::Buffer) {
+        self.texture.copy_from_buffer(ctx, buffer, 4);
+    }
 }

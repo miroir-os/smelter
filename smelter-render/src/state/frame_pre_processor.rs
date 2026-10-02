@@ -62,7 +62,25 @@ impl FramePreProcessor {
         frame: Frame,
         resolution: Option<Resolution>,
     ) -> Arc<wgpu::Texture> {
-        self.upload_and_convert_to_node_texture(frame);
+        self.input_texture.upload(&self.wgpu_ctx, frame);
+        self.convert_to_texture(resolution)
+    }
+
+    /// `process_to_texture` for a frame whose bytes `buffer` also holds: the
+    /// GPU copies them, so the CPU never touches the pixels.
+    pub fn process_to_texture_from_buffer(
+        &mut self,
+        frame: Frame,
+        buffer: &wgpu::Buffer,
+        resolution: Option<Resolution>,
+    ) -> Arc<wgpu::Texture> {
+        self.input_texture
+            .upload_from_buffer(&self.wgpu_ctx, frame, buffer);
+        self.convert_to_texture(resolution)
+    }
+
+    fn convert_to_texture(&mut self, resolution: Option<Resolution>) -> Arc<wgpu::Texture> {
+        self.convert_to_node_texture();
 
         let output_texture_views: &'static [wgpu::TextureFormat] = match self.wgpu_ctx.mode {
             RenderingMode::GpuOptimized => &[
@@ -89,7 +107,8 @@ impl FramePreProcessor {
         frame: Frame,
         resolution: Option<Resolution>,
     ) -> bytes::Bytes {
-        self.upload_and_convert_to_node_texture(frame);
+        self.input_texture.upload(&self.wgpu_ctx, frame);
+        self.convert_to_node_texture();
 
         if let Some(resolution) = resolution {
             self.rescale_node_texture(resolution);
@@ -106,8 +125,7 @@ impl FramePreProcessor {
         }
     }
 
-    fn upload_and_convert_to_node_texture(&mut self, frame: Frame) {
-        self.input_texture.upload(&self.wgpu_ctx, frame);
+    fn convert_to_node_texture(&mut self) {
         // Flush uploads before the conversion pass reads them.
         self.wgpu_ctx.queue.submit([]);
         self.input_texture

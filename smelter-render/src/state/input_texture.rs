@@ -200,6 +200,27 @@ impl InputTexture {
         }
     }
 
+    /// `upload` with the GPU copying the pixels from `buffer`, which holds the
+    /// same bytes as `frame`. The first frame of a format, and rows the GPU
+    /// can't copy, are uploaded from the CPU.
+    pub fn upload_from_buffer(&mut self, ctx: &WgpuCtx, frame: Frame, buffer: &wgpu::Buffer) {
+        let copyable = |data: &[u8]| {
+            ((data.len() / frame.resolution.height) as u32)
+                .is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        };
+        match (&frame.data, &mut self.0) {
+            (
+                FrameData::InterleavedUyvy422(data),
+                Some(InputTextureState::InterleavedUyvy422(input)),
+            ) if copyable(data) => return input.copy_from_buffer(ctx, buffer, frame.resolution),
+            (FrameData::Bgra(data), Some(InputTextureState::Bgra(input))) if copyable(data) => {
+                return input.copy_from_buffer(ctx, buffer, frame.resolution);
+            }
+            _ => {}
+        }
+        self.upload(ctx, frame);
+    }
+
     pub fn convert_to_node_texture(&mut self, ctx: &WgpuCtx, dest: &mut NodeTexture) {
         match &mut self.0 {
             Some(input_texture) => {

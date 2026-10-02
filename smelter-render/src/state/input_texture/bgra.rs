@@ -35,6 +35,16 @@ impl BgraInput {
         self.upload_textures.upload(ctx, data);
     }
 
+    pub fn copy_from_buffer(
+        &mut self,
+        ctx: &WgpuCtx,
+        buffer: &wgpu::Buffer,
+        resolution: Resolution,
+    ) {
+        self.maybe_recreate(ctx, resolution);
+        self.upload_textures.copy_from_buffer(ctx, buffer);
+    }
+
     pub fn convert(&mut self, ctx: &WgpuCtx, dest: &NodeTextureState) {
         match dest {
             NodeTextureState::GpuOptimized { texture, .. } => {

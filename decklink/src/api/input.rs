@@ -1,6 +1,10 @@
-use std::time::Duration;
+use std::{
+    ptr::{NonNull, null_mut},
+    sync::Arc,
+    time::Duration,
+};
 
-use crate::{DeckLinkError, InputCallback, InputCallbackResult};
+use crate::{DeckLinkError, FrameAllocator, InputCallback, InputCallbackResult};
 
 use super::{
     DisplayMode, HResult,
@@ -35,13 +39,27 @@ impl Input {
         }
         Ok((is_supported, actual_mode))
     }
+    /// Without an `allocator`, DeckLink captures into memory it allocates itself.
     pub fn enable_video(
         &self,
         mode: ffi::DisplayModeType,
         format: ffi::PixelFormat,
         flags: ffi::VideoInputFlags,
+        allocator: Option<Arc<dyn FrameAllocator>>,
     ) -> Result<(), DeckLinkError> {
-        match unsafe { ffi::input_enable_video(self.0, mode, format, flags)? } {
+        let result = match allocator {
+            Some(allocator) => unsafe {
+                ffi::input_enable_video_with_allocator(
+                    self.0,
+                    mode,
+                    format,
+                    flags,
+                    Box::new(DynFrameAllocator(allocator)),
+                )?
+            },
+            None => unsafe { ffi::input_enable_video(self.0, mode, format, flags)? },
+        };
+        match result {
             HResult::Ok => Ok(()),
             hresult => Err(DeckLinkError::DeckLinkCallFailed(
                 "IDeckLinkInput::EnableVideoInput",
@@ -219,6 +237,20 @@ impl AudioInputPacket {
     pub fn packet_time(&self) -> Result<Duration, DeckLinkError> {
         let time_value = unsafe { ffi::audio_input_packet_packet_time(self.0, 1_000_000_000)? };
         Ok(Duration::from_nanos(time_value as u64))
+    }
+}
+
+pub(crate) struct DynFrameAllocator(Arc<dyn FrameAllocator>);
+
+impl DynFrameAllocator {
+    pub(crate) fn allocate(&self, size: u32, row_bytes: u32) -> *mut u8 {
+        self.0
+            .allocate(size as usize, row_bytes as usize)
+            .map_or(null_mut(), NonNull::as_ptr)
+    }
+
+    pub(crate) unsafe fn release(&self, bytes: *mut u8) {
+        self.0.release(unsafe { NonNull::new_unchecked(bytes) })
     }
 }
 

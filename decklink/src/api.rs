@@ -7,7 +7,7 @@ use self::{
     input::Input,
     profile::{ProfileAttributes, ProfileManager},
 };
-use input::DynInputCallback;
+use input::{DynFrameAllocator, DynInputCallback};
 
 pub(super) mod device;
 pub(super) mod input;
@@ -79,6 +79,10 @@ mod ffi {
             display_mode: *mut IDeckLinkDisplayMode,
             flags: DetectedVideoInputFormatFlags,
         ) -> HResult;
+
+        pub type DynFrameAllocator;
+        fn allocate(self: &DynFrameAllocator, size: u32, row_bytes: u32) -> *mut u8;
+        unsafe fn release(self: &DynFrameAllocator, bytes: *mut u8);
     }
 
     unsafe extern "C++" {
@@ -185,6 +189,13 @@ mod ffi {
             mode: DisplayModeType,
             format: PixelFormat,
             flags: VideoInputFlags,
+        ) -> Result<HResult>;
+        unsafe fn input_enable_video_with_allocator(
+            input: *mut IDeckLinkInput,
+            mode: DisplayModeType,
+            format: PixelFormat,
+            flags: VideoInputFlags,
+            allocator: Box<DynFrameAllocator>,
         ) -> Result<HResult>;
         unsafe fn input_enable_audio(
             input: *mut IDeckLinkInput,

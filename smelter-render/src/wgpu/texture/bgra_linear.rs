@@ -50,6 +50,10 @@ impl BgraLinearTexture {
         self.texture.upload_data(&ctx.queue, data, 4);
     }
 
+    pub fn copy_from_buffer(&self, ctx: &WgpuCtx, buffer: &wgpu::Buffer) {
+        self.texture.copy_from_buffer(ctx, buffer, 4);
+    }
+
     #[cfg(feature = "web-renderer")]
     pub fn view(&self) -> &wgpu::TextureView {
         &self.view

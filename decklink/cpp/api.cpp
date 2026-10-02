@@ -126,6 +126,17 @@ HResult input_enable_video(IDeckLinkInput *input, DisplayModeType mode,
   return static_cast<HResult>(result);
 }
 
+HResult input_enable_video_with_allocator(
+    IDeckLinkInput *input, DisplayModeType mode, PixelFormat format,
+    VideoInputFlags flags, rust::Box<DynFrameAllocator> allocator) {
+  auto provider = new FrameAllocatorProvider(std::move(allocator));
+  auto result = input->EnableVideoInputWithAllocatorProvider(
+      from_display_mode_type(mode), from_pixel_format(format),
+      from_video_input_flags(flags), provider);
+  provider->Release();
+  return static_cast<HResult>(result);
+}
+
 HResult input_enable_audio(IDeckLinkInput *input, uint32_t sample_rate,
                            AudioSampleType sample_type, uint32_t channels) {
   auto result = input->EnableAudioInput(
