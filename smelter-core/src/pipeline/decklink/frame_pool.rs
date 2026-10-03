@@ -26,6 +26,7 @@ pub(super) struct FramePool {
     device: wgpu::Device,
     vulkan: ash::Device,
     host_memory: ash::ext::external_memory_host::Device,
+    memory_properties: vk::PhysicalDeviceMemoryProperties,
     /// Keyed by address. DeckLink keeps its buffers until the format changes
     /// or capture stops, so released buffers are dropped rather than reused.
     lent: Mutex<HashMap<usize, HostBuffer>>,
@@ -45,6 +46,11 @@ impl FramePool {
             })
             .ok_or(DeckLinkInputError::ZeroCopyUnsupportedByGpu)?;
         let vulkan = hal.raw_device().clone();
+        let memory_properties = unsafe {
+            hal.shared_instance()
+                .raw_instance()
+                .get_physical_device_memory_properties(hal.raw_physical_device())
+        };
         let host_memory = ash::ext::external_memory_host::Device::new(
             hal.shared_instance().raw_instance(),
             &vulkan,
@@ -53,6 +59,7 @@ impl FramePool {
             device: ctx.device.as_ref().clone(),
             vulkan,
             host_memory,
+            memory_properties,
             lent: Default::default(),
         }))
     }
@@ -128,10 +135,14 @@ struct HostMemory {
     address: usize,
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
+    driver_allocated: bool,
 }
 
 impl HostMemory {
     fn import(pool: &FramePool, len: usize) -> Result<Self, vk::Result> {
+        if std::env::var_os("SMELTER_PROBE_DRIVER_MEMORY").is_some() {
+            return Self::driver_allocated(pool, len);
+        }
         let mut address = null_mut();
         if unsafe { libc::posix_memalign(&mut address, HUGE_PAGE, len) } != 0 {
             return Err(vk::Result::ERROR_OUT_OF_HOST_MEMORY);
@@ -141,6 +152,7 @@ impl HostMemory {
             address: address as usize,
             buffer: vk::Buffer::null(),
             memory: vk::DeviceMemory::null(),
+            driver_allocated: false,
         };
         unsafe { libc::madvise(address, len, libc::MADV_HUGEPAGE) };
 
@@ -190,12 +202,77 @@ impl HostMemory {
     }
 }
 
+impl HostMemory {
+    fn driver_allocated(pool: &FramePool, len: usize) -> Result<Self, vk::Result> {
+        let mut memory = Self {
+            vulkan: pool.vulkan.clone(),
+            address: 0,
+            buffer: vk::Buffer::null(),
+            memory: vk::DeviceMemory::null(),
+            driver_allocated: true,
+        };
+        memory.buffer = unsafe {
+            pool.vulkan.create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(len as u64)
+                    .usage(vk::BufferUsageFlags::TRANSFER_SRC),
+                None,
+            )?
+        };
+        let requirements = unsafe { pool.vulkan.get_buffer_memory_requirements(memory.buffer) };
+        let props = &pool.memory_properties;
+        let wanted = |flags: vk::MemoryPropertyFlags| {
+            (0..props.memory_type_count).find(|&i| {
+                requirements.memory_type_bits & (1 << i) != 0
+                    && props.memory_types[i as usize]
+                        .property_flags
+                        .contains(flags)
+            })
+        };
+        let index = wanted(
+            vk::MemoryPropertyFlags::HOST_VISIBLE
+                | vk::MemoryPropertyFlags::HOST_COHERENT
+                | vk::MemoryPropertyFlags::HOST_CACHED,
+        )
+        .or_else(|| {
+            wanted(vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)
+        })
+        .ok_or(vk::Result::ERROR_FEATURE_NOT_PRESENT)?;
+        warn!(index, flags = ?props.memory_types[index as usize].property_flags, "ZCPROBE driver memory type");
+        memory.memory = unsafe {
+            pool.vulkan.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(requirements.size)
+                    .memory_type_index(index),
+                None,
+            )?
+        };
+        unsafe {
+            pool.vulkan
+                .bind_buffer_memory(memory.buffer, memory.memory, 0)?
+        };
+        let mapped = unsafe {
+            pool.vulkan.map_memory(
+                memory.memory,
+                0,
+                vk::WHOLE_SIZE,
+                vk::MemoryMapFlags::empty(),
+            )?
+        };
+        memory.address = mapped as usize;
+        warn!(address = memory.address, "ZCPROBE driver memory mapped");
+        Ok(memory)
+    }
+}
+
 impl Drop for HostMemory {
     fn drop(&mut self) {
         unsafe {
             self.vulkan.destroy_buffer(self.buffer, None);
             self.vulkan.free_memory(self.memory, None);
-            libc::free(self.address as *mut c_void);
+            if !self.driver_allocated {
+                libc::free(self.address as *mut c_void);
+            }
         }
     }
 }

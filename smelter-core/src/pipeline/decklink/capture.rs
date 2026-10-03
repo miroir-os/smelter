@@ -141,6 +141,36 @@ impl ChannelCallbackAdapter {
                     .frame_pool
                     .as_ref()
                     .and_then(|pool| pool.buffer(&frame));
+                {
+                    static LINES: std::sync::atomic::AtomicUsize =
+                        std::sync::atomic::AtomicUsize::new(0);
+                    if LINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4000 {
+                        let mut now = libc::timespec {
+                            tv_sec: 0,
+                            tv_nsec: 0,
+                        };
+                        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
+                        let ptr = match &frame.data {
+                            FrameData::InterleavedUyvy422(data) | FrameData::Bgra(data) => {
+                                data.as_ptr() as usize
+                            }
+                            _ => 0,
+                        };
+                        use std::io::Write;
+                        if let Ok(mut log) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("/tmp/zc-frames.log")
+                        {
+                            let _ = writeln!(
+                                log,
+                                "{} frame {:#x}",
+                                now.tv_sec as i64 * 1_000_000_000 + now.tv_nsec as i64,
+                                ptr
+                            );
+                        }
+                    }
+                }
                 let mut pre_processor = pre_processor.lock().unwrap();
                 let texture = match buffer {
                     Some(buffer) => {

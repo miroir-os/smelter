@@ -4,6 +4,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
+#include <ctime>
 
 template <typename Interface, const REFIID &Iid>
 class ComObject : public Interface {
@@ -89,8 +91,18 @@ public:
     *out = bytes;
     return S_OK;
   }
-  HRESULT StartAccess(BMDBufferAccessFlags) override { return S_OK; }
-  HRESULT EndAccess(BMDBufferAccessFlags) override { return S_OK; }
+  static void probe(const char *what, void *bytes, BMDBufferAccessFlags flags) {
+    static std::atomic<int> lines = 0;
+    if (lines++ > 4000) return;
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (FILE *log = fopen("/tmp/zc-access.log", "a")) {
+      fprintf(log, "%lld %s %p %u\n", (long long)now.tv_sec * 1000000000LL + now.tv_nsec, what, bytes, (unsigned)flags);
+      fclose(log);
+    }
+  }
+  HRESULT StartAccess(BMDBufferAccessFlags flags) override { probe("start", bytes, flags); return S_OK; }
+  HRESULT EndAccess(BMDBufferAccessFlags flags) override { probe("end", bytes, flags); return S_OK; }
 };
 
 class FrameBufferAllocator
