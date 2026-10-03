@@ -2330,6 +2330,7 @@ dependencies = [
  "cfg_aliases",
  "clap",
  "h264-reader",
+ "libc",
  "memchr",
  "naga",
  "pollster",
