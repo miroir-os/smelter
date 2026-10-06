@@ -4,7 +4,7 @@ use crate::{DeckLinkError, FrameAllocator, FrameBuffer, InputCallback, InputCall
 
 use super::{
     DisplayMode, HResult,
-    ffi::{self, PixelFormat},
+    ffi::{self, FrameFlags, PixelFormat},
 };
 
 pub struct Input(pub(super) *mut ffi::IDeckLinkInput);
@@ -163,6 +163,9 @@ impl VideoInputFrame {
     }
     pub fn bytes_per_row(&self) -> usize {
         unsafe { ffi::video_input_frame_row_bytes(self.0) as usize }
+    }
+    pub fn flags(&self) -> FrameFlags {
+        unsafe { ffi::video_input_frame_flags(self.0) }
     }
     pub fn pixel_format(&self) -> Result<PixelFormat, DeckLinkError> {
         Ok(unsafe { ffi::video_input_frame_pixel_format(self.0)? })

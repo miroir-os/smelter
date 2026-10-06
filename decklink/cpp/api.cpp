@@ -328,6 +328,10 @@ PixelFormat video_input_frame_pixel_format(IDeckLinkVideoInputFrame *frame) {
   return into_pixel_format(frame->GetPixelFormat());
 }
 
+FrameFlags video_input_frame_flags(IDeckLinkVideoInputFrame *frame) {
+  return into_frame_flags(frame->GetFlags());
+}
+
 BMDTimeValue video_input_frame_stream_time(IDeckLinkVideoInputFrame *frame,
                                            BMDTimeScale time_scale) {
   BMDTimeValue time;

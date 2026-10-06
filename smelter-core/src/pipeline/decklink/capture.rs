@@ -106,6 +106,11 @@ impl ChannelCallbackAdapter {
         video_frame: &mut VideoInputFrame,
         sender: &QueueSender<Frame>,
     ) -> Result<(), decklink::DeckLinkError> {
+        // Without a cable DeckLink keeps delivering black frames in a
+        // provisional mode; no frames is what no signal means for every input.
+        if video_frame.flags().has_no_input_source {
+            return Ok(());
+        }
         let stream_time = video_frame.stream_time()?;
         let offset = self.resolve_offset(stream_time);
         let presentation_delay =

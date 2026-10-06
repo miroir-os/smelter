@@ -21,6 +21,7 @@ mod lib {
     pub use enums::ffi::AudioSampleType;
     pub use enums::ffi::DetectedVideoInputFormatFlags;
     pub use enums::ffi::DisplayModeType;
+    pub use enums::ffi::FrameFlags;
     pub use enums::ffi::PixelFormat;
     pub use enums::ffi::SupportedVideoModeFlags;
     pub use enums::ffi::VideoConnection;

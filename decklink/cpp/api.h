@@ -86,6 +86,7 @@ long video_input_frame_row_bytes(IDeckLinkVideoInputFrame *frame);
 VideoBufferAccess video_input_frame_start_access(IDeckLinkVideoInputFrame *frame);
 const DynFrameBuffer *video_input_frame_buffer(IDeckLinkVideoInputFrame *frame);
 PixelFormat video_input_frame_pixel_format(IDeckLinkVideoInputFrame *frame);
+FrameFlags video_input_frame_flags(IDeckLinkVideoInputFrame *frame);
 BMDTimeValue video_input_frame_stream_time(IDeckLinkVideoInputFrame *frame,
                                            BMDTimeScale time_scale);
 
