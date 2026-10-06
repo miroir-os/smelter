@@ -45,6 +45,7 @@ SupportedVideoModeFlags
 
 BMDVideoInputFlags from_video_input_flags(VideoInputFlags);
 VideoInputFlags into_video_input_flags(BMDVideoInputFlags);
+FrameFlags into_frame_flags(BMDFrameFlags);
 
 BMDDetectedVideoInputFormatFlags
     from_detected_video_input_format_flags(DetectedVideoInputFormatFlags);
