@@ -908,6 +908,17 @@ DetectedVideoInputFormatFlags into_detected_video_input_format_flags(
   return flags;
 }
 
+FrameFlags into_frame_flags(BMDFrameFlags bmd_flags) {
+  FrameFlags flags;
+  flags.flip_vertical = (bmd_flags & bmdFrameFlagFlipVertical) != 0;
+  flags.contains_hdr_metadata = (bmd_flags & bmdFrameContainsHDRMetadata) != 0;
+  flags.contains_dolby_vision_metadata =
+      (bmd_flags & bmdFrameContainsDolbyVisionMetadata) != 0;
+  flags.captured_as_psf = (bmd_flags & bmdFrameCapturedAsPsF) != 0;
+  flags.has_no_input_source = (bmd_flags & bmdFrameHasNoInputSource) != 0;
+  return flags;
+}
+
 BMDVideoInputFormatChangedEvents
 from_video_input_format_changed_events(VideoInputFormatChangedEvents flags) {
   BMDVideoInputFormatChangedEvents bmd_flags = 0;
