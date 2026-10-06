@@ -100,6 +100,7 @@ mod ffi {
         type VideoInputConversionMode = crate::enums::ffi::VideoInputConversionMode;
         type VideoInputFormatChangedEvents = crate::enums::ffi::VideoInputFormatChangedEvents;
         type DetectedVideoInputFormatFlags = crate::enums::ffi::DetectedVideoInputFormatFlags;
+        type FrameFlags = crate::enums::ffi::FrameFlags;
 
         type SupportedVideoModeFlags = crate::enums::ffi::SupportedVideoModeFlags;
         type VideoInputFlags = crate::enums::ffi::VideoInputFlags;
@@ -279,6 +280,7 @@ mod ffi {
         unsafe fn video_input_frame_pixel_format(
             input: *mut IDeckLinkVideoInputFrame,
         ) -> Result<PixelFormat>;
+        unsafe fn video_input_frame_flags(input: *mut IDeckLinkVideoInputFrame) -> FrameFlags;
         unsafe fn video_input_frame_stream_time(
             input: *mut IDeckLinkVideoInputFrame,
             time_scale: i64,

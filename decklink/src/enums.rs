@@ -493,6 +493,15 @@ pub mod ffi {
     }
 
     #[derive(Debug, Copy, Clone, Default)]
+    pub struct FrameFlags {
+        pub flip_vertical: bool,
+        pub contains_hdr_metadata: bool,
+        pub contains_dolby_vision_metadata: bool,
+        pub captured_as_psf: bool,
+        pub has_no_input_source: bool,
+    }
+
+    #[derive(Debug, Copy, Clone, Default)]
     pub struct VideoInputFormatChangedEvents {
         pub display_mode_changed: bool,
         pub field_dominance_changed: bool,
