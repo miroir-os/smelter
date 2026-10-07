@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use smelter_render::Frame;
 
 use crate::{
     pipeline::decoder::{

@@ -1,7 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use gpu_video::{EncodedInputChunk, H264DecoderEvent, quicksync::h264::WgpuTexturesDecoderH264};
-use smelter_render::{Frame, FrameData, Resolution};
+use smelter_render::{FrameData, Resolution};
 use tracing::{debug, trace, warn};
 
 use crate::{
@@ -54,7 +54,7 @@ fn frames_from_gpu_video_nv12(
                     height: data.height() as usize,
                 },
                 data: FrameData::Nv12WgpuTexture(data.into()),
-                pts: Duration::from_micros(metadata.pts.expect(MISSING_PTS)),
+                pts: Timestamp::from_micros(metadata.pts.expect(MISSING_PTS) as i64),
             }
         })
         .collect()

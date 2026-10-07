@@ -122,7 +122,7 @@ impl QuickSyncH264Encoder {
         };
         EncodedOutputChunk {
             data,
-            pts: Duration::from_micros(frame.pts),
+            pts: Timestamp::from_micros(frame.pts as i64),
             dts: None,
             is_keyframe: frame.is_keyframe,
             kind: MediaKind::Video(VideoCodec::H264),
