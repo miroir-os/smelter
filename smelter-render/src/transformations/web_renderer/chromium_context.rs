@@ -136,6 +136,8 @@ impl libcef::App for ChromiumApp {
         }
 
         command_line.append_switch("disable-dev-shm-usage");
+        // Rendered pages are served locally over self-signed TLS, for HTTP/2.
+        command_line.append_switch("ignore-certificate-errors");
         command_line.append_switch("disable-gpu-shader-disk-cache");
         command_line.append_switch_with_value("autoplay-policy", "no-user-gesture-required");
     }
