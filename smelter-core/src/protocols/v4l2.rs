@@ -10,6 +10,10 @@ pub struct V4l2InputOptions {
     pub resolution: Option<Resolution>,
     pub format: V4l2Format,
     pub framerate: Option<Framerate>,
+    /// Capture into host memory the GPU copies from, so the CPU never copies
+    /// frames. Requires a video side channel, a GPU that can read host memory,
+    /// and YUYV frames whose rows the GPU can copy.
+    pub zero_copy: bool,
     pub queue_options: QueueInputOptions,
 }
 
@@ -32,4 +36,17 @@ pub enum V4l2InputError {
 
     #[error("Device is set to an unsupported format: {0}.")]
     UnsupportedFormat(String),
+
+    #[error("Zero-copy capture requires a video side channel.")]
+    ZeroCopyWithoutSideChannel,
+
+    #[error("Zero-copy capture does not support {0:?} frames of {1} bytes per row.")]
+    ZeroCopyUnsupportedFormat(V4l2Format, u32),
+
+    #[error("The device can't capture into user memory, required by zero-copy capture.")]
+    ZeroCopyUnsupportedByDevice,
+
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    ZeroCopyHostMemory(#[from] gpu_video::HostMemoryError),
 }

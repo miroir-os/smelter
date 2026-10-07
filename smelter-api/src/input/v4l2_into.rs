@@ -16,6 +16,7 @@ impl TryFrom<V4l2Input> for core::RegisterInputOptions {
                 .framerate
                 .map(smelter_render::Framerate::try_from)
                 .transpose()?,
+            zero_copy: false,
             queue_options: core::QueueInputOptions {
                 required: value.required.unwrap_or(false),
                 video_side_channel: side_channel.video.unwrap_or(false).into(),

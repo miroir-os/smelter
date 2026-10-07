@@ -15,6 +15,8 @@ use crate::{
 
 use crate::prelude::*;
 
+use super::zero_copy::ZeroCopyStream;
+
 use v4l::{
     Format, FourCC,
     device::Handle,
@@ -75,13 +77,25 @@ impl V4l2Input {
     ) -> Result<(Input, InputInitInfo, QueueInput), InputInitError> {
         let device_config = V4l2DeviceConfig::initialize(&opts)?;
 
-        let stream =
-            MmapStream::with_buffers(&device_config.device, v4l::buffer::Type::VideoCapture, 4)
-                .map_err(V4l2InputError::IoError)?;
-
-        let frame_pre_processor = match &opts.queue_options.video_side_channel {
-            InputSideChannel::Disabled => None,
-            _ => Some(FramePreProcessor::new(ctx.wgpu_ctx.clone())),
+        let side_channel = !matches!(
+            opts.queue_options.video_side_channel,
+            InputSideChannel::Disabled
+        );
+        let buffers = match opts.zero_copy {
+            false => Buffers::Mmap {
+                stream: MmapStream::with_buffers(
+                    &device_config.device,
+                    v4l::buffer::Type::VideoCapture,
+                    4,
+                )
+                .map_err(V4l2InputError::IoError)?,
+                pre_processor: side_channel.then(|| FramePreProcessor::new(ctx.wgpu_ctx.clone())),
+            },
+            true if !side_channel => Err(V4l2InputError::ZeroCopyWithoutSideChannel)?,
+            true => Buffers::ZeroCopy(ZeroCopyStream::start(
+                &device_config.device,
+                ctx.wgpu_ctx.clone(),
+            )?),
         };
 
         let queue_input = QueueInput::new(&ctx, &input_ref, opts.queue_options);
@@ -103,15 +117,19 @@ impl V4l2Input {
             ctx,
             sender: video_sender,
             should_close: should_close.clone(),
-            stream,
-            frame_pre_processor,
         };
 
         std::thread::Builder::new()
             .name(format!("V4L2 reader thread for input {input_ref}"))
             .spawn(move || {
                 let _span = span!(Level::INFO, "V4L2", input_id = input_ref.to_string()).entered();
-                state.run();
+                match buffers {
+                    Buffers::Mmap {
+                        stream,
+                        pre_processor,
+                    } => state.run_mmap(stream, pre_processor),
+                    Buffers::ZeroCopy(stream) => state.run_zero_copy(stream),
+                }
                 info!("Stopping input.");
             })
             .unwrap();
@@ -279,18 +297,28 @@ impl V4l2DeviceConfig {
     }
 }
 
-struct InputState<'a> {
+enum Buffers {
+    Mmap {
+        stream: MmapStream<'static>,
+        /// Only set when a side channel is enabled (avoids duplicated processing).
+        pre_processor: Option<FramePreProcessor>,
+    },
+    ZeroCopy(ZeroCopyStream),
+}
+
+struct InputState {
     config: V4l2DeviceConfig,
     ctx: Arc<PipelineCtx>,
     should_close: Arc<AtomicBool>,
     sender: QueueSender<Frame>,
-    stream: v4l::io::mmap::Stream<'a>,
-    /// Only set when a side channel is enabled (avoids duplicated processing).
-    frame_pre_processor: Option<FramePreProcessor>,
 }
 
-impl InputState<'_> {
-    fn run(&mut self) {
+impl InputState {
+    fn run_mmap(
+        &mut self,
+        mut stream: MmapStream<'static>,
+        mut frame_pre_processor: Option<FramePreProcessor>,
+    ) {
         let handle = self.config.device.handle();
         // the library recommends to skip the first frame
         let mut skip_first = true;
@@ -307,7 +335,7 @@ impl InputState<'_> {
                     continue;
                 }
             }
-            let frame = match self.stream.next() {
+            let frame = match stream.next() {
                 Ok((frame, _)) => frame,
                 Err(err) => {
                     warn!(%err, "Cannot receive frame.");
@@ -366,7 +394,7 @@ impl InputState<'_> {
                 data,
             };
 
-            let frame = match &mut self.frame_pre_processor {
+            let frame = match &mut frame_pre_processor {
                 Some(pre_processor) => Frame {
                     resolution: frame.resolution,
                     pts: frame.pts,
@@ -387,6 +415,32 @@ impl InputState<'_> {
             }
         }
     }
+
+    fn run_zero_copy(&mut self, mut stream: ZeroCopyStream) {
+        while !self.should_close.load(std::sync::atomic::Ordering::Relaxed) {
+            let texture = match stream.next() {
+                Ok(Some(texture)) => texture,
+                Ok(None) => continue,
+                Err(err) => {
+                    error!(%err, "Cannot receive frame, stopping.");
+                    return;
+                }
+            };
+            let frame = Frame {
+                pts: self.ctx.queue_ctx.sync_point.timestamp_now(),
+                resolution: stream.resolution(),
+                data: FrameData::Rgba8UnormWgpuTexture(texture),
+            };
+            match self.sender.try_send(frame) {
+                Ok(()) => (),
+                Err(TrySendError::Full(_)) => trace!("Dropping frame"),
+                Err(TrySendError::Disconnected(_)) => {
+                    debug!("Failed to send video chunk. Channel closed.");
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// Lets the reader notice it should close while no frame arrives.
@@ -394,7 +448,7 @@ const FRAME_TIMEOUT_MS: i32 = 500;
 
 /// Whether a frame can be dequeued without blocking. A device that isn't
 /// streaming yet reads as ready, so the first dequeue starts it.
-fn frame_ready(handle: &Handle) -> io::Result<bool> {
+pub(super) fn frame_ready(handle: &Handle) -> io::Result<bool> {
     match handle.poll(libc::POLLIN, FRAME_TIMEOUT_MS) {
         Ok(ready) => Ok(ready > 0),
         Err(err) if err.kind() == io::ErrorKind::Interrupted => Ok(false),

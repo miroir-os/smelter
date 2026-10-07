@@ -914,6 +914,7 @@ fn v4l2_minimal() {
             resolution: None,
             format: V4l2Format::Yuyv,
             framerate: None,
+            zero_copy: false,
             queue_options: default_queue(),
         }),
     );
@@ -941,6 +942,7 @@ fn v4l2_with_all_options() {
             }),
             format: V4l2Format::Nv12,
             framerate: Some(smelter_render::Framerate { num: 30, den: 1 }),
+            zero_copy: false,
             queue_options: QueueInputOptions {
                 required: true,
                 video_side_channel: true.into(),
@@ -970,6 +972,7 @@ fn v4l2_fractional_framerate() {
                 num: 30000,
                 den: 1001,
             }),
+            zero_copy: false,
             queue_options: default_queue(),
         }),
     );

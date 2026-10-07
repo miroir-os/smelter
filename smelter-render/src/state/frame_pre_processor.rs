@@ -28,6 +28,7 @@ pub struct BufferLayout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferFormat {
     InterleavedUyvy422,
+    InterleavedYuyv422,
     Bgra,
 }
 
