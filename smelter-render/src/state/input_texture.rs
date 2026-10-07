@@ -213,6 +213,10 @@ impl InputTexture {
                 BufferFormat::InterleavedUyvy422,
                 Some(InputTextureState::InterleavedUyvy422(input)),
             ) => input.copy_from_buffer(ctx, encoder, buffer, layout),
+            (
+                BufferFormat::InterleavedYuyv422,
+                Some(InputTextureState::InterleavedYuyv422(input)),
+            ) => input.copy_from_buffer(ctx, encoder, buffer, layout),
             (BufferFormat::Bgra, Some(InputTextureState::Bgra(input))) => {
                 input.copy_from_buffer(ctx, encoder, buffer, layout)
             }
@@ -220,6 +224,11 @@ impl InputTexture {
                 let mut input = InterleavedUyvy422Input::new(ctx);
                 input.copy_from_buffer(ctx, encoder, buffer, layout);
                 *state = Some(InputTextureState::InterleavedUyvy422(input));
+            }
+            (BufferFormat::InterleavedYuyv422, state) => {
+                let mut input = InterleavedYuyv422Input::new(ctx);
+                input.copy_from_buffer(ctx, encoder, buffer, layout);
+                *state = Some(InputTextureState::InterleavedYuyv422(input));
             }
             (BufferFormat::Bgra, state) => {
                 let mut input = BgraInput::new(ctx);
