@@ -6361,6 +6361,7 @@ dependencies = [
  "h264-reader",
  "hang",
  "itertools 0.14.0",
+ "libc",
  "memchr",
  "moq-msf",
  "moq-mux",
