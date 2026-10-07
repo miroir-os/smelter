@@ -14,7 +14,6 @@ use crate::{
 pub struct QuickSyncH264Decoder {
     decoder: WgpuTexturesDecoderH264,
     keyframe_request_sender: Option<KeyframeRequestSender>,
-    drop_frames: bool,
 }
 
 const MISSING_PTS: &str = "Intel Quick Sync H264 decoded frame must carry PTS";
@@ -36,7 +35,6 @@ impl VideoDecoder for QuickSyncH264Decoder {
         Ok(Self {
             decoder,
             keyframe_request_sender,
-            drop_frames: false,
         })
     }
 }
@@ -65,13 +63,10 @@ impl VideoDecoderInstance for QuickSyncH264Decoder {
         trace!(?event, "Intel Quick Sync H264 decoder received an event.");
 
         let decoder_event = match &event {
-            EncodedInputEvent::Chunk(chunk) => {
-                self.drop_frames = !chunk.present;
-                H264DecoderEvent::DecodeChunk(EncodedInputChunk {
-                    data: chunk.data.as_ref(),
-                    pts: Some(chunk.pts.as_micros() as u64),
-                })
-            }
+            EncodedInputEvent::Chunk(chunk) => H264DecoderEvent::DecodeChunk(EncodedInputChunk {
+                data: chunk.data.as_ref(),
+                pts: Some(chunk.pts.as_micros() as u64),
+            }),
             EncodedInputEvent::LostData => {
                 self.request_keyframe();
                 H264DecoderEvent::SignalDataLoss
@@ -88,11 +83,7 @@ impl VideoDecoderInstance for QuickSyncH264Decoder {
             }
         };
 
-        if self.drop_frames {
-            Vec::new()
-        } else {
-            frames_from_gpu_video_nv12(frames)
-        }
+        frames_from_gpu_video_nv12(frames)
     }
 
     fn flush(&mut self) -> Vec<Frame> {
@@ -104,11 +95,7 @@ impl VideoDecoderInstance for QuickSyncH264Decoder {
             }
         };
 
-        if self.drop_frames {
-            Vec::new()
-        } else {
-            frames_from_gpu_video_nv12(frames)
-        }
+        frames_from_gpu_video_nv12(frames)
     }
 }
 

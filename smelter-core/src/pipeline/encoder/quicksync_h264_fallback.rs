@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-
 use crate::{
     pipeline::encoder::{VideoEncoder, VideoEncoderConfig},
     prelude::*,
