@@ -1,4 +1,5 @@
 use std::{
+    io,
     path::Path,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -16,6 +17,7 @@ use crate::prelude::*;
 
 use v4l::{
     Format, FourCC,
+    device::Handle,
     frameinterval::FrameIntervalEnum,
     io::traits::CaptureStream,
     prelude::*,
@@ -289,6 +291,7 @@ struct InputState<'a> {
 
 impl InputState<'_> {
     fn run(&mut self) {
+        let handle = self.config.device.handle();
         // the library recommends to skip the first frame
         let mut skip_first = true;
         loop {
@@ -296,6 +299,14 @@ impl InputState<'_> {
                 return;
             }
 
+            match frame_ready(&handle) {
+                Ok(true) => (),
+                Ok(false) => continue,
+                Err(err) => {
+                    warn!(%err, "Cannot wait for a frame.");
+                    continue;
+                }
+            }
             let frame = match self.stream.next() {
                 Ok((frame, _)) => frame,
                 Err(err) => {
@@ -375,6 +386,19 @@ impl InputState<'_> {
                 }
             }
         }
+    }
+}
+
+/// Lets the reader notice it should close while no frame arrives.
+const FRAME_TIMEOUT_MS: i32 = 500;
+
+/// Whether a frame can be dequeued without blocking. A device that isn't
+/// streaming yet reads as ready, so the first dequeue starts it.
+fn frame_ready(handle: &Handle) -> io::Result<bool> {
+    match handle.poll(libc::POLLIN, FRAME_TIMEOUT_MS) {
+        Ok(ready) => Ok(ready > 0),
+        Err(err) if err.kind() == io::ErrorKind::Interrupted => Ok(false),
+        Err(err) => Err(err),
     }
 }
 
