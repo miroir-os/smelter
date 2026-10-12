@@ -5,12 +5,31 @@ use std::{fs, path::Path};
 /// Creates MacOS app bundle in the same directory as the main executable.
 /// Bundles `process_helper` into multiple subprocess bundles.
 /// Copies CEF and subprocess bundles to `Frameworks` directory.
-/// `process_helper` has to be built before the function is called
+/// `process_helper` has to be built before the function is called.
+/// Processes of one build share the bundle, rebuilt only for a new `process_helper`:
+/// macOS validates the signature of a freshly copied framework on its first load,
+/// about 1.5 s that it serializes across processes.
 #[cfg(target_os = "macos")]
 pub fn bundle_for_development(target_path: &Path) -> Result<()> {
     let current_exe = env::current_exe()?;
     let current_dir = current_exe.parent().unwrap();
     let bundle_path = current_dir.join("smelter.app");
+
+    let lock = fs::File::create(current_dir.join("smelter.app.lock"))?;
+    lock.lock()?;
+    let modified = |path: &Path| {
+        path.metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    };
+    let helper = modified(&target_path.join("process_helper"));
+    // The copy keeps the helper's modification time.
+    let bundled = modified(
+        &bundle_path.join("Contents/Frameworks/smelter Helper.app/Contents/MacOS/smelter Helper"),
+    );
+    if helper.is_some() && helper == bundled {
+        return Ok(());
+    }
 
     bundle_app(target_path, &bundle_path)?;
 
