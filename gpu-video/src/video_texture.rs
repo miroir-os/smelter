@@ -6,22 +6,17 @@ pub struct VideoTexture(Planes);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Planes {
-    #[cfg_attr(video_toolbox, expect(dead_code))]
     Single(wgpu::Texture),
-    Separated {
-        y: wgpu::Texture,
-        uv: wgpu::Texture,
-    },
+    Separated { y: wgpu::Texture, uv: wgpu::Texture },
 }
 
 impl VideoTexture {
-    #[cfg_attr(video_toolbox, expect(dead_code))]
-    pub(crate) fn from_nv12_texture(texture: wgpu::Texture) -> Self {
+    pub fn from_nv12_texture(texture: wgpu::Texture) -> Self {
         Self(Planes::Single(texture))
     }
 
-    #[cfg_attr(vulkan, expect(dead_code))]
-    pub(crate) fn from_planes(y_texture: wgpu::Texture, uv_texture: wgpu::Texture) -> Self {
+    /// An R8 texture for Y and an RG8 texture of half its size for UV.
+    pub fn from_planes(y_texture: wgpu::Texture, uv_texture: wgpu::Texture) -> Self {
         Self(Planes::Separated {
             y: y_texture,
             uv: uv_texture,

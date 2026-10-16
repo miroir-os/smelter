@@ -34,6 +34,11 @@ pub enum FrameData {
     InterleavedYuyv422(bytes::Bytes),
     Rgba8UnormWgpuTexture(wgpu::Texture),
     Nv12WgpuTexture(wgpu::Texture),
+    /// NV12 as a texture per plane, R8 for Y and RG8 for UV, where NV12 textures are unsupported.
+    Nv12WgpuPlanes {
+        y_plane: wgpu::Texture,
+        uv_plane: wgpu::Texture,
+    },
     Nv12(NvPlanes),
     Bgra(bytes::Bytes),
     Argb(bytes::Bytes),

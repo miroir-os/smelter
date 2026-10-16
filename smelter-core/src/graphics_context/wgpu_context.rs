@@ -80,6 +80,28 @@ pub fn create_wgpu_graphics_ctx(
         return Err(CreateGraphicsContextError::NoAdapter);
     }
 
+    // VideoToolbox decodes and encodes in Metal textures of a device created through gpu-video.
+    #[cfg(all(feature = "gpu-video", target_vendor = "apple"))]
+    if let Some(adapter_info) = gpu_video::VideoAdapterExt::video_adapter_info(&adapter) {
+        let (device, queue) = gpu_video::VideoAdapterExt::request_device_with_video_support(
+            &adapter,
+            &gpu_video::parameters::VideoDeviceDescriptor {
+                wgpu_features: required_features,
+                wgpu_experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
+                wgpu_limits: set_required_wgpu_limits(limits),
+            },
+        )?;
+        return Ok(GraphicsContext {
+            device,
+            queue,
+            adapter,
+            instance,
+            vulkan_ctx: Some(super::VulkanCtx {
+                adapter_info: adapter_info.into(),
+            }),
+        });
+    }
+
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: None,
         required_limits: set_required_wgpu_limits(limits),

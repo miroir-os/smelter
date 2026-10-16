@@ -1,5 +1,5 @@
 use crate::{
-    NvPlanes, Resolution,
+    FrameData, NvPlanes, Resolution,
     scene::RGBColor,
     wgpu::{
         WgpuCtx,
@@ -24,6 +24,14 @@ pub struct NV12TextureViewCreateError {
 
 impl NV12Texture {
     pub fn new(ctx: &WgpuCtx, resolution: Resolution) -> Self {
+        // Metal has no NV12 textures.
+        if !ctx
+            .device
+            .features()
+            .contains(wgpu::Features::TEXTURE_FORMAT_NV12)
+        {
+            return Self::new_uploadable(ctx, resolution);
+        }
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::COPY_DST
@@ -69,8 +77,6 @@ impl NV12Texture {
             &[],
         );
 
-        let view_y = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
         let secondary_texture = new_texture(
             &ctx.device,
             Some("nv12 uv plane texture"),
@@ -84,13 +90,25 @@ impl NV12Texture {
             &[],
         );
 
-        let view_uv = secondary_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Self::from_planes(texture, secondary_texture)
+    }
 
+    pub fn from_planes(y_plane: wgpu::Texture, uv_plane: wgpu::Texture) -> Self {
         Self {
-            texture,
-            secondary_texture: Some(secondary_texture),
-            view_y,
-            view_uv,
+            view_y: y_plane.create_view(&wgpu::TextureViewDescriptor::default()),
+            view_uv: uv_plane.create_view(&wgpu::TextureViewDescriptor::default()),
+            texture: y_plane,
+            secondary_texture: Some(uv_plane),
+        }
+    }
+
+    pub fn frame_data(&self) -> FrameData {
+        match &self.secondary_texture {
+            None => FrameData::Nv12WgpuTexture(self.texture.clone()),
+            Some(uv_plane) => FrameData::Nv12WgpuPlanes {
+                y_plane: self.texture.clone(),
+                uv_plane: uv_plane.clone(),
+            },
         }
     }
 
