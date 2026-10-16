@@ -109,7 +109,7 @@ pub(super) fn read_outputs(
 
                     let frame = Frame {
                         resolution: *resolution,
-                        data: FrameData::Nv12WgpuTexture(texture.texture().clone()),
+                        data: texture.frame_data(),
                         pts,
                     };
                     partial_textures.push(PartialOutputFrame::CompleteFrame {
@@ -159,7 +159,7 @@ pub(super) fn read_outputs(
                     partial_textures.push(PartialOutputFrame::CompleteFrame {
                         output_id: output_id.clone(),
                         frame: Frame {
-                            data: FrameData::Nv12WgpuTexture(texture.texture().clone()),
+                            data: texture.frame_data(),
                             resolution: *resolution,
                             pts,
                         },
