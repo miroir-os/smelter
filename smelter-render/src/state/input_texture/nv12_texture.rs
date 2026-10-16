@@ -3,10 +3,7 @@ use tracing::error;
 use crate::{
     NvPlanes, RenderingMode, Resolution,
     state::node_texture::NodeTextureState,
-    wgpu::{
-        WgpuCtx,
-        texture::{NV12Texture, NV12TextureViewCreateError},
-    },
+    wgpu::{WgpuCtx, texture::NV12Texture},
 };
 
 use super::convert_linear_to_srgb::RgbToSrgbConverter;
@@ -18,22 +15,18 @@ pub(super) struct NV12Input {
 }
 
 impl NV12Input {
-    pub fn new_from_texture(
-        ctx: &WgpuCtx,
-        texture: wgpu::Texture,
-    ) -> Result<Self, NV12TextureViewCreateError> {
-        let size = texture.size();
-        let nv12_texture = NV12Texture::from_wgpu_texture(texture)?;
+    pub fn new_from_texture(ctx: &WgpuCtx, nv12_texture: NV12Texture) -> Self {
+        let size = nv12_texture.texture().size();
         let color_space_converter = match ctx.mode {
             RenderingMode::WebGl => Some(RgbToSrgbConverter::new(ctx, size.into())),
             _ => None,
         };
         let bind_group = nv12_texture.new_bind_group(ctx);
-        Ok(Self {
+        Self {
             nv12_texture,
             color_space_converter,
             bind_group,
-        })
+        }
     }
 
     pub fn new_uploadable(ctx: &WgpuCtx, resolution: Resolution) -> Self {
@@ -54,12 +47,8 @@ impl NV12Input {
         self.nv12_texture.texture().size().into()
     }
 
-    pub fn update(
-        &mut self,
-        ctx: &WgpuCtx,
-        texture: wgpu::Texture,
-    ) -> Result<(), NV12TextureViewCreateError> {
-        self.nv12_texture = NV12Texture::from_wgpu_texture(texture)?;
+    pub fn update(&mut self, ctx: &WgpuCtx, nv12_texture: NV12Texture) {
+        self.nv12_texture = nv12_texture;
         self.bind_group = self.nv12_texture.new_bind_group(ctx);
         match (ctx.mode, &self.color_space_converter) {
             (RenderingMode::WebGl, Some(converter))
@@ -72,7 +61,6 @@ impl NV12Input {
             }
             _ => (),
         };
-        Ok(())
     }
 
     pub fn upload(&mut self, ctx: &WgpuCtx, planes: NvPlanes, resolution: Resolution) {

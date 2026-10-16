@@ -4,7 +4,7 @@ use std::{
 };
 
 use gpu_video::{
-    InputFrame, VideoDeviceExt, WgpuTexturesEncoderH264,
+    InputFrame, VideoDeviceExt, VideoTexture, WgpuTexturesEncoderH264,
     parameters::{EncoderParametersH264, RateControl, Rational, VideoParameters},
 };
 use smelter_render::{FrameData, OutputFrameFormat, WgpuCtx};
@@ -141,9 +141,15 @@ impl VideoEncoder for VulkanH264Encoder {
     }
 
     fn encode(&mut self, frame: Frame, force_keyframe: bool) -> Vec<EncodedOutputChunk> {
-        let FrameData::Nv12WgpuTexture(texture) = frame.data else {
-            error!("Unsupported pixel format {:?}. Dropping frame.", frame.data);
-            return self.collect_chunks();
+        let source = match frame.data {
+            FrameData::Nv12WgpuTexture(texture) => VideoTexture::from_nv12_texture(texture),
+            FrameData::Nv12WgpuPlanes { y_plane, uv_plane } => {
+                VideoTexture::from_planes(y_plane, uv_plane)
+            }
+            data => {
+                error!("Unsupported pixel format {data:?}. Dropping frame.");
+                return self.collect_chunks();
+            }
         };
 
         let input_texture = match self.encoder.input_texture() {
@@ -162,15 +168,7 @@ impl VideoEncoder for VulkanH264Encoder {
                     label: Some("Vulkan H264 encoder input copy"),
                 });
 
-        let Some(destination) = input_texture.texture().nv12_texture() else {
-            error!("Encoder input texture is not an NV12 texture. Dropping frame.");
-            return self.collect_chunks();
-        };
-        command_encoder.copy_texture_to_texture(
-            texture.as_image_copy(),
-            destination.as_image_copy(),
-            texture.size(),
-        );
+        source.copy_to(&mut command_encoder, input_texture.texture());
         self.wgpu_ctx.queue.submit([command_encoder.finish()]);
 
         let result = self.encoder.encode(

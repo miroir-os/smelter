@@ -130,7 +130,7 @@ impl OutputTexture {
                 }
                 PartialOutputFrame::CompleteFrame(Frame {
                     resolution,
-                    data: FrameData::Nv12WgpuTexture(texture.texture().clone()),
+                    data: texture.frame_data(),
                     pts,
                 })
             }

@@ -1,6 +1,6 @@
 use crate::graphics_context::wgpu_context::{BoxableHasDisplayHandle, create_wgpu_graphics_ctx};
 
-#[cfg(feature = "gpu-video")]
+#[cfg(all(feature = "gpu-video", not(target_vendor = "apple")))]
 pub mod vulkan_context;
 pub mod wgpu_context;
 
@@ -34,7 +34,7 @@ pub struct GraphicsContextOptions<'a> {
 }
 
 impl GraphicsContext {
-    #[cfg(feature = "gpu-video")]
+    #[cfg(all(feature = "gpu-video", not(target_vendor = "apple")))]
     pub fn new(opts: GraphicsContextOptions) -> Result<Self, CreateGraphicsContextError> {
         use crate::graphics_context::vulkan_context::create_vulkan_graphics_ctx;
         use tracing::warn;
@@ -50,7 +50,7 @@ impl GraphicsContext {
         }
     }
 
-    #[cfg(not(feature = "gpu-video"))]
+    #[cfg(any(not(feature = "gpu-video"), target_vendor = "apple"))]
     pub fn new(opts: GraphicsContextOptions) -> Result<Self, CreateGraphicsContextError> {
         create_wgpu_graphics_ctx(opts)
     }
@@ -126,7 +126,7 @@ pub enum CreateGraphicsContextError {
     #[error("Failed to get a wgpu device.")]
     NoWgpuDevice(#[from] wgpu::RequestDeviceError),
 
-    #[cfg(feature = "gpu-video")]
+    #[cfg(all(feature = "gpu-video", not(target_vendor = "apple")))]
     #[error(transparent)]
     VideoInstanceInitError(#[from] gpu_video::backends::vulkan::VulkanInstanceInitError),
 
