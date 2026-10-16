@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::thread::JoinHandle;
 
 use tracing::{Level, error, span};
 
@@ -16,6 +18,11 @@ mod format;
 
 // sample rate returned from DeckLink
 const AUDIO_SAMPLE_RATE: u32 = 48_000;
+
+/// Each device's release still running, by persistent id: the driver
+/// refuses to enable a device while its previous input disables.
+static RELEASES: LazyLock<Mutex<HashMap<i64, JoinHandle<()>>>> =
+    LazyLock::new(Default::default);
 
 /// DeckLink input - captures raw video (and optionally audio) from a Blackmagic
 /// DeckLink capture card via the DeckLink SDK callback interface.
@@ -44,6 +51,7 @@ const AUDIO_SAMPLE_RATE: u32 = 48_000;
 ///   queue too late and dropped
 pub struct DeckLink {
     input: Arc<decklink::Input>,
+    persistent_id: Option<i64>,
 }
 
 impl DeckLink {
@@ -57,11 +65,18 @@ impl DeckLink {
             "DeckLink input",
             input_id = input_ref.to_string()
         );
-        let input = Arc::new(
-            find_decklink(&opts)?
-                .input()
-                .map_err(DeckLinkInputError::DecklinkError)?,
-        );
+        let decklink = find_decklink(&opts)?;
+        let persistent_id = decklink
+            .profile_attributes()
+            .and_then(|attributes| {
+                attributes.get_integer(decklink::IntegerAttributeId::PersistentID)
+            })
+            .map_err(DeckLinkInputError::DecklinkError)?;
+        let release = persistent_id.and_then(|id| RELEASES.lock().unwrap().remove(&id));
+        if let Some(release) = release {
+            let _ = release.join();
+        }
+        let input = Arc::new(decklink.input().map_err(DeckLinkInputError::DecklinkError)?);
         let initial_mode = decklink::DisplayModeType::ModeHD720p50;
         let initial_pixel_format = opts
             .pixel_format
@@ -111,7 +126,7 @@ impl DeckLink {
             .map_err(DeckLinkInputError::DecklinkError)?;
 
         Ok((
-            Input::DeckLink(Self { input }),
+            Input::DeckLink(Self { input, persistent_id }),
             InputInitInfo::Other,
             queue_input,
         ))
@@ -119,9 +134,22 @@ impl DeckLink {
 }
 
 impl Drop for DeckLink {
+    /// Releasing an input disables its video, which the driver takes ~0.5 s
+    /// to do, on a thread of its own: the input drops under the pipeline
+    /// lock, which the render and audio mixer threads take every frame.
     fn drop(&mut self) {
-        if let Err(err) = self.input.stop_streams() {
-            error!("Failed to stop streams: {:?}", err);
+        let input = self.input.clone();
+        let release = std::thread::Builder::new()
+            .name("decklink-release".into())
+            .spawn(move || {
+                if let Err(err) = input.stop_streams() {
+                    error!("Failed to stop streams: {:?}", err);
+                }
+                drop(input);
+            })
+            .expect("spawn DeckLink release");
+        if let Some(id) = self.persistent_id {
+            RELEASES.lock().unwrap().insert(id, release);
         }
     }
 }
