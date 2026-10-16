@@ -8,7 +8,10 @@ use crate::{
     state::input_texture::{
         argb::ArgbInput, bgra::BgraInput, interleaved_yuyv422::InterleavedYuyv422Input,
     },
-    wgpu::{WgpuCtx, texture::PlanarYuvVariant},
+    wgpu::{
+        WgpuCtx,
+        texture::{NV12Texture, PlanarYuvVariant},
+    },
 };
 
 use super::node_texture::NodeTexture;
@@ -94,14 +97,12 @@ impl InputTexture {
                     )))
                 }
             },
-            FrameData::Nv12WgpuTexture(texture) => match &mut self.0 {
-                Some(InputTextureState::Nv12(input)) => input.update(ctx, texture).unwrap(),
-                state => {
-                    *state = Some(InputTextureState::Nv12(
-                        NV12Input::new_from_texture(ctx, texture).unwrap(),
-                    ))
-                }
-            },
+            FrameData::Nv12WgpuTexture(texture) => {
+                self.nv12_texture(ctx, NV12Texture::from_wgpu_texture(texture).unwrap())
+            }
+            FrameData::Nv12WgpuPlanes { y_plane, uv_plane } => {
+                self.nv12_texture(ctx, NV12Texture::from_planes(y_plane, uv_plane))
+            }
         }
     }
 
@@ -145,6 +146,17 @@ impl InputTexture {
         ) {
             InputTextureState::PlanarYuv(input) => input.upload(ctx, planes, variant, resolution),
             _ => unreachable!(),
+        }
+    }
+
+    fn nv12_texture(&mut self, ctx: &WgpuCtx, texture: NV12Texture) {
+        match &mut self.0 {
+            Some(InputTextureState::Nv12(input)) => input.update(ctx, texture),
+            state => {
+                *state = Some(InputTextureState::Nv12(NV12Input::new_from_texture(
+                    ctx, texture,
+                )))
+            }
         }
     }
 

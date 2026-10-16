@@ -30,5 +30,4 @@ pub type NV12Texture = nv12::NV12Texture;
 pub type PlanarYuvVariant = planar_yuv::YuvVariant;
 
 pub use base::TextureExt;
-pub use nv12::NV12TextureViewCreateError;
 pub use planar_yuv::YuvPendingDownload as PlanarYuvPendingDownload;
