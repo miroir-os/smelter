@@ -6,12 +6,13 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 const CEF_VERSION: &str = "154.0.34+g14c5a08+chromium-154.0.8037.98";
 
 fn main() -> Result<()> {
+    let started = SystemTime::now();
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=CEF_ROOT");
 
@@ -39,7 +40,13 @@ fn main() -> Result<()> {
         .context("deps build directory not found")?
         .parent()
         .context("target build directory not found")?;
-    let bindings = prepare(&cef_root, target_path)?;
+    // Builds of other CEF versions share the target directory: when one of them
+    // replaces its frameworks, a cached build of this one has to put its own back.
+    println!(
+        "cargo:rerun-if-changed={}",
+        target_path.join("cef_root_path").display()
+    );
+    let bindings = prepare(&cef_root, target_path, started)?;
     bindings.write_to_file(PathBuf::from(".").join("src").join("bindings.rs"))?;
 
     link(&cef_root, target_path);
@@ -48,7 +55,7 @@ fn main() -> Result<()> {
 }
 
 #[allow(unused_variables)]
-fn prepare(cef_root: &Path, target_path: &Path) -> Result<bindgen::Bindings> {
+fn prepare(cef_root: &Path, target_path: &Path, started: SystemTime) -> Result<bindgen::Bindings> {
     let bindings = bindgen::Builder::default()
         .header("wrapper.h")
         .clang_arg(format!("-I{}", cef_root.display()))
@@ -105,7 +112,12 @@ fn prepare(cef_root: &Path, target_path: &Path) -> Result<bindgen::Bindings> {
     }
 
     if cef_root_changed {
-        fs::write(cef_root_marker_path, cef_root_path)?;
+        fs::write(&cef_root_marker_path, cef_root_path)?;
+        // Dated before this run, which would otherwise rerun for its own write.
+        fs::File::options()
+            .write(true)
+            .open(&cef_root_marker_path)?
+            .set_modified(started - Duration::from_secs(1))?;
     }
 
     Ok(bindings)
