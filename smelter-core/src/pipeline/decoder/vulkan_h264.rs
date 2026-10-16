@@ -7,7 +7,7 @@ use gpu_video::{
     parameters::{CorruptedStateHandling, DecoderParameters, DecoderUsage},
 };
 use smelter_render::{FrameData, Resolution};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::pipeline::decoder::{
     EncodedInputEvent, KeyframeRequestSender, VideoDecoder, VideoDecoderInstance,
@@ -101,14 +101,11 @@ impl VideoDecoderInstance for VulkanH264Decoder {
 
 impl VulkanH264Decoder {
     fn drain_decoded_frames(&self) -> Vec<Frame> {
-        self.frame_receiver
-            .try_iter()
-            .filter_map(from_vk_frame)
-            .collect()
+        self.frame_receiver.try_iter().map(from_vk_frame).collect()
     }
 }
 
-fn from_vk_frame(frame: gpu_video::OutputFrame<VideoTexture>) -> Option<Frame> {
+fn from_vk_frame(frame: gpu_video::OutputFrame<VideoTexture>) -> Frame {
     let gpu_video::OutputFrame { data, metadata } = frame;
     let resolution = Resolution {
         width: data.width() as usize,
@@ -116,15 +113,18 @@ fn from_vk_frame(frame: gpu_video::OutputFrame<VideoTexture>) -> Option<Frame> {
     };
     let pts = Timestamp::from_micros(metadata.pts.unwrap() as i64);
 
-    let Some(texture) = data.nv12_texture() else {
-        error!("H264 Vulkan decoder produced a frame with separated planes. Dropping frame.");
-        return None;
+    let data = match data.nv12_texture() {
+        Some(texture) => FrameData::Nv12WgpuTexture(texture.clone()),
+        None => FrameData::Nv12WgpuPlanes {
+            y_plane: data.y_plane().texture().clone(),
+            uv_plane: data.uv_plane().texture().clone(),
+        },
     };
 
     trace!(?pts, "H264 Vulkan decoder produced a frame.");
-    Some(Frame {
-        data: FrameData::Nv12WgpuTexture(texture.clone()),
+    Frame {
+        data,
         pts,
         resolution,
-    })
+    }
 }
