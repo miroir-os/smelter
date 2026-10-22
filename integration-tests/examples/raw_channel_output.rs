@@ -82,6 +82,7 @@ fn main() {
     };
 
     let input_options = RegisterInputOptions::Mp4(Mp4InputOptions {
+        alpha_track: false,
         source: Mp4InputSource::File(
             TestSample::BigBuckBunnyH264AAC
                 .ensure_path()
