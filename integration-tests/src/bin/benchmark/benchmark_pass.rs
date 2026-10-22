@@ -297,6 +297,7 @@ impl SingleBenchmarkPass {
             pipeline,
             input_id.clone(),
             RegisterInputOptions::Mp4(Mp4InputOptions {
+                alpha_track: false,
                 should_loop: true,
                 video_decoders: Mp4InputVideoDecoders {
                     h264: Some(self.decoder),

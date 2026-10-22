@@ -521,6 +521,7 @@ fn mp4_with_url() {
             }
         }),
         CoreInput::Mp4(Mp4InputOptions {
+            alpha_track: false,
             source: Mp4InputSource::Url(Arc::from("https://example.com/video.mp4")),
             should_loop: false,
             video_decoders: Mp4InputVideoDecoders { h264: None },
@@ -540,6 +541,7 @@ fn mp4_with_path() {
             }
         }),
         CoreInput::Mp4(Mp4InputOptions {
+            alpha_track: false,
             source: Mp4InputSource::File(Arc::from(Path::new("/tmp/video.mp4"))),
             should_loop: false,
             video_decoders: Mp4InputVideoDecoders { h264: None },
@@ -567,6 +569,7 @@ fn mp4_with_all_options() {
             }
         }),
         CoreInput::Mp4(Mp4InputOptions {
+            alpha_track: false,
             source: Mp4InputSource::Url(Arc::from("https://example.com/video.mp4")),
             should_loop: true,
             video_decoders: Mp4InputVideoDecoders {
@@ -596,6 +599,7 @@ fn mp4_vulkan_decoder() {
             }
         }),
         CoreInput::Mp4(Mp4InputOptions {
+            alpha_track: false,
             source: Mp4InputSource::File(Arc::from(Path::new("/tmp/video.mp4"))),
             should_loop: false,
             video_decoders: Mp4InputVideoDecoders {

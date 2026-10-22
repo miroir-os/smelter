@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     fs::File,
     path::Path,
     sync::Arc,
@@ -7,7 +8,7 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, unbounded};
-use smelter_render::error::ErrorStack;
+use smelter_render::{AlphaPlane, FrameData, error::ErrorStack};
 use tracing::{Level, debug, error, span, trace, warn};
 
 use crate::{
@@ -108,16 +109,37 @@ impl Mp4Input {
             }),
         };
 
-        let video_track = Mp4FileReader::from_path(&source_file.path)?.try_new_h264_track();
-        let video_duration = video_track.as_ref().and_then(|track| track.duration());
+        let color_track = Mp4FileReader::from_path(&source_file.path)?.try_new_h264_track(0);
+        let video_tracks = match (color_track, options.alpha_track) {
+            (None, false) => None,
+            (Some(color), false) => Some(VideoTracks::Opaque(color)),
+            (color, true) => {
+                let alpha = Mp4FileReader::from_path(&source_file.path)?
+                    .try_new_h264_track(1)
+                    .ok_or(Mp4InputError::NoAlphaTrack)?;
+                let color = color.ok_or(Mp4InputError::NoTrack)?;
+                if !color.pairs_with(&alpha) {
+                    return Err(Mp4InputError::AlphaTrackMismatch.into());
+                }
+                Some(VideoTracks::WithAlpha {
+                    color,
+                    alpha: Box::new(alpha),
+                })
+            }
+        };
+        let video_duration = video_tracks
+            .as_ref()
+            .and_then(|tracks| tracks.color().duration());
         let audio_track = Mp4FileReader::from_path(&source_file.path)?.try_new_aac_track();
         let audio_duration = audio_track.as_ref().and_then(|track| track.duration());
 
-        if video_track.is_none() && audio_track.is_none() {
+        if video_tracks.is_none() && audio_track.is_none() {
             return Err(Mp4InputError::NoTrack.into());
         }
 
-        if let Some(DecoderOptions::H264(_)) = video_track.as_ref().map(|t| t.decoder_options())
+        if let Some(DecoderOptions::H264(_)) = video_tracks
+            .as_ref()
+            .map(|tracks| tracks.color().decoder_options())
             && options.video_decoders.h264 == Some(VideoDecoderOptions::VulkanH264)
             && !ctx.graphics_context.has_vulkan_decoder_support()
         {
@@ -128,7 +150,7 @@ impl Mp4Input {
 
         let queue_input = QueueInput::new(&ctx, &input_ref, options.queue_options.clone());
         let (video_sender, audio_sender) = queue_input.queue_new_track(QueueTrackOptions {
-            video: video_track.is_some(),
+            video: video_tracks.is_some(),
             audio: audio_track.is_some(),
             offset: match options.offset {
                 Some(offset) => QueueTrackOffset::FromStart(offset),
@@ -157,8 +179,8 @@ impl Mp4Input {
             queue_input.downgrade(),
         );
 
-        if let (Some(track), Some(sender)) = (video_track, video_sender) {
-            reader.spawn_video(track, sender, initial_seek)?;
+        if let (Some(tracks), Some(sender)) = (video_tracks, video_sender) {
+            reader.spawn_video(tracks, sender, initial_seek)?;
         }
         if let (Some(track), Some(sender)) = (audio_track, audio_sender) {
             reader.spawn_audio(track, sender, initial_seek)?;
@@ -219,6 +241,37 @@ enum StateEvent {
     InputShutdown,
 }
 
+/// The video of an MP4 input: its track, with the track its alpha is coded in.
+enum VideoTracks {
+    Opaque(Track<File>),
+    WithAlpha {
+        color: Track<File>,
+        alpha: Box<Track<File>>,
+    },
+}
+
+impl VideoTracks {
+    fn color(&self) -> &Track<File> {
+        match self {
+            VideoTracks::Opaque(color) | VideoTracks::WithAlpha { color, .. } => color,
+        }
+    }
+}
+
+/// `VideoTracks` with the decoders their chunks go to.
+enum VideoReading {
+    Opaque {
+        track: Track<File>,
+        decoder: DecoderThreadHandle,
+    },
+    WithAlpha {
+        color: Track<File>,
+        alpha: Box<Track<File>>,
+        color_decoder: DecoderThreadHandle,
+        alpha_decoder: DecoderThreadHandle,
+    },
+}
+
 #[derive(Clone)]
 struct TrackContext {
     event_sender: crossbeam_channel::Sender<StateEvent>,
@@ -233,7 +286,7 @@ struct TrackManagerThread {
     events_receiver: Receiver<StateEvent>,
     input_shutdown_condition: ShutdownCondition,
     track_ctx: TrackContext,
-    video_thread: Option<(JoinHandle<Track<File>>, ShutdownCondition)>,
+    video_thread: Option<(JoinHandle<VideoTracks>, ShutdownCondition)>,
     audio_thread: Option<(JoinHandle<Track<File>>, ShutdownCondition)>,
     chunk_buffer_duration: Duration,
     queue_input: WeakQueueInput,
@@ -293,9 +346,16 @@ impl TrackManagerThread {
                 }
                 StateEvent::ThreadFinished(thread_id) => {
                     // Loop restart is driven by the video track (audio if no video track).
-                    let primary_thread = self.video_thread.as_ref().or(self.audio_thread.as_ref());
+                    let primary_thread = (self
+                        .video_thread
+                        .as_ref()
+                        .map(|(handle, _)| handle.thread()))
+                    .or(self
+                        .audio_thread
+                        .as_ref()
+                        .map(|(handle, _)| handle.thread()));
                     let primary_finished =
-                        primary_thread.is_some_and(|(handle, _)| handle.thread().id() == thread_id);
+                        primary_thread.is_some_and(|thread| thread.id() == thread_id);
 
                     // when not looping do not break because user can still send seek request
                     if self.options.should_loop && primary_finished {
@@ -329,7 +389,7 @@ impl TrackManagerThread {
             cond.mark_for_shutdown()
         }
 
-        let video_track = self
+        let video_tracks = self
             .video_thread
             .take()
             .map(|(handle, _)| handle.join().unwrap());
@@ -338,8 +398,8 @@ impl TrackManagerThread {
             .take()
             .map(|(handle, _)| handle.join().unwrap());
 
-        if let (Some(track), Some(sender)) = (video_track, video_sender)
-            && let Err(err) = self.spawn_video(track, sender, seek)
+        if let (Some(tracks), Some(sender)) = (video_tracks, video_sender)
+            && let Err(err) = self.spawn_video(tracks, sender, seek)
         {
             warn!(
                 "Failed to start video thread: {}",
@@ -370,25 +430,46 @@ impl TrackManagerThread {
 
     fn spawn_video(
         &mut self,
-        track: Track<File>,
+        tracks: VideoTracks,
         frame_sender: QueueSender<Frame>,
         seek: Option<Duration>,
     ) -> Result<(), InputInitError> {
-        let decoder_handle = self.spawn_video_decoder_thread(&track, frame_sender)?;
-
         let shutdown_condition = self.input_shutdown_condition.child_condition();
         let track_thread = TrackThread {
             ctx: self.track_ctx.clone(),
             shutdown_condition: shutdown_condition.clone(),
-            track,
             seek,
+        };
+        let reading = match tracks {
+            VideoTracks::Opaque(track) => VideoReading::Opaque {
+                decoder: self.spawn_video_decoder_thread(&track, frame_sender)?,
+                track,
+            },
+            VideoTracks::WithAlpha { color, alpha } => {
+                let (color_sender, color_frames) = crossbeam_channel::bounded(1);
+                let (alpha_sender, alpha_frames) = crossbeam_channel::bounded(1);
+                let color_decoder =
+                    self.spawn_video_decoder_thread(&color, QueueSender::new(color_sender))?;
+                let alpha_decoder =
+                    self.spawn_video_decoder_thread(&alpha, QueueSender::new(alpha_sender))?;
+                std::thread::Builder::new()
+                    .name("mp4 alpha pairing".to_string())
+                    .spawn(move || pair_alpha(color_frames, alpha_frames, frame_sender))
+                    .unwrap();
+                VideoReading::WithAlpha {
+                    color,
+                    alpha,
+                    color_decoder,
+                    alpha_decoder,
+                }
+            }
         };
         let input_id = self.input_ref.to_string();
         let handle = std::thread::Builder::new()
             .name("mp4 reader - video".to_string())
             .spawn(move || {
                 let _span = span!(Level::INFO, "MP4 video", input_id = input_id).entered();
-                track_thread.run_video_thread(decoder_handle)
+                track_thread.read_video(reading)
             })
             .unwrap();
         self.video_thread = Some((handle, shutdown_condition));
@@ -407,7 +488,6 @@ impl TrackManagerThread {
         let track_thread = TrackThread {
             ctx: self.track_ctx.clone(),
             shutdown_condition: shutdown_condition.clone(),
-            track,
             seek,
         };
         let input_id = self.input_ref.to_string();
@@ -415,7 +495,7 @@ impl TrackManagerThread {
             .name("mp4 reader - audio".to_string())
             .spawn(move || {
                 let _span = span!(Level::INFO, "MP4 audio", input_id = input_id).entered();
-                track_thread.run_audio_thread(decoder_handle)
+                track_thread.read(track, decoder_handle)
             })
             .unwrap();
         self.audio_thread = Some((handle, shutdown_condition));
@@ -500,49 +580,62 @@ impl TrackManagerThread {
 struct TrackThread {
     ctx: TrackContext,
     shutdown_condition: ShutdownCondition,
-    track: Track<File>,
     seek: Option<Duration>,
 }
 
 impl TrackThread {
-    fn run_video_thread(mut self, decoder_handle: DecoderThreadHandle) -> Track<File> {
-        for (chunk, _duration) in self.track.chunks(self.seek) {
-            trace!(pts=?chunk.pts, "MP4 reader produced a video chunk.");
-            let chunk_sender = &decoder_handle.chunk_sender;
-            if !Self::try_send(
-                PipelineEvent::Data(EncodedInputEvent::Chunk(chunk)),
-                chunk_sender,
-                &self.shutdown_condition,
-            ) {
-                debug!("Failed to send a video chunk. Channel closed.");
+    fn read(self, mut track: Track<File>, decoder: DecoderThreadHandle) -> Track<File> {
+        for (chunk, _duration) in track.chunks(self.seek) {
+            trace!(pts=?chunk.pts, "MP4 reader produced a chunk.");
+            if !self.send(chunk, &decoder) {
+                debug!("Failed to send a chunk. Channel closed.");
                 break;
             }
         }
-        let _ = self
-            .ctx
-            .event_sender
-            .send(StateEvent::ThreadFinished(thread::current().id()));
-        self.track
+        self.finish();
+        track
     }
 
-    fn run_audio_thread(mut self, decoder_handle: DecoderThreadHandle) -> Track<File> {
-        for (chunk, _duration) in self.track.chunks(self.seek) {
-            trace!(pts=?chunk.pts, "MP4 reader produced an audio chunk.");
-            let chunk_sender = &decoder_handle.chunk_sender;
-            if !Self::try_send(
-                PipelineEvent::Data(EncodedInputEvent::Chunk(chunk)),
-                chunk_sender,
-                &self.shutdown_condition,
-            ) {
-                debug!("Failed to send a audio chunk. Channel closed.");
-                break;
+    fn read_video(self, reading: VideoReading) -> VideoTracks {
+        match reading {
+            VideoReading::Opaque { track, decoder } => {
+                VideoTracks::Opaque(self.read(track, decoder))
+            }
+            VideoReading::WithAlpha {
+                mut color,
+                mut alpha,
+                color_decoder,
+                alpha_decoder,
+            } => {
+                for ((color_chunk, _), (alpha_chunk, _)) in color.chunks_with(&mut alpha, self.seek)
+                {
+                    trace!(pts=?color_chunk.pts, "MP4 reader produced a chunk with its alpha.");
+                    if !self.send(color_chunk, &color_decoder)
+                        || !self.send(alpha_chunk, &alpha_decoder)
+                    {
+                        debug!("Failed to send a chunk. Channel closed.");
+                        break;
+                    }
+                }
+                self.finish();
+                VideoTracks::WithAlpha { color, alpha }
             }
         }
+    }
+
+    fn send(&self, chunk: EncodedInputChunk, decoder: &DecoderThreadHandle) -> bool {
+        Self::try_send(
+            PipelineEvent::Data(EncodedInputEvent::Chunk(chunk)),
+            &decoder.chunk_sender,
+            &self.shutdown_condition,
+        )
+    }
+
+    fn finish(&self) {
         let _ = self
             .ctx
             .event_sender
             .send(StateEvent::ThreadFinished(thread::current().id()));
-        self.track
     }
 
     fn try_send(
@@ -584,5 +677,61 @@ impl Drop for SourceFile {
         {
             error!("Error while removing the downloaded mp4 file: {e}");
         }
+    }
+}
+
+/// Forwards each color frame with the alpha frame of the same pts, as one frame. A frame whose
+/// partner its decoder lost is dropped; either decoder ending ends the video.
+fn pair_alpha(color: Receiver<Frame>, alpha: Receiver<Frame>, sender: QueueSender<Frame>) {
+    let (mut color_head, mut alpha_head) = (None, None);
+    loop {
+        let Some(color_frame) = color_head.take().or_else(|| color.recv().ok()) else {
+            return;
+        };
+        let Some(alpha_frame) = alpha_head.take().or_else(|| alpha.recv().ok()) else {
+            return;
+        };
+        match color_frame.pts.cmp(&alpha_frame.pts) {
+            Ordering::Less => {
+                warn!(pts=?color_frame.pts, "Dropping a frame without its alpha.");
+                alpha_head = Some(alpha_frame);
+            }
+            Ordering::Greater => {
+                warn!(pts=?alpha_frame.pts, "Dropping an alpha without its frame.");
+                color_head = Some(color_frame);
+            }
+            Ordering::Equal => {
+                let pts = alpha_frame.pts;
+                let Some(alpha) = alpha_plane(alpha_frame.data) else {
+                    warn!(
+                        ?pts,
+                        "Dropping a frame whose alpha has no limited-range luma."
+                    );
+                    continue;
+                };
+                let frame = Frame {
+                    data: FrameData::WithAlpha {
+                        color: Box::new(color_frame.data),
+                        alpha,
+                    },
+                    ..color_frame
+                };
+                if sender.send(frame).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn alpha_plane(data: FrameData) -> Option<AlphaPlane> {
+    match data {
+        FrameData::PlanarYuv420(planes)
+        | FrameData::PlanarYuv422(planes)
+        | FrameData::PlanarYuv444(planes) => Some(AlphaPlane::Bytes(planes.y_plane)),
+        FrameData::Nv12(planes) => Some(AlphaPlane::Bytes(planes.y_plane)),
+        FrameData::Nv12WgpuTexture(texture) => Some(AlphaPlane::Nv12Texture(texture)),
+        FrameData::Nv12WgpuPlanes { y_plane, .. } => Some(AlphaPlane::R8Texture(y_plane)),
+        _ => None,
     }
 }

@@ -80,21 +80,29 @@ impl<Reader: Read + Seek + Send + 'static> Mp4FileReader<Reader> {
         })
     }
 
-    pub fn try_new_h264_track(self) -> Option<Track<Reader>> {
-        let (&track_id, track, avc) = self.reader.tracks().iter().find_map(|(id, track)| {
-            let track_type = track.track_type().ok()?;
-            let media_type = track.media_type().ok()?;
-            let avc = track.avc1_or_3_inner();
+    /// The H.264 track at `index` in track id order.
+    pub fn try_new_h264_track(self, index: usize) -> Option<Track<Reader>> {
+        let mut tracks: Vec<_> = self
+            .reader
+            .tracks()
+            .iter()
+            .filter_map(|(id, track)| {
+                let track_type = track.track_type().ok()?;
+                let media_type = track.media_type().ok()?;
+                let avc = track.avc1_or_3_inner();
 
-            if track_type != mp4::TrackType::Video
-                || media_type != mp4::MediaType::H264
-                || avc.is_none()
-            {
-                return None;
-            }
+                if track_type != mp4::TrackType::Video
+                    || media_type != mp4::MediaType::H264
+                    || avc.is_none()
+                {
+                    return None;
+                }
 
-            avc.map(|avc| (id, track, avc))
-        })?;
+                avc.map(|avc| (id, track, avc))
+            })
+            .collect();
+        tracks.sort_by_key(|(id, _, _)| **id);
+        let (&track_id, track, avc) = tracks.into_iter().nth(index)?;
 
         let h264_config = H264AvcDecoderConfig {
             nalu_length_size: avc.avcc.length_size_minus_one as usize + 1,
@@ -181,31 +189,75 @@ pub(crate) struct Track<Reader: Read + Seek + Send + 'static> {
 
 impl<Reader: Read + Seek + Send + 'static> Track<Reader> {
     pub(crate) fn chunks(&mut self, seek: Option<Duration>) -> TrackChunks<'_, Reader> {
+        let start_index = self.find_seek_start_sample(self.media_seek(seek), |_| true);
+        self.chunks_from(seek, start_index)
+    }
+
+    /// This track's chunks with `alpha`'s, sample for sample, from the last sample at or before
+    /// `seek` that is a keyframe in both.
+    pub(crate) fn chunks_with<'a>(
+        &'a mut self,
+        alpha: &'a mut Self,
+        seek: Option<Duration>,
+    ) -> std::iter::Zip<TrackChunks<'a, Reader>, TrackChunks<'a, Reader>> {
+        let start_index = self
+            .find_seek_start_sample(self.media_seek(seek), |sample| alpha.is_sync_sample(sample));
+        self.chunks_from(seek, start_index)
+            .zip(alpha.chunks_from(seek, start_index))
+    }
+
+    /// Position on the raw media-sample timeline (the STTS-described timeline where
+    /// each stored sample has a fixed time) from which sample reading should start.
+    /// Computed so that any portion of `user_seek` that falls inside the leading
+    /// `presentation_delay` (black screen) is absorbed by that black screen instead
+    /// of being skipped over real samples. When `user_seek <= presentation_delay`
+    /// this collapses to `track_start_offset`, meaning "start at the very first
+    /// sample the `elst` box tells us to actually play"; excess seek beyond the
+    /// black screen advances further into media.
+    fn media_seek(&self, seek: Option<Duration>) -> Duration {
         let user_seek = seek.unwrap_or(Duration::ZERO);
+        self.track_start_offset + user_seek.saturating_sub(self.presentation_delay)
+    }
 
-        // Position on the raw media-sample timeline (the STTS-described timeline where
-        // each stored sample has a fixed time) from which sample reading should start.
-        // Computed so that any portion of `user_seek` that falls inside the leading
-        // `presentation_delay` (black screen) is absorbed by that black screen instead
-        // of being skipped over real samples. When `user_seek <= presentation_delay`
-        // this collapses to `track_start_offset`, meaning "start at the very first
-        // sample the `elst` box tells us to actually play"; excess seek beyond the
-        // black screen advances further into media.
-        let delayed_user_seek = user_seek.saturating_sub(self.presentation_delay);
-        let media_seek = self.track_start_offset + delayed_user_seek;
-
+    fn chunks_from(&mut self, seek: Option<Duration>, start_index: u32) -> TrackChunks<'_, Reader> {
         // Used in `sample_into_chunk` to shift each sample's pts so that the user's
         // seek point becomes pts 0. If the user seeks into the leading black screen
         // (user_seek < presentation_delay), the first real sample gets a positive pts
         // equal to the remaining black screen, which the pipeline fills with black.
-        let track_seek = self.track_start_offset + user_seek;
-
-        let start_index = self.find_seek_start_sample(media_seek);
+        let track_seek = self.track_start_offset + seek.unwrap_or(Duration::ZERO);
         TrackChunks {
             track: self,
             track_seek,
             next_sample_index: start_index,
         }
+    }
+
+    /// Whether `other` has this track's picture size, and presents its samples at this track's
+    /// sample times.
+    pub(super) fn pairs_with(&self, other: &Self) -> bool {
+        self.picture_and_timing() == other.picture_and_timing()
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn picture_and_timing(
+        &self,
+    ) -> (
+        (u16, u16),
+        u32,
+        &mp4::SttsBox,
+        &Option<mp4::CttsBox>,
+        Option<&mp4::ElstBox>,
+    ) {
+        let mp4_track = &self.reader.tracks()[&self.track_id];
+        let trak = &mp4_track.trak;
+        let stbl = &trak.mdia.minf.stbl;
+        (
+            (mp4_track.width(), mp4_track.height()),
+            self.timescale,
+            &stbl.stts,
+            &stbl.ctts,
+            trak.edts.as_ref().and_then(|edts| edts.elst.as_ref()),
+        )
     }
 
     pub(super) fn decoder_options(&self) -> &DecoderOptions {
@@ -220,9 +272,20 @@ impl<Reader: Read + Seek + Send + 'static> Track<Reader> {
         }
     }
 
-    /// Returns the index of the last sync sample before the given seek position
-    /// (for decoder warmup). If seek is past the end returns last_sample_idx + 1.
-    fn find_seek_start_sample(&self, seek: Duration) -> u32 {
+    fn is_sync_sample(&self, sample: u32) -> bool {
+        self.reader.tracks()[&self.track_id]
+            .trak
+            .mdia
+            .minf
+            .stbl
+            .stss
+            .as_ref()
+            .is_none_or(|stss| stss.entries.binary_search(&sample).is_ok())
+    }
+
+    /// Returns the index of the last sync sample before the given seek position that `also`
+    /// accepts (for decoder warmup). If seek is past the end returns last_sample_idx + 1.
+    fn find_seek_start_sample(&self, seek: Duration, also: impl Fn(u32) -> bool) -> u32 {
         let seek_timestamp = (seek.as_secs_f64() * self.timescale as f64) as u64;
         let track = &self.reader.tracks()[&self.track_id];
 
@@ -262,13 +325,18 @@ impl<Reader: Read + Seek + Send + 'static> Track<Reader> {
         match &stss {
             Some(stss) => {
                 let pos = stss.entries.partition_point(|&s| s <= present_from_index);
-
-                match pos {
-                    0 => 1, // No sync sample found, fall back to the first sample
-                    _ => *stss.entries.get(pos - 1).unwrap_or(&1),
-                }
+                // No sync sample found, fall back to the first sample
+                stss.entries[..pos]
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|&sample| also(sample))
+                    .unwrap_or(1)
             }
-            None => present_from_index,
+            None => (1..=present_from_index)
+                .rev()
+                .find(|&sample| also(sample))
+                .unwrap_or(1),
         }
     }
 }
