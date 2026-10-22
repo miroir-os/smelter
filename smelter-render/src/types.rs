@@ -42,6 +42,23 @@ pub enum FrameData {
     Nv12(NvPlanes),
     Bgra(bytes::Bytes),
     Argb(bytes::Bytes),
+    /// A picture whose alpha is coded as a separate picture: `color`, made transparent by `alpha`.
+    WithAlpha {
+        color: Box<FrameData>,
+        alpha: AlphaPlane,
+    },
+}
+
+/// The alpha of a frame, as the luma of a limited-range picture of the frame's resolution:
+/// luma 16 is transparent, 235 opaque.
+#[derive(Debug, Clone)]
+pub enum AlphaPlane {
+    /// Rows of one byte per pixel, tightly packed.
+    Bytes(bytes::Bytes),
+    /// An `R8Unorm` texture.
+    R8Texture(wgpu::Texture),
+    /// An `NV12` texture, of which the luma plane.
+    Nv12Texture(wgpu::Texture),
 }
 
 #[derive(Clone)]
