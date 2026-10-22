@@ -49,6 +49,7 @@ impl TryFrom<Mp4Input> for core::RegisterInputOptions {
             .map_err(|err| TypeError::new(format!("Invalid seek_ms. {err}")))?;
 
         Ok(core::RegisterInputOptions::Mp4(core::Mp4InputOptions {
+            alpha_track: false,
             source,
             should_loop: should_loop.unwrap_or(false),
             video_decoders,

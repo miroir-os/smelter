@@ -4,7 +4,7 @@ use nv12_to_rgba::Nv12ToRgbaConverter;
 
 use crate::wgpu::format::{
     argb_to_rgba::ArgbToRgbaConverter, bgra_to_rgba::BgraToRgbaConverter,
-    rgba_to_nv12::RgbaToNv12Converter,
+    rebuild_alpha::AlphaRebuilder, rgba_to_nv12::RgbaToNv12Converter,
 };
 
 use self::{planar_yuv_to_rgba::PlanarYuvToRgbaConverter, rgba_to_yuv::RgbaToYuvConverter};
@@ -20,6 +20,7 @@ mod interleaved_uyvy_to_rgba;
 mod interleaved_yuyv_to_rgba;
 mod nv12_to_rgba;
 mod planar_yuv_to_rgba;
+pub mod rebuild_alpha;
 mod rgba_to_nv12;
 mod rgba_to_yuv;
 
@@ -34,6 +35,8 @@ pub struct TextureFormat {
 
     pub rgba_to_yuv: RgbaToYuvConverter,
     pub rgba_to_nv12: RgbaToNv12Converter,
+    pub rebuild_alpha_linear: AlphaRebuilder,
+    pub rebuild_alpha_srgb: AlphaRebuilder,
 
     pub single_texture_layout: wgpu::BindGroupLayout,
     pub planar_yuv_layout: wgpu::BindGroupLayout,
@@ -79,6 +82,14 @@ impl TextureFormat {
         let rgba_to_yuv = RgbaToYuvConverter::new(device, &single_texture_layout);
         let rgba_to_nv12 = RgbaToNv12Converter::new(device, &single_texture_layout);
 
+        let rebuild_alpha_linear =
+            AlphaRebuilder::new(device, &planar_yuv_layout, wgpu::TextureFormat::Rgba8Unorm);
+        let rebuild_alpha_srgb = AlphaRebuilder::new(
+            device,
+            &planar_yuv_layout,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        );
+
         Self {
             planar_yuv_to_rgba_linear,
             interleaved_uyvy_to_rgba_linear,
@@ -89,6 +100,8 @@ impl TextureFormat {
 
             rgba_to_yuv,
             rgba_to_nv12,
+            rebuild_alpha_linear,
+            rebuild_alpha_srgb,
 
             single_texture_layout,
             planar_yuv_layout,

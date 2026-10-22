@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     fs::File,
     path::Path,
     sync::Arc,
@@ -7,7 +8,7 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, unbounded};
-use smelter_render::error::ErrorStack;
+use smelter_render::{FrameData, error::ErrorStack};
 use tracing::{Level, debug, error, span, trace, warn};
 
 use crate::{
@@ -108,7 +109,7 @@ impl Mp4Input {
             }),
         };
 
-        let video_track = Mp4FileReader::from_path(&source_file.path)?.try_new_h264_track();
+        let video_track = Mp4FileReader::from_path(&source_file.path)?.try_new_h264_track(0);
         let video_duration = video_track.as_ref().and_then(|track| track.duration());
         let audio_track = Mp4FileReader::from_path(&source_file.path)?.try_new_aac_track();
         let audio_duration = audio_track.as_ref().and_then(|track| track.duration());
@@ -223,7 +224,7 @@ enum StateEvent {
 struct TrackContext {
     event_sender: crossbeam_channel::Sender<StateEvent>,
 
-    _source_file: Arc<SourceFile>,
+    source_file: Arc<SourceFile>,
 }
 
 struct TrackManagerThread {
@@ -252,7 +253,7 @@ impl TrackManagerThread {
 
         let track_ctx = TrackContext {
             event_sender: events_sender.clone(),
-            _source_file: source_file.clone(),
+            source_file: source_file.clone(),
         };
 
         (
@@ -374,6 +375,11 @@ impl TrackManagerThread {
         frame_sender: QueueSender<Frame>,
         seek: Option<Duration>,
     ) -> Result<(), InputInitError> {
+        let frame_sender = if self.options.alpha_track {
+            self.spawn_alpha(&track, frame_sender, seek)?
+        } else {
+            frame_sender
+        };
         let decoder_handle = self.spawn_video_decoder_thread(&track, frame_sender)?;
 
         let shutdown_condition = self.input_shutdown_condition.child_condition();
@@ -393,6 +399,42 @@ impl TrackManagerThread {
             .unwrap();
         self.video_thread = Some((handle, shutdown_condition));
         Ok(())
+    }
+
+    /// Reads the alpha track beside the video's, from its own keyframe before `seek`, and returns
+    /// where the video's frames go: to a thread that sends each on with the alpha of its pts. The
+    /// alpha's reading ends with the video's, when the pairing's video frames stop.
+    fn spawn_alpha(
+        &self,
+        video: &Track<File>,
+        frame_sender: QueueSender<Frame>,
+        seek: Option<Duration>,
+    ) -> Result<QueueSender<Frame>, InputInitError> {
+        let track = Mp4FileReader::from_path(&self.track_ctx.source_file.path)?
+            .try_new_h264_track(1)
+            .ok_or(Mp4InputError::NoAlphaTrack)?;
+        if !video.pairs_with(&track) {
+            return Err(Mp4InputError::AlphaTrackMismatch.into());
+        }
+        let (color_sender, color_frames) = crossbeam_channel::bounded(1);
+        let (alpha_sender, alpha_frames) = crossbeam_channel::bounded(1);
+        let decoder_handle =
+            self.spawn_video_decoder_thread(&track, QueueSender::new(alpha_sender))?;
+        let track_thread = TrackThread {
+            ctx: self.track_ctx.clone(),
+            shutdown_condition: self.input_shutdown_condition.child_condition(),
+            track,
+            seek,
+        };
+        std::thread::Builder::new()
+            .name("mp4 reader - alpha".to_string())
+            .spawn(move || track_thread.run_video_thread(decoder_handle))
+            .unwrap();
+        std::thread::Builder::new()
+            .name("mp4 alpha pairing".to_string())
+            .spawn(move || pair_alpha(color_frames, alpha_frames, frame_sender))
+            .unwrap();
+        Ok(QueueSender::new(color_sender))
     }
 
     fn spawn_audio(
@@ -583,6 +625,42 @@ impl Drop for SourceFile {
             && let Err(e) = std::fs::remove_file(&self.path)
         {
             error!("Error while removing the downloaded mp4 file: {e}");
+        }
+    }
+}
+
+/// Forwards each color frame with the alpha frame of the same pts, as one frame. A frame whose
+/// partner its decoder lost is dropped; either decoder ending ends the video.
+fn pair_alpha(color: Receiver<Frame>, alpha: Receiver<Frame>, sender: QueueSender<Frame>) {
+    let (mut color_head, mut alpha_head) = (None, None);
+    loop {
+        let Some(color_frame) = color_head.take().or_else(|| color.recv().ok()) else {
+            return;
+        };
+        let Some(alpha_frame) = alpha_head.take().or_else(|| alpha.recv().ok()) else {
+            return;
+        };
+        match color_frame.pts.cmp(&alpha_frame.pts) {
+            Ordering::Less => {
+                warn!(pts=?color_frame.pts, "Dropping a frame without its alpha.");
+                alpha_head = Some(alpha_frame);
+            }
+            Ordering::Greater => {
+                warn!(pts=?alpha_frame.pts, "Dropping an alpha without its frame.");
+                color_head = Some(color_frame);
+            }
+            Ordering::Equal => {
+                let frame = Frame {
+                    data: FrameData::WithAlpha {
+                        color: Box::new(color_frame.data),
+                        alpha: Box::new(alpha_frame.into()),
+                    },
+                    ..color_frame
+                };
+                if sender.send(frame).is_err() {
+                    return;
+                }
+            }
         }
     }
 }

@@ -8,6 +8,10 @@ use crate::queue::QueueInputOptions;
 pub struct Mp4InputOptions {
     pub source: Mp4InputSource,
     pub should_loop: bool,
+    /// The second H.264 track is the alpha of the first, at the same sample times: the luma of a
+    /// limited-range picture of half its size, each pixel the mean alpha of 2×2 of the first's,
+    /// and the chroma the black or white each 4×4 block of the first is composited over.
+    pub alpha_track: bool,
     pub video_decoders: Mp4InputVideoDecoders,
     pub seek: Option<Duration>,
     pub offset: Option<Duration>,
@@ -51,6 +55,14 @@ pub enum Mp4InputError {
 
     #[error("No suitable track in the mp4 file")]
     NoTrack,
+
+    #[error("No alpha track in the mp4 file")]
+    NoAlphaTrack,
+
+    #[error(
+        "The alpha track is not half the video track's picture size, or not at its sample times"
+    )]
+    AlphaTrackMismatch,
 
     #[error("Unknown error: {0}")]
     Unknown(&'static str),

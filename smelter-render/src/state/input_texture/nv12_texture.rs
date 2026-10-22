@@ -63,6 +63,10 @@ impl NV12Input {
         };
     }
 
+    pub fn views(&self) -> (&wgpu::TextureView, &wgpu::TextureView) {
+        self.nv12_texture.views()
+    }
+
     pub fn upload(&mut self, ctx: &WgpuCtx, planes: NvPlanes, resolution: Resolution) {
         self.maybe_recreate_before_upload(ctx, resolution);
         self.nv12_texture.upload(ctx, &planes);

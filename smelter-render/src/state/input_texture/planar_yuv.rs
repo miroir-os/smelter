@@ -34,6 +34,13 @@ impl PlanarYuvInput {
         self.upload_textures.resolution
     }
 
+    pub fn views(&self) -> (&wgpu::TextureView, &wgpu::TextureView) {
+        (
+            self.upload_textures.plane_view(0),
+            self.upload_textures.plane_view(1),
+        )
+    }
+
     pub fn upload(
         &mut self,
         ctx: &WgpuCtx,
