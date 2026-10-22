@@ -1,7 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_core_foundation as cf;
 use objc2_core_video as cv;
+use objc2_io_surface::IOSurfaceRef;
 use objc2_metal as mtl;
 use objc2_metal::MTLDevice;
 
@@ -11,10 +13,10 @@ use crate::{
     backends::{
         WgpuBackend,
         video_toolbox::{
-            VTBackend, VTDevice, allocate_retained,
+            VTBackend, VTDevice,
             decoders_h264::VTDecoderH264,
             encoder::{H264Codec, H265Codec, VTEncoder},
-            error::{OSStatusError, VTInitError},
+            error::VTInitError,
         },
     },
     device::WgpuVideoDeviceBackend,
@@ -141,47 +143,13 @@ impl WgpuVideoDeviceBackend for VTDevice {
     }
 }
 
-pub(crate) fn make_texture_cache(
+pub(crate) fn metal_device(
     device: &wgpu::Device,
-    usage: mtl::MTLTextureUsage,
-) -> Result<SyncCache, VTInitError> {
-    let metal_device = unsafe {
-        device
-            .as_hal::<wgpu::hal::metal::Api>()
-            .ok_or(VTInitError::NotMetalBackend)?
-            .raw_device()
-            .clone()
-    };
-
-    let texture_attributes = unsafe {
-        cf::CFDictionary::<cf::CFString, cf::CFNumber>::from_slices(
-            &[cv::kCVMetalTextureUsage],
-            &[cf::CFNumber::new_i64(usage.0 as i64).as_ref()],
-        )
-    };
-
-    let texture_cache = unsafe {
-        allocate_retained(|ptr| {
-            cv::CVMetalTextureCache::create(
-                None,
-                None,
-                &metal_device,
-                Some(texture_attributes.as_ref()),
-                ptr,
-            )
-        })?
-    };
-
-    Ok(SyncCache(Mutex::new(MetalTextureCache(texture_cache))))
+) -> Result<Retained<ProtocolObject<dyn mtl::MTLDevice>>, VTInitError> {
+    let hal =
+        unsafe { device.as_hal::<wgpu::hal::metal::Api>() }.ok_or(VTInitError::NotMetalBackend)?;
+    Ok(hal.raw_device().clone())
 }
-
-pub(crate) struct SyncCache(Mutex<MetalTextureCache>);
-
-struct MetalTextureCache(cf::CFRetained<cv::CVMetalTextureCache>);
-
-// Safety: texture caches are not marked in docs as thread-affine (required to be used on the
-// thread that created them)
-unsafe impl Send for MetalTextureCache {}
 
 pub(crate) struct SendSyncCVBuffer(pub(crate) cf::CFRetained<cv::CVBuffer>);
 unsafe impl Send for SendSyncCVBuffer {}
@@ -189,42 +157,50 @@ unsafe impl Sync for SendSyncCVBuffer {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetalTextureError {
-    #[error(transparent)]
-    OSStatus(#[from] OSStatusError),
+    #[error("The pixel buffer is not backed by an IOSurface")]
+    NoIOSurface,
 
-    #[error("Failed to extract Metal texture from CVMetalTexture")]
-    ExtractionFailed,
+    #[error("Failed to create a Metal texture on plane {0} of the pixel buffer's IOSurface")]
+    TextureCreationFailed(usize),
 }
 
+/// Textures over `buffer`'s IOSurface planes. Each holds `buffer`, which VideoToolbox reuses
+/// only once released: unlike a `CVMetalTextureCache` texture, whose release updates the
+/// cache, dropping one on any thread touches no shared state.
 pub(crate) fn video_texture_from_pixel_buffer(
-    cache: &SyncCache,
+    metal_device: &ProtocolObject<dyn mtl::MTLDevice>,
     device: &wgpu::Device,
-    buffer: &cv::CVBuffer,
+    buffer: &cf::CFRetained<cv::CVBuffer>,
+    metal_usage: mtl::MTLTextureUsage,
     usage: wgpu::TextureUsages,
     initial_use: wgpu::TextureUses,
     label: &str,
 ) -> Result<VideoTexture, MetalTextureError> {
-    let cache = cache.0.lock().unwrap();
-    cache.0.flush(0);
+    let surface =
+        cv::CVPixelBufferGetIOSurface(Some(buffer)).ok_or(MetalTextureError::NoIOSurface)?;
 
     let y_texture = plane_texture_from_pixel_buffer(
-        &cache,
+        metal_device,
         device,
         buffer,
+        &surface,
         0,
         wgpu::TextureFormat::R8Unorm,
         mtl::MTLPixelFormat::R8Unorm,
+        metal_usage,
         usage,
         initial_use,
         &format!("{label} y plane"),
     )?;
     let uv_texture = plane_texture_from_pixel_buffer(
-        &cache,
+        metal_device,
         device,
         buffer,
+        &surface,
         1,
         wgpu::TextureFormat::Rg8Unorm,
         mtl::MTLPixelFormat::RG8Unorm,
+        metal_usage,
         usage,
         initial_use,
         &format!("{label} uv plane"),
@@ -235,12 +211,14 @@ pub(crate) fn video_texture_from_pixel_buffer(
 
 #[expect(clippy::too_many_arguments)]
 fn plane_texture_from_pixel_buffer(
-    cache: &MetalTextureCache,
+    metal_device: &ProtocolObject<dyn mtl::MTLDevice>,
     device: &wgpu::Device,
-    buffer: &cv::CVBuffer,
+    buffer: &cf::CFRetained<cv::CVBuffer>,
+    surface: &IOSurfaceRef,
     plane_index: usize,
     format: wgpu::TextureFormat,
     mtl_format: mtl::MTLPixelFormat,
+    metal_usage: mtl::MTLTextureUsage,
     usage: wgpu::TextureUsages,
     initial_use: wgpu::TextureUses,
     label: &str,
@@ -248,24 +226,16 @@ fn plane_texture_from_pixel_buffer(
     let width = cv::CVPixelBufferGetWidthOfPlane(buffer, plane_index);
     let height = cv::CVPixelBufferGetHeightOfPlane(buffer, plane_index);
 
-    let cv_texture = unsafe {
-        allocate_retained(|ptr| {
-            cv::CVMetalTextureCache::create_texture_from_image(
-                None,
-                &cache.0,
-                buffer,
-                None,
-                mtl_format,
-                width,
-                height,
-                plane_index,
-                ptr,
-            )
-        })?
+    let descriptor = unsafe {
+        mtl::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            mtl_format, width, height, false,
+        )
     };
-    let mtl_texture =
-        cv::CVMetalTextureGetTexture(&cv_texture).ok_or(MetalTextureError::ExtractionFailed)?;
-    let guard = SendSyncCVBuffer(cv_texture);
+    descriptor.setUsage(metal_usage);
+    let mtl_texture = metal_device
+        .newTextureWithDescriptor_iosurface_plane(&descriptor, surface, plane_index)
+        .ok_or(MetalTextureError::TextureCreationFailed(plane_index))?;
+    let guard = SendSyncCVBuffer(buffer.clone());
 
     let size = wgpu::Extent3d {
         width: width as u32,

@@ -126,7 +126,7 @@ pub enum OSStatusError {
     #[error("CMSampleBuffer: data canceled")]
     CMSampleBufferDataCanceled,
 
-    // CVReturn (pixel buffer & Metal texture cache)
+    // CVReturn (pixel buffer)
     #[error("CVReturn: invalid argument")]
     CVInvalidArgument,
     #[error("CVReturn: allocation failed")]

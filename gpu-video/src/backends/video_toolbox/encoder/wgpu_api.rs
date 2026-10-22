@@ -18,9 +18,7 @@ use crate::{
     EncodedOutputChunk, InputFrame, VideoEncoderError, VideoTexture,
     backends::video_toolbox::{
         error::{OSStatusExt, VTEncoderError, VTInitError},
-        wgpu_api::{
-            SendSyncCVBuffer, SyncCache, make_texture_cache, video_texture_from_pixel_buffer,
-        },
+        wgpu_api::{SendSyncCVBuffer, metal_device, video_texture_from_pixel_buffer},
     },
     device::{EncoderOutputParameters, VideoParameters},
     encoders::{EncodeTexture, WgpuTextureEncoderError, WgpuVideoEncoderBackend},
@@ -33,7 +31,7 @@ pub(crate) struct VTWgpuEncodeState {
     /// this runs frame encode closures
     listener: Retained<MTLSharedEventListener>,
     next_fence_value: u64,
-    texture_cache: SyncCache,
+    metal_device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
     issued_input_textures: Arc<Mutex<HashMap<VideoTexture, SendSyncCVBuffer>>>,
 }
 
@@ -60,18 +58,11 @@ impl VTWgpuEncodeState {
             return Err(VTEncoderError::SharedEventUnavailable);
         }
 
-        let texture_cache = make_texture_cache(
-            wgpu_device,
-            mtl::MTLTextureUsage(
-                mtl::MTLTextureUsage::ShaderWrite.0 | mtl::MTLTextureUsage::RenderTarget.0,
-            ),
-        )?;
-
         Ok(Self {
             fence,
             listener: MTLSharedEventListener::new(),
             next_fence_value: 1,
-            texture_cache,
+            metal_device: metal_device(wgpu_device)?,
             issued_input_textures: Default::default(),
         })
     }
@@ -107,9 +98,12 @@ impl<C: EncodeCodec> VTEncoder<C> {
 
         let buffer = self.session.acquire_input_buffer()?;
         let texture = video_texture_from_pixel_buffer(
-            &state.texture_cache,
+            &state.metal_device,
             wgpu_device,
             &buffer,
+            mtl::MTLTextureUsage(
+                mtl::MTLTextureUsage::ShaderWrite.0 | mtl::MTLTextureUsage::RenderTarget.0,
+            ),
             wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::STORAGE_BINDING,
