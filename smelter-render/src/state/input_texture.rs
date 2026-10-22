@@ -7,6 +7,7 @@ use crate::{
     BufferFormat, Frame, FrameData, Resolution, YuvPlanes,
     state::input_texture::{
         argb::ArgbInput, bgra::BgraInput, interleaved_yuyv422::InterleavedYuyv422Input,
+        with_alpha::WithAlphaInput,
     },
     wgpu::{
         WgpuCtx,
@@ -27,6 +28,7 @@ mod interleaved_yuyv422;
 mod nv12_texture;
 mod planar_yuv;
 mod rgba_texture;
+mod with_alpha;
 
 mod convert_linear_to_srgb;
 
@@ -42,6 +44,7 @@ enum InputTextureState {
     /// - CPU optimized - Rgba8Unorm (but data is in sRGB color space)
     /// - WebGl - Rgba8UnormSrgb
     Rgba8Unorm(RgbaTextureInput),
+    WithAlpha(Box<WithAlphaInput>),
 }
 
 impl InputTextureState {
@@ -54,6 +57,7 @@ impl InputTextureState {
             InputTextureState::Nv12(input) => input.resolution(),
             InputTextureState::Bgra(input) => input.resolution(),
             InputTextureState::Argb(input) => input.resolution(),
+            InputTextureState::WithAlpha(input) => input.resolution(),
         }
     }
 }
@@ -103,6 +107,30 @@ impl InputTexture {
             FrameData::Nv12WgpuPlanes { y_plane, uv_plane } => {
                 self.nv12_texture(ctx, NV12Texture::from_planes(y_plane, uv_plane))
             }
+            FrameData::WithAlpha { color, alpha } => {
+                let color = Frame {
+                    data: *color,
+                    resolution,
+                    pts: frame.pts,
+                };
+                match &mut self.0 {
+                    Some(InputTextureState::WithAlpha(input)) => input.upload(ctx, color, *alpha),
+                    state => {
+                        *state = Some(InputTextureState::WithAlpha(Box::new(WithAlphaInput::new(
+                            ctx, color, *alpha,
+                        ))))
+                    }
+                }
+            }
+        }
+    }
+
+    /// The luma and the chroma of a YUV picture, its first chroma channel in red.
+    fn yuv_views(&self) -> Option<(&wgpu::TextureView, &wgpu::TextureView)> {
+        match &self.0 {
+            Some(InputTextureState::Nv12(input)) => Some(input.views()),
+            Some(InputTextureState::PlanarYuv(input)) => Some(input.views()),
+            _ => None,
         }
     }
 
@@ -222,6 +250,7 @@ impl InputTexture {
                     InputTextureState::Nv12(state) => state.convert(ctx, dst_state),
                     InputTextureState::Bgra(state) => state.convert(ctx, dst_state),
                     InputTextureState::Argb(state) => state.convert(ctx, dst_state),
+                    InputTextureState::WithAlpha(state) => state.convert(ctx, dst_state),
                 }
             }
             None => dest.clear(),

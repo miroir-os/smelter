@@ -80,21 +80,29 @@ impl<Reader: Read + Seek + Send + 'static> Mp4FileReader<Reader> {
         })
     }
 
-    pub fn try_new_h264_track(self) -> Option<Track<Reader>> {
-        let (&track_id, track, avc) = self.reader.tracks().iter().find_map(|(id, track)| {
-            let track_type = track.track_type().ok()?;
-            let media_type = track.media_type().ok()?;
-            let avc = track.avc1_or_3_inner();
+    /// The H.264 track at `index` in track id order.
+    pub fn try_new_h264_track(self, index: usize) -> Option<Track<Reader>> {
+        let mut tracks: Vec<_> = self
+            .reader
+            .tracks()
+            .iter()
+            .filter_map(|(id, track)| {
+                let track_type = track.track_type().ok()?;
+                let media_type = track.media_type().ok()?;
+                let avc = track.avc1_or_3_inner();
 
-            if track_type != mp4::TrackType::Video
-                || media_type != mp4::MediaType::H264
-                || avc.is_none()
-            {
-                return None;
-            }
+                if track_type != mp4::TrackType::Video
+                    || media_type != mp4::MediaType::H264
+                    || avc.is_none()
+                {
+                    return None;
+                }
 
-            avc.map(|avc| (id, track, avc))
-        })?;
+                avc.map(|avc| (id, track, avc))
+            })
+            .collect();
+        tracks.sort_by_key(|(id, _, _)| **id);
+        let (&track_id, track, avc) = tracks.into_iter().nth(index)?;
 
         let h264_config = H264AvcDecoderConfig {
             nalu_length_size: avc.avcc.length_size_minus_one as usize + 1,
@@ -206,6 +214,35 @@ impl<Reader: Read + Seek + Send + 'static> Track<Reader> {
             track_seek,
             next_sample_index: start_index,
         }
+    }
+
+    /// Whether `alpha` is half this track's picture size, and presents its samples at this
+    /// track's sample times.
+    pub(super) fn pairs_with(&self, alpha: &Self) -> bool {
+        let ((width, height), timescale, stts, ctts, elst) = alpha.picture_and_timing();
+        self.picture_and_timing() == ((width * 2, height * 2), timescale, stts, ctts, elst)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn picture_and_timing(
+        &self,
+    ) -> (
+        (u16, u16),
+        u32,
+        &mp4::SttsBox,
+        &Option<mp4::CttsBox>,
+        Option<&mp4::ElstBox>,
+    ) {
+        let mp4_track = &self.reader.tracks()[&self.track_id];
+        let trak = &mp4_track.trak;
+        let stbl = &trak.mdia.minf.stbl;
+        (
+            (mp4_track.width(), mp4_track.height()),
+            self.timescale,
+            &stbl.stts,
+            &stbl.ctts,
+            trak.edts.as_ref().and_then(|edts| edts.elst.as_ref()),
+        )
     }
 
     pub(super) fn decoder_options(&self) -> &DecoderOptions {
