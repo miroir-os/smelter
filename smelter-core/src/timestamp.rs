@@ -44,6 +44,15 @@ impl Timestamp {
         Timestamp { nanos }
     }
 
+    /// `count` units of `1 / timescale` second, rounded down. Rounding down never puts the sum of
+    /// two spans after the span of their sum, so frames laid out on a clock's grid never land
+    /// after its ticks; rounding to nearest does by a nanosecond, and flips them to the next tick.
+    pub fn from_timescale(count: i64, timescale: u32) -> Self {
+        Timestamp {
+            nanos: (count as i128 * NANOS_PER_SEC as i128).div_euclid(timescale as i128) as i64,
+        }
+    }
+
     pub fn from_secs_f64(secs: f64) -> Self {
         Timestamp {
             nanos: (secs * NANOS_PER_SEC as f64).round() as i64,

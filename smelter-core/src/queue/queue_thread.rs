@@ -245,10 +245,11 @@ struct VideoQueueProcessor {
 
 impl VideoQueueProcessor {
     fn next_buffer_pts(&self, queue: &Queue) -> Timestamp {
+        let framerate = queue.output_framerate;
         self.queue_start_pts
-            + Duration::from_secs_f64(
-                self.sent_batches_counter as f64 * queue.output_framerate.den as f64
-                    / queue.output_framerate.num as f64,
+            + Timestamp::from_timescale(
+                self.sent_batches_counter as i64 * framerate.den as i64,
+                framerate.num,
             )
     }
 

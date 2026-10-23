@@ -151,13 +151,14 @@ impl<Reader: Read + Seek + Send + 'static> Mp4FileReader<Reader> {
                 delay_ticks += entry.segment_duration;
             } else {
                 track_start_offset =
-                    Duration::from_secs_f64(entry.media_time as f64 / track.timescale() as f64);
+                    Timestamp::from_timescale(entry.media_time as i64, track.timescale())
+                        .to_duration_saturating();
                 break;
             }
         }
 
-        let presentation_delay =
-            Duration::from_secs_f64(delay_ticks as f64 / movie_timescale as f64);
+        let presentation_delay = Timestamp::from_timescale(delay_ticks as i64, movie_timescale)
+            .to_duration_saturating();
         (track_start_offset, presentation_delay)
     }
 }
@@ -312,14 +313,14 @@ impl<Reader: Read + Seek + Send + 'static> TrackChunks<'_, Reader> {
     fn sample_into_chunk(&mut self, sample: Mp4Sample) -> (EncodedInputChunk, Duration) {
         let rendering_offset = sample.rendering_offset;
         let start_time = sample.start_time;
-        let sample_duration =
-            Duration::from_secs_f64(sample.duration as f64 / self.track.timescale as f64);
+        let timescale = self.track.timescale;
+        let sample_duration = Timestamp::from_timescale(sample.duration as i64, timescale)
+            .to_duration_saturating();
         let presentation_delay = self.track.presentation_delay;
 
-        let dts = Timestamp::from_secs_f64(start_time as f64 / self.track.timescale as f64);
-        let mut pts = Timestamp::from_secs_f64(
-            (start_time as f64 + rendering_offset as f64) / self.track.timescale as f64,
-        );
+        let dts = Timestamp::from_timescale(start_time as i64, timescale);
+        let mut pts =
+            Timestamp::from_timescale(start_time as i64 + rendering_offset as i64, timescale);
         pts += presentation_delay;
         pts -= self.track_seek;
 
