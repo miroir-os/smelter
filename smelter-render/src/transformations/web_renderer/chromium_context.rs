@@ -134,6 +134,13 @@ impl libcef::App for ChromiumApp {
             // TODO: This is probably only needed in docker container
             command_line.append_switch("disable-software-rasterizer");
         }
+        // Headless Chromium on Linux finds no GL display of its own and silently
+        // composites in software: ANGLE over the driver's EGL reaches the GPU.
+        #[cfg(target_os = "linux")]
+        if self.enable_gpu {
+            command_line.append_switch_with_value("use-gl", "angle");
+            command_line.append_switch_with_value("use-angle", "gl-egl");
+        }
 
         command_line.append_switch("disable-dev-shm-usage");
         // Rendered pages are served locally over self-signed TLS, for HTTP/2.
