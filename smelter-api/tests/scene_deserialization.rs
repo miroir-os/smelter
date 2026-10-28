@@ -175,6 +175,7 @@ fn view_border_radius_border_box_shadow() {
                     offset_x: 60.0,
                     offset_y: 30.0,
                     blur_radius: 30.0,
+                    spread_radius: 0.0,
                     color: scene::RGBAColor(0, 255, 0, 255),
                 }],
                 ..view_default()
@@ -447,6 +448,7 @@ fn rescaler_border_radius_box_shadow() {
                 offset_x: 60.0,
                 offset_y: 30.0,
                 blur_radius: 30.0,
+                spread_radius: 0.0,
                 color: scene::RGBAColor(0, 255, 0, 255),
             }],
             ..rescaler_default(scene::Component::View(scene::ViewComponent {

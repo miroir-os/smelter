@@ -123,6 +123,7 @@ impl ViewComponentParam {
             border_color: self.border_color,
             border_radius,
             box_shadow: self.box_shadow.clone(),
+            opacity: self.opacity,
         }
     }
 
@@ -176,6 +177,7 @@ impl ViewComponentParam {
                     border_color: RGBAColor(0, 0, 0, 0),
                     border_radius: BorderRadius::ZERO,
                     box_shadow: vec![],
+                    opacity: 1.0,
                 }
             }
             _ => NestedLayout {
@@ -195,6 +197,7 @@ impl ViewComponentParam {
                 border_color: RGBAColor(0, 0, 0, 0),
                 border_radius: BorderRadius::ZERO,
                 box_shadow: vec![],
+                opacity: 1.0,
             },
         };
         (layout, static_offset)

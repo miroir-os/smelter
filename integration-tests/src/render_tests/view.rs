@@ -80,6 +80,7 @@ fn box_shadow_offset_30(color: RGBAColor) -> BoxShadow {
         offset_x: 60.0,
         offset_y: 30.0,
         blur_radius: 30.0,
+        spread_radius: 0.0,
         color,
     }
 }
@@ -734,12 +735,14 @@ fn box_shadow_sibling() -> Result<()> {
                             offset_x: 0.0,
                             offset_y: 60.0,
                             blur_radius: 30.0,
+                            spread_radius: 0.0,
                             color: RED,
                         },
                         BoxShadow {
                             offset_x: -60.0,
                             offset_y: -30.0,
                             blur_radius: 30.0,
+                            spread_radius: 0.0,
                             color: BLUE,
                         },
                     ],
@@ -1012,6 +1015,7 @@ fn border_radius_border_box_shadow_rescaled() -> Result<()> {
                     offset_x: 20.0,
                     offset_y: 20.0,
                     blur_radius: 5.0,
+                    spread_radius: 0.0,
                     color: GREEN_FULL,
                 }],
                 ..Default::default()
@@ -1069,6 +1073,7 @@ fn border_radius_border_box_shadow_rescaled_and_hidden_by_parent() -> Result<()>
                         offset_x: 20.0,
                         offset_y: 20.0,
                         blur_radius: 5.0,
+                        spread_radius: 0.0,
                         color: GREEN_FULL,
                     }],
                     ..Default::default()

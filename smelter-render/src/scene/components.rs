@@ -164,6 +164,10 @@ pub struct ViewComponent {
     pub box_shadow: Vec<BoxShadow>,
 
     pub padding: Padding,
+
+    /// From 0.0 (transparent) to 1.0 (opaque), multiplying the view and everything in it.
+    /// Each layout fades on its own, so overlapping children show through each other.
+    pub opacity: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +285,7 @@ impl Default for ViewComponent {
             border_color: RGBAColor(0, 0, 0, 0),
             box_shadow: vec![],
             padding: Padding::ZERO,
+            opacity: 1.0,
         }
     }
 }

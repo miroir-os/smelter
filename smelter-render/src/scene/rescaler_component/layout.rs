@@ -151,12 +151,14 @@ impl RescalerComponentParam {
                 border_color: RGBAColor(0, 0, 0, 0),
                 border_radius: BorderRadius::ZERO,
                 box_shadow: vec![],
+                opacity: 1.0,
             }],
             child_nodes_count,
             border_width: self.border_width,
             border_color: self.border_color,
             border_radius,
             box_shadow: self.box_shadow.clone(),
+            opacity: 1.0,
         }
     }
 }

@@ -39,6 +39,7 @@ struct ViewComponentParam {
     box_shadow: Vec<BoxShadow>,
 
     padding: Padding,
+    opacity: f32,
 }
 
 impl StatefulViewComponent {
@@ -126,6 +127,7 @@ impl ViewComponent {
             border_color: self.border_color,
             box_shadow: self.box_shadow,
             padding: self.padding,
+            opacity: self.opacity,
         };
 
         let props_changed = previous_state
