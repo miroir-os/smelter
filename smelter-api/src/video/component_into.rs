@@ -140,6 +140,7 @@ impl TryFrom<View> for scene::ViewComponent {
                 .map(TryInto::try_into)
                 .collect::<Result<_, _>>()?,
             padding,
+            opacity: 1.0,
         })
     }
 }
@@ -423,6 +424,7 @@ impl TryFrom<BoxShadow> for scene::BoxShadow {
             offset_x: value.offset_x.unwrap_or(0.0),
             offset_y: value.offset_y.unwrap_or(0.0),
             blur_radius: value.blur_radius.unwrap_or(0.0),
+            spread_radius: 0.0,
             color: value
                 .color
                 .map(TryInto::try_into)

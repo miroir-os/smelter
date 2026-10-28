@@ -104,6 +104,7 @@ fn yuv_test_uniform_color() {
                 border_color: RGBAColor(0, 0, 0, 0),
                 box_shadow: vec![],
                 padding: Default::default(),
+                opacity: 1.0,
             })),
             Step::RenderWithSnapshot(Duration::ZERO),
         ],

@@ -23,6 +23,10 @@ struct BoxShadowParams {
     height: f32,
     rotation_degrees: f32,
     blur_radius: f32,
+    opacity: f32,
+    spread_radius: f32,
+    offset_x: f32,
+    offset_y: f32,
 }
 
 struct TextureParams {
@@ -42,6 +46,7 @@ struct TextureParams {
     rotation_degrees: f32,
     // border size in pixels
     border_width: f32,
+    opacity: f32,
 }
 
 struct ColorParams {
@@ -56,6 +61,7 @@ struct ColorParams {
 
     rotation_degrees: f32,
     border_width: f32,
+    opacity: f32,
 }
 
 struct ParentMask {
@@ -213,12 +219,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
         }
         // box shadow
         case 2u:  {
-            let width = box_shadow_params[layout_info.index].width + 2.0 * box_shadow_params[layout_info.index].blur_radius;
-            let height = box_shadow_params[layout_info.index].height + 2.0 * box_shadow_params[layout_info.index].blur_radius;
+            let reach = 1.5 * box_shadow_params[layout_info.index].blur_radius;
+            let width = box_shadow_params[layout_info.index].width + 2.0 * reach;
+            let height = box_shadow_params[layout_info.index].height + 2.0 * reach;
 
             let vertices_transformation = vertices_transformation_matrix(
-                box_shadow_params[layout_info.index].left - box_shadow_params[layout_info.index].blur_radius,
-                box_shadow_params[layout_info.index].top - box_shadow_params[layout_info.index].blur_radius,
+                box_shadow_params[layout_info.index].left - reach,
+                box_shadow_params[layout_info.index].top - reach,
                 width,
                 height,
                 box_shadow_params[layout_info.index].rotation_degrees
@@ -255,6 +262,49 @@ fn roundedRectSDF(dist: vec2<f32>, size: vec2<f32>, radius: vec4<f32>, rotation:
     return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - r.x;
 }
 
+fn nearest_corner_radius(dist: vec2<f32>, radius: vec4<f32>) -> f32 {
+    var r: vec2<f32> = select(radius.yz, radius.xw, dist.x < 0.0);
+    return select(r.x, r.y, dist.y < 0.0);
+}
+
+// Abramowitz and Stegun's approximation of erf.
+fn erf(x: vec2<f32>) -> vec2<f32> {
+    let s = sign(x);
+    let a = abs(x);
+    var y = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
+    y = y * y;
+    return s - s / (y * y);
+}
+
+fn gaussian(x: f32, sigma: f32) -> f32 {
+    return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * 3.141592653589793) * sigma);
+}
+
+// The blurred box along x at height y, its corner rounded by `corner`.
+fn rounded_box_shadow_x(x: f32, y: f32, sigma: f32, corner: f32, half_size: vec2<f32>) -> f32 {
+    let delta = min(half_size.y - corner - abs(y), 0.0);
+    let curved = half_size.x - corner + sqrt(max(0.0, corner * corner - delta * delta));
+    let integral = 0.5 + 0.5 * erf((x + vec2<f32>(-curved, curved)) * (sqrt(0.5) / sigma));
+    return integral.y - integral.x;
+}
+
+// Coverage of a rounded box blurred by a Gaussian of `sigma`, at `point` from its center:
+// exact along x, sampled along y (https://madebyevan.com/shaders/fast-rounded-rectangle-shadows/).
+fn rounded_box_shadow(point: vec2<f32>, half_size: vec2<f32>, sigma: f32, corner: f32) -> f32 {
+    let low = point.y - half_size.y;
+    let high = point.y + half_size.y;
+    let start = clamp(-3.0 * sigma, low, high);
+    let end = clamp(3.0 * sigma, low, high);
+    let step = (end - start) / 4.0;
+    var y = start + step * 0.5;
+    var value = 0.0;
+    for (var i = 0; i < 4; i++) {
+        value += rounded_box_shadow_x(point.x, point.y - y, sigma, corner, half_size) * gaussian(y, sigma) * step;
+        y += step;
+    }
+    return value;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let transparent = vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -289,6 +339,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             let rotation_degrees = texture_params[layout_info.index].rotation_degrees;
             let border_width = texture_params[layout_info.index].border_width;
             let border_color = texture_params[layout_info.index].border_color;
+            let opacity = texture_params[layout_info.index].opacity;
 
             let size = vec2<f32>(width, height);
             let edge_distance = -roundedRectSDF(
@@ -300,7 +351,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
             if (border_width < 1.0) {
                 let content_alpha = smoothstep(-0.5, 0.5, edge_distance);
-                return sample * content_alpha * mask_alpha;
+                return sample * content_alpha * mask_alpha * opacity;
             } else if (mask_alpha < 0.01) {
                 return vec4<f32>(0, 0, 0, 0);
             } else {
@@ -308,11 +359,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                     // border <-> content
                     let border_alpha = smoothstep(border_width - 0.5, border_width + 0.5, edge_distance);
                     let border_or_content = mix(border_color, sample, border_alpha);
-                    return border_or_content * mask_alpha;
+                    return border_or_content * mask_alpha * opacity;
                 } else {
                     // border <-> outside
                     let content_alpha = smoothstep(-0.5, 0.5, edge_distance);
-                    return border_color * content_alpha * mask_alpha;
+                    return border_color * content_alpha * mask_alpha * opacity;
                 }
             }
         }
@@ -325,6 +376,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             let rotation_degrees = color_params[layout_info.index].rotation_degrees;
             let border_width = color_params[layout_info.index].border_width;
             let border_color = color_params[layout_info.index].border_color;
+            let opacity = color_params[layout_info.index].opacity;
 
             let size = vec2<f32>(width, height);
             let edge_distance = -roundedRectSDF(
@@ -336,40 +388,46 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
             if (border_width < 1.0) {
               let content_alpha = smoothstep(-0.5, 0.5, edge_distance);
-              return color * content_alpha * mask_alpha;
+              return color * content_alpha * mask_alpha * opacity;
             } else {
                 if (edge_distance > border_width / 2.0) {
                     // border <-> content
                     let border_alpha = smoothstep(border_width, border_width + 1.0, edge_distance);
                     let border_or_content = mix(border_color, color, border_alpha);
-                    return border_or_content * mask_alpha;
+                    return border_or_content * mask_alpha * opacity;
                 } else {
                     // border <-> outside
                     let content_alpha = smoothstep(-0.5, 0.5, edge_distance);
-                    return border_color * content_alpha * mask_alpha;
+                    return border_color * content_alpha * mask_alpha * opacity;
                 }
             }
         }
         case 2u: {
-            let color = box_shadow_params[layout_info.index].color;
+            let params = box_shadow_params[layout_info.index];
+            let size = vec2<f32>(params.width, params.height);
+            let point = input.center_position;
 
-            let width = box_shadow_params[layout_info.index].width;
-            let height = box_shadow_params[layout_info.index].height;
-            let border_radius = box_shadow_params[layout_info.index].border_radius;
-            let rotation_degrees = box_shadow_params[layout_info.index].rotation_degrees;
-            let blur_radius = box_shadow_params[layout_info.index].blur_radius;
+            // The spread grows rounded corners with the box; square ones stay square.
+            let radius = select(vec4<f32>(0.0), max(params.border_radius + params.spread_radius, vec4<f32>(0.0)), params.border_radius > vec4<f32>(0.0));
+            var shadow_alpha: f32;
+            if (params.blur_radius < 0.5) {
+                shadow_alpha = smoothstep(-0.5, 0.5, -roundedRectSDF(point, size, radius, 0.0));
+            } else {
+                shadow_alpha = rounded_box_shadow(point, size / 2.0, params.blur_radius / 2.0, nearest_corner_radius(point, radius));
+            }
 
-            let size = vec2<f32>(width, height);
-            let edge_distance = -roundedRectSDF(
-                input.center_position,
-                size, 
-                border_radius, 
-                rotation_degrees
+            // Never under its own box, as in CSS, so a transparent picture shows what is behind
+            // it. The cut starts inside the box's anti-aliased edge, leaving no seam.
+            let angle = radians(params.rotation_degrees);
+            let offset = vec2<f32>(-params.offset_x, params.offset_y);
+            let own_center = vec2<f32>(
+                cos(angle) * offset.x + sin(angle) * offset.y,
+                -sin(angle) * offset.x + cos(angle) * offset.y,
             );
-            
-            let blur_alpha = smoothstep(-blur_radius / 2.0, blur_radius / 2.0, edge_distance) * mask_alpha;
+            let own_distance = -roundedRectSDF(point - own_center, size - 2.0 * params.spread_radius, params.border_radius, 0.0);
+            let outside_own_box = 1.0 - smoothstep(0.5, 1.5, own_distance);
 
-            return color * blur_alpha;
+            return params.color * shadow_alpha * outside_own_box * mask_alpha * params.opacity;
         }
         default {
             return vec4(0.0, 0.0, 0.0, 0.0);
