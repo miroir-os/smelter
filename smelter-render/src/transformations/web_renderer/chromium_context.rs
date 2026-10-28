@@ -53,12 +53,23 @@ impl ChromiumContext {
             windowless_frame_rate: (self.framerate.num as i32) / (self.framerate.den as i32),
             background_color: 0,
         };
+        self.start_standalone_browser(url, state, window_info, settings)
+    }
 
+    /// Opens a browser on this context outside any pipeline: `client`'s render handler
+    /// receives its paints.
+    pub fn start_standalone_browser<C: libcef::Client + Send>(
+        &self,
+        url: &str,
+        client: C,
+        window_info: libcef::WindowInfo,
+        settings: libcef::BrowserSettings,
+    ) -> Result<libcef::Browser, ChromiumContextInitError> {
         let (tx, rx) = crossbeam_channel::bounded(1);
         let task = libcef::Task::new(move || {
             let result = self
                 .context
-                .start_browser(state, window_info, settings, url);
+                .start_browser(client, window_info, settings, url);
             tx.send(result).unwrap();
         });
 
