@@ -68,6 +68,7 @@ fn box_shadow_offset_30(color: RGBAColor) -> BoxShadow {
         offset_x: 60.0,
         offset_y: 30.0,
         blur_radius: 30.0,
+        spread_radius: 0.0,
         color,
     }
 }
@@ -797,6 +798,7 @@ fn border_radius_border_box_shadow_rescaled() -> Result<()> {
                     offset_x: 20.0,
                     offset_y: 20.0,
                     blur_radius: 5.0,
+                    spread_radius: 0.0,
                     color: GREEN,
                 }],
                 child: Box::new(input_stream("input_1")),

@@ -206,6 +206,7 @@ impl ParamsBindGroups {
                 border_radius,
                 masks,
                 content,
+                opacity,
             } = layout;
             let border_radius_bytes = borders_radius_to_bytes(*border_radius);
 
@@ -230,6 +231,7 @@ impl ParamsBindGroups {
                     color_params_bytes[60..64].copy_from_slice(&height.to_le_bytes());
                     color_params_bytes[64..68].copy_from_slice(&rotation_degrees.to_le_bytes());
                     color_params_bytes[68..72].copy_from_slice(&border_width.to_le_bytes());
+                    color_params_bytes[72..76].copy_from_slice(&opacity.to_le_bytes());
                     color_params.push(color_params_bytes);
                     layout_infos.push(layout_info);
                 }
@@ -258,16 +260,23 @@ impl ParamsBindGroups {
                     texture_params_bytes[60..64].copy_from_slice(&crop.height.to_le_bytes());
                     texture_params_bytes[64..68].copy_from_slice(&rotation_degrees.to_le_bytes());
                     texture_params_bytes[68..72].copy_from_slice(&border_width.to_le_bytes());
+                    texture_params_bytes[72..76].copy_from_slice(&opacity.to_le_bytes());
                     texture_params.push(texture_params_bytes);
                     layout_infos.push(layout_info);
                 }
-                super::RenderLayoutContent::BoxShadow { color, blur_radius } => {
+                super::RenderLayoutContent::BoxShadow {
+                    color,
+                    blur_radius,
+                    spread_radius,
+                    offset_x,
+                    offset_y,
+                } => {
                     let layout_info = LayoutInfo {
                         layout_type: 2,
                         index: box_shadow_params.len() as u32,
                         masks_len: masks.len() as u32,
                     };
-                    let mut box_shadow_params_bytes = [0u8; 64];
+                    let mut box_shadow_params_bytes = [0u8; 80];
                     box_shadow_params_bytes[0..16].copy_from_slice(&border_radius_bytes);
                     box_shadow_params_bytes[16..32].copy_from_slice(&color_to_bytes(ctx, color));
                     box_shadow_params_bytes[32..36].copy_from_slice(&top.to_le_bytes());
@@ -277,6 +286,10 @@ impl ParamsBindGroups {
                     box_shadow_params_bytes[48..52]
                         .copy_from_slice(&rotation_degrees.to_le_bytes());
                     box_shadow_params_bytes[52..56].copy_from_slice(&blur_radius.to_le_bytes());
+                    box_shadow_params_bytes[56..60].copy_from_slice(&opacity.to_le_bytes());
+                    box_shadow_params_bytes[60..64].copy_from_slice(&spread_radius.to_le_bytes());
+                    box_shadow_params_bytes[64..68].copy_from_slice(&offset_x.to_le_bytes());
+                    box_shadow_params_bytes[68..72].copy_from_slice(&offset_y.to_le_bytes());
                     box_shadow_params.push(box_shadow_params_bytes);
                     layout_infos.push(layout_info);
                 }
@@ -317,7 +330,7 @@ impl ParamsBindGroups {
         }
         texture_params.resize_with(max_layouts_count, || [0u8; 80]);
         color_params.resize_with(max_layouts_count, || [0u8; 80]);
-        box_shadow_params.resize_with(max_layouts_count, || [0u8; 64]);
+        box_shadow_params.resize_with(max_layouts_count, || [0u8; 80]);
 
         ctx.queue
             .write_buffer(&self.texture_params_buffer, 0, &texture_params.concat());

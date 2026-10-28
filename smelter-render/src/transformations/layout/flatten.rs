@@ -125,6 +125,7 @@ impl NestedLayout {
     ) -> bool {
         if layout.width <= 0.0
             || layout.height <= 0.0
+            || layout.opacity <= 0.0
             || layout.top > resolution.height as f32
             || layout.left > resolution.width as f32
         {
@@ -176,6 +177,7 @@ impl NestedLayout {
                 width: child.width * self.scale_x,
                 height: child.height * self.scale_y,
                 rotation_degrees: child.rotation_degrees + self.rotation_degrees, // TODO: not exactly correct
+                opacity: child.opacity * self.opacity,
                 content: match child.content {
                     RenderLayoutContent::Color {
                         color,
@@ -197,12 +199,19 @@ impl NestedLayout {
                         border_width: border_width * unified_scale,
                         crop,
                     },
-                    RenderLayoutContent::BoxShadow { color, blur_radius } => {
-                        RenderLayoutContent::BoxShadow {
-                            color,
-                            blur_radius: blur_radius * unified_scale,
-                        }
-                    }
+                    RenderLayoutContent::BoxShadow {
+                        color,
+                        blur_radius,
+                        spread_radius,
+                        offset_x,
+                        offset_y,
+                    } => RenderLayoutContent::BoxShadow {
+                        color,
+                        blur_radius: blur_radius * unified_scale,
+                        spread_radius: spread_radius * unified_scale,
+                        offset_x: offset_x * self.scale_x,
+                        offset_y: offset_y * self.scale_y,
+                    },
                 },
                 // TODO: This will not work correctly for layouts that are not proportionally
                 // scaled
@@ -235,6 +244,7 @@ impl NestedLayout {
                             width: cropped_width * self.scale_x,
                             height: cropped_height * self.scale_y,
                             rotation_degrees: child.rotation_degrees + self.rotation_degrees, // TODO: not exactly correct
+                            opacity: child.opacity * self.opacity,
                             content: RenderLayoutContent::Color {
                                 color,
                                 border_color,
@@ -274,6 +284,7 @@ impl NestedLayout {
                             width: cropped_width * self.scale_x,
                             height: cropped_height * self.scale_y,
                             rotation_degrees: child.rotation_degrees + self.rotation_degrees, // TODO: not exactly correct
+                            opacity: child.opacity * self.opacity,
                             content: RenderLayoutContent::ChildNode {
                                 index,
                                 crop,
@@ -284,16 +295,26 @@ impl NestedLayout {
                             masks: self.parent_parent_masks(&child.masks),
                         }
                     }
-                    RenderLayoutContent::BoxShadow { color, blur_radius } => {
+                    RenderLayoutContent::BoxShadow {
+                        color,
+                        blur_radius,
+                        spread_radius,
+                        offset_x,
+                        offset_y,
+                    } => {
                         RenderLayout {
                             top: self.top + (cropped_top * self.scale_y),
                             left: self.left + (cropped_left * self.scale_x),
                             width: cropped_width * self.scale_x,
                             height: cropped_height * self.scale_y,
                             rotation_degrees: child.rotation_degrees + self.rotation_degrees, // TODO: not exactly correct
+                            opacity: child.opacity * self.opacity,
                             content: RenderLayoutContent::BoxShadow {
                                 color,
                                 blur_radius: blur_radius * unified_scale,
+                                spread_radius: spread_radius * unified_scale,
+                                offset_x: offset_x * self.scale_x,
+                                offset_y: offset_y * self.scale_y,
                             },
                             border_radius: child.border_radius * unified_scale,
                             masks: self.parent_parent_masks(&child.masks),
@@ -315,6 +336,7 @@ impl NestedLayout {
             width: self.width,
             height: self.height,
             rotation_degrees: self.rotation_degrees,
+            opacity: self.opacity,
             content: match self.content {
                 LayoutContent::Color(color) => RenderLayoutContent::Color {
                     color,
@@ -345,16 +367,23 @@ impl NestedLayout {
 
     /// calculate RenderLayout for one of self box shadows
     fn box_shadow_layout(&self, box_shadow: &BoxShadow, parent_masks: &[Mask]) -> RenderLayout {
+        let spread = box_shadow
+            .spread_radius
+            .max(-f32::min(self.width, self.height) / 2.0);
         RenderLayout {
-            top: self.top + box_shadow.offset_y,
-            left: self.left + box_shadow.offset_x,
-            width: self.width,
-            height: self.height,
+            top: self.top + box_shadow.offset_y - spread,
+            left: self.left + box_shadow.offset_x - spread,
+            width: self.width + 2.0 * spread,
+            height: self.height + 2.0 * spread,
             rotation_degrees: self.rotation_degrees, // TODO: this is incorrect
-            border_radius: self.border_radius + (box_shadow.blur_radius / 2.0),
+            border_radius: self.border_radius,
+            opacity: self.opacity,
             content: RenderLayoutContent::BoxShadow {
                 color: box_shadow.color,
                 blur_radius: box_shadow.blur_radius,
+                spread_radius: spread,
+                offset_x: box_shadow.offset_x,
+                offset_y: box_shadow.offset_y,
             },
             masks: parent_masks.to_vec(),
         }

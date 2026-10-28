@@ -160,9 +160,12 @@ impl Sub<f32> for BorderRadius {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// As CSS's `box-shadow`: the blur is twice the Gaussian's standard deviation, and the
+/// spread grows the shadow's box and its rounded corners. Never drawn under its own box.
 pub struct BoxShadow {
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur_radius: f32,
+    pub spread_radius: f32,
     pub color: RGBAColor,
 }

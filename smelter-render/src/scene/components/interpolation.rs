@@ -84,6 +84,11 @@ impl ContinuousValue for BoxShadow {
             offset_x: ContinuousValue::interpolate(&start.offset_x, &end.offset_x, state),
             offset_y: ContinuousValue::interpolate(&start.offset_y, &end.offset_y, state),
             blur_radius: ContinuousValue::interpolate(&start.blur_radius, &end.blur_radius, state),
+            spread_radius: ContinuousValue::interpolate(
+                &start.spread_radius,
+                &end.spread_radius,
+                state,
+            ),
             color: end.color,
         }
     }
