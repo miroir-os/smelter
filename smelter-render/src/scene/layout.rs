@@ -205,6 +205,7 @@ impl StatefulLayoutComponent {
                     border_color: RGBAColor(0, 0, 0, 0),
                     border_radius: BorderRadius::ZERO,
                     box_shadow: vec![],
+                    opacity: 1.0,
                 }
             }
             _non_layout_components => {
@@ -231,6 +232,7 @@ impl StatefulLayoutComponent {
                     border_color: RGBAColor(0, 0, 0, 0),
                     border_radius: BorderRadius::ZERO,
                     box_shadow: vec![],
+                    opacity: 1.0,
                 }
             }
         }

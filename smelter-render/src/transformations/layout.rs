@@ -76,6 +76,7 @@ struct RenderLayout {
     border_radius: BorderRadius,
     masks: Vec<Mask>,
     content: RenderLayoutContent,
+    opacity: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -91,8 +92,14 @@ enum RenderLayoutContent {
         border_width: f32,
         crop: Crop,
     },
-    #[allow(dead_code)]
-    BoxShadow { color: RGBAColor, blur_radius: f32 },
+    /// Its box is its layout's, offset and grown by `spread_radius`, the corners its layout's.
+    BoxShadow {
+        color: RGBAColor,
+        blur_radius: f32,
+        spread_radius: f32,
+        offset_x: f32,
+        offset_y: f32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +148,8 @@ pub struct NestedLayout {
     pub border_color: RGBAColor,
     pub border_radius: BorderRadius,
     pub box_shadow: Vec<BoxShadow>,
+    /// Multiplies this layout, its box shadows and its children.
+    pub opacity: f32,
 
     pub(crate) children: Vec<NestedLayout>,
     /// Describes how many children of this component are nodes. This value also
@@ -300,6 +309,7 @@ impl NestedLayout {
             border_color: RGBAColor(0, 0, 0, 0),
             border_radius: BorderRadius::ZERO,
             box_shadow: vec![],
+            opacity: 1.0,
         }
     }
 }
