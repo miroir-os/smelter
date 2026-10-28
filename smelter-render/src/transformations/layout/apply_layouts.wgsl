@@ -269,8 +269,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let height = masks[i].height;
         let size = vec2<f32>(width, height);
 
+        let from_center = input.position.xy - (vec2<f32>(left, top) + size / 2.0);
         let distance = roundedRectSDF(
-            vec2<f32>(left, top) + (size / 2.0) - input.position.xy,
+            vec2<f32>(from_center.x, -from_center.y),
             size,
             radius,
             0.0,
