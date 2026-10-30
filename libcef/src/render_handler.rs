@@ -12,8 +12,15 @@ pub struct Resolution {
 
 /// Handles browser render callbacks
 pub trait RenderHandler {
-    /// Specifies the render resolution
+    /// Specifies the render resolution, in device-independent pixels
     fn resolution(&self, browser: &Browser) -> Resolution;
+
+    /// Physical pixels per device-independent pixel: the page lays out at
+    /// `resolution` and paints at `resolution` times this, as on a high-DPI
+    /// screen
+    fn device_scale_factor(&self, _browser: &Browser) -> f32 {
+        1.0
+    }
 
     /// Called every time new frame is rendered
     fn on_paint(&self, browser: &Browser, buffer: &[u8], resolution: Resolution);
@@ -31,7 +38,7 @@ impl<R: RenderHandler> CefStruct for RenderHandlerWrapper<R> {
             get_root_screen_rect: None,
             get_view_rect: Some(Self::view_rect),
             get_screen_point: None,
-            get_screen_info: None,
+            get_screen_info: Some(Self::screen_info),
             on_popup_show: None,
             on_popup_size: None,
             on_paint: Some(Self::on_paint),
@@ -71,6 +78,27 @@ impl<R: RenderHandler> RenderHandlerWrapper<R> {
             let rect = &mut *rect;
             rect.width = resolution.width as i32;
             rect.height = resolution.height as i32;
+        }
+    }
+
+    extern "C" fn screen_info(
+        self_: *mut libcef_sys::cef_render_handler_t,
+        browser: *mut libcef_sys::cef_browser_t,
+        screen_info: *mut libcef_sys::cef_screen_info_t,
+    ) -> c_int {
+        unsafe {
+            let self_ref = CefRefData::<Self>::from_cef(self_);
+            let browser = Browser::new(browser);
+            let resolution = self_ref.0.resolution(&browser);
+            let screen_info = &mut *screen_info;
+            screen_info.device_scale_factor = self_ref.0.device_scale_factor(&browser);
+            for rect in [&mut screen_info.rect, &mut screen_info.available_rect] {
+                rect.x = 0;
+                rect.y = 0;
+                rect.width = resolution.width as i32;
+                rect.height = resolution.height as i32;
+            }
+            1
         }
     }
 
