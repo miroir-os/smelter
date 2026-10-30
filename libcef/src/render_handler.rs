@@ -10,6 +10,14 @@ pub struct Resolution {
     pub height: usize,
 }
 
+/// A region of a paint, in its pixels
+pub struct Rect {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
 /// Handles browser render callbacks
 pub trait RenderHandler {
     /// Specifies the render resolution, in device-independent pixels
@@ -22,8 +30,9 @@ pub trait RenderHandler {
         1.0
     }
 
-    /// Called every time new frame is rendered
-    fn on_paint(&self, browser: &Browser, buffer: &[u8], resolution: Resolution);
+    /// Called every time new frame is rendered: the whole frame, in which only
+    /// the `dirty` regions changed since the previous one
+    fn on_paint(&self, browser: &Browser, buffer: &[u8], resolution: Resolution, dirty: &[Rect]);
 }
 
 pub(crate) struct RenderHandlerWrapper<R: RenderHandler>(pub R);
@@ -106,8 +115,8 @@ impl<R: RenderHandler> RenderHandlerWrapper<R> {
         self_: *mut libcef_sys::cef_render_handler_t,
         browser: *mut libcef_sys::cef_browser_t,
         _type: libcef_sys::cef_paint_element_type_t,
-        _dirty_rects_count: usize,
-        _dirt_rects: *const libcef_sys::cef_rect_t,
+        dirty_rects_count: usize,
+        dirty_rects: *const libcef_sys::cef_rect_t,
         buffer: *const c_void,
         width: c_int,
         height: c_int,
@@ -117,6 +126,18 @@ impl<R: RenderHandler> RenderHandlerWrapper<R> {
             let browser = Browser::new(browser);
             let buffer =
                 std::slice::from_raw_parts(buffer as *const u8, (4 * width * height) as usize);
+            let dirty: Vec<Rect> = match dirty_rects.is_null() {
+                true => Vec::new(),
+                false => std::slice::from_raw_parts(dirty_rects, dirty_rects_count)
+                    .iter()
+                    .map(|rect| Rect {
+                        x: rect.x as usize,
+                        y: rect.y as usize,
+                        width: rect.width as usize,
+                        height: rect.height as usize,
+                    })
+                    .collect(),
+            };
             self_ref.0.on_paint(
                 &browser,
                 buffer,
@@ -124,6 +145,7 @@ impl<R: RenderHandler> RenderHandlerWrapper<R> {
                     width: width as usize,
                     height: height as usize,
                 },
+                &dirty,
             );
         }
     }

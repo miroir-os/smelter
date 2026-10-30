@@ -106,7 +106,13 @@ impl libcef::RenderHandler for RenderHandler {
         }
     }
 
-    fn on_paint(&self, _browser: &libcef::Browser, buffer: &[u8], _resolution: libcef::Resolution) {
+    fn on_paint(
+        &self,
+        _browser: &libcef::Browser,
+        buffer: &[u8],
+        _resolution: libcef::Resolution,
+        _dirty: &[libcef::Rect],
+    ) {
         let mut frame_data = self.frame_data.lock().unwrap();
         *frame_data = Bytes::copy_from_slice(buffer);
     }

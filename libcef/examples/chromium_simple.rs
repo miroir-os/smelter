@@ -69,7 +69,13 @@ impl libcef::RenderHandler for RenderHandler {
         }
     }
 
-    fn on_paint(&self, browser: &libcef::Browser, buffer: &[u8], resolution: Resolution) {
+    fn on_paint(
+        &self,
+        browser: &libcef::Browser,
+        buffer: &[u8],
+        resolution: Resolution,
+        _dirty: &[libcef::Rect],
+    ) {
         if !browser.is_loading().expect("valid browser") {
             fs::write("out.raw", buffer).expect("save image buffer");
             bgra_to_png("out.raw", "out.png", resolution);
