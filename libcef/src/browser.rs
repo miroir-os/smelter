@@ -35,6 +35,19 @@ impl Browser {
         }
     }
 
+    /// Asks the browser to render a frame. Only for a browser opened with
+    /// `external_begin_frame_enabled`, which renders on no other schedule
+    pub fn send_external_begin_frame(&self) -> Result<(), BrowserError> {
+        unsafe {
+            let browser = self.inner.get_weak_with_validation()?;
+            let get_host = (*browser).get_host.unwrap();
+            let host = get_host(browser);
+            let send_external_begin_frame = (*host).send_external_begin_frame.unwrap();
+            send_external_begin_frame(host);
+        }
+        Ok(())
+    }
+
     pub fn close(&mut self) -> Result<(), BrowserError> {
         unsafe {
             let browser = self.inner.get_weak_with_validation()?;
