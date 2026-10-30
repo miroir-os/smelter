@@ -48,6 +48,7 @@ impl ChromiumContext {
     ) -> Result<libcef::Browser, ChromiumContextInitError> {
         let window_info = libcef::WindowInfo {
             windowless_rendering_enabled: true,
+            external_begin_frame_enabled: false,
         };
         let settings = libcef::BrowserSettings {
             windowless_frame_rate: (self.framerate.num as i32) / (self.framerate.den as i32),
