@@ -4,6 +4,9 @@ use crate::cef_string::CefString;
 
 pub struct WindowInfo {
     pub windowless_rendering_enabled: bool,
+    /// The browser renders a frame only on
+    /// [`Browser::send_external_begin_frame`](crate::Browser::send_external_begin_frame)
+    pub external_begin_frame_enabled: bool,
 }
 
 impl WindowInfo {
@@ -17,7 +20,7 @@ impl WindowInfo {
             parent_view: std::ptr::null_mut(),
             windowless_rendering_enabled: self.windowless_rendering_enabled as c_int,
             shared_texture_enabled: false as c_int,
-            external_begin_frame_enabled: false as c_int,
+            external_begin_frame_enabled: self.external_begin_frame_enabled as c_int,
             view: std::ptr::null_mut(),
             runtime_style: libcef_sys::cef_runtime_style_t_CEF_RUNTIME_STYLE_ALLOY,
         }
@@ -34,7 +37,7 @@ impl WindowInfo {
             parent_window: 0 as c_ulong,
             windowless_rendering_enabled: self.windowless_rendering_enabled as c_int,
             shared_texture_enabled: false as c_int,
-            external_begin_frame_enabled: false as c_int,
+            external_begin_frame_enabled: self.external_begin_frame_enabled as c_int,
             window: 0 as c_ulong,
             runtime_style: libcef_sys::cef_runtime_style_t_CEF_RUNTIME_STYLE_ALLOY,
         }
