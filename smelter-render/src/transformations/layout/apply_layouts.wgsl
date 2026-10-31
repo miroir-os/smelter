@@ -309,6 +309,9 @@ fn rounded_box_shadow(point: vec2<f32>, half_size: vec2<f32>, sigma: f32, corner
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let transparent = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
+    // A layout's coverage is the least of its own edge's and its parents' masks':
+    // nested shapes share edges, as a child filling its parent does, and the
+    // product would fade a shared edge once per shape drawing it.
     var mask_alpha = 1.0;
 
     for (var i = 0; i < i32(layout_info.masks_len); i++) {
@@ -326,7 +329,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             radius,
             0.0,
         );
-        mask_alpha = mask_alpha * smoothstep(-0.5, 0.5 , -distance);
+        mask_alpha = min(mask_alpha, smoothstep(-0.5, 0.5 , -distance));
     }
 
     switch layout_info.layout_type {
@@ -351,7 +354,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
             if (border_width < 1.0) {
                 let content_alpha = smoothstep(-0.5, 0.5, edge_distance);
-                return sample * content_alpha * mask_alpha * opacity;
+                return sample * min(content_alpha, mask_alpha) * opacity;
             } else if (mask_alpha < 0.01) {
                 return vec4<f32>(0, 0, 0, 0);
             } else {
@@ -363,7 +366,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 } else {
                     // border <-> outside
                     let content_alpha = smoothstep(-0.5, 0.5, edge_distance);
-                    return border_color * content_alpha * mask_alpha * opacity;
+                    return border_color * min(content_alpha, mask_alpha) * opacity;
                 }
             }
         }
@@ -388,7 +391,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
             if (border_width < 1.0) {
               let content_alpha = smoothstep(-0.5, 0.5, edge_distance);
-              return color * content_alpha * mask_alpha * opacity;
+              return color * min(content_alpha, mask_alpha) * opacity;
             } else {
                 if (edge_distance > border_width / 2.0) {
                     // border <-> content
@@ -398,7 +401,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 } else {
                     // border <-> outside
                     let content_alpha = smoothstep(-0.5, 0.5, edge_distance);
-                    return border_color * content_alpha * mask_alpha * opacity;
+                    return border_color * min(content_alpha, mask_alpha) * opacity;
                 }
             }
         }
