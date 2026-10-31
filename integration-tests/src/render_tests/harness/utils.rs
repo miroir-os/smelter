@@ -22,6 +22,8 @@ pub(super) fn frame_to_rgba(frame: &Frame) -> Vec<u8> {
         FrameData::InterleavedYuyv422(_) => panic!("unsupported"),
         FrameData::Rgba8UnormWgpuTexture(texture) => read_rgba_texture(texture).to_vec(),
         FrameData::Nv12WgpuTexture(_) => panic!("unsupported"),
+        FrameData::Nv12WgpuPlanes { .. } => panic!("unsupported"),
+        FrameData::WithAlpha { .. } => panic!("unsupported"),
         FrameData::Nv12(_) => panic!("unsupported"),
         FrameData::Bgra(_) => panic!("unsupported"),
         FrameData::Argb(_) => panic!("unsupported"),
