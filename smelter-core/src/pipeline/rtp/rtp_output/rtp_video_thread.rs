@@ -58,8 +58,11 @@ where
         let ssrc = payloader_options.ssrc;
         let (frame_sender, frame_receiver) = crossbeam_channel::bounded(5);
 
-        let (encoded_stream, encoder_ctx) =
-            VideoEncoderStream::<Encoder>::new(ctx, encoder_options, frame_receiver)?;
+        let (encoded_stream, encoder_ctx) = VideoEncoderStream::<Encoder, _>::new(
+            ctx,
+            encoder_options,
+            frame_receiver.into_iter(),
+        )?;
 
         let payloaded_stream = PayloaderStream::new(payloader_options, encoded_stream.flatten());
 

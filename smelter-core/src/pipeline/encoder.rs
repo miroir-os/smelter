@@ -45,10 +45,6 @@ pub(crate) trait VideoEncoder: Sized {
     ) -> Result<(Self, VideoEncoderConfig), EncoderInitError>;
     fn encode(&mut self, frame: Frame, force_keyframe: bool) -> Vec<EncodedOutputChunk>;
     fn flush(&mut self) -> Vec<EncodedOutputChunk>;
-    /// Chunks an asynchronous encoder finishes after `encode` returned, sent as soon as they arrive.
-    fn chunk_receiver(&self) -> Option<&crossbeam_channel::Receiver<EncodedOutputChunk>> {
-        None
-    }
 }
 
 #[derive(Debug)]
@@ -78,24 +74,26 @@ pub(super) struct VideoEncoderStreamContext {
     pub config: VideoEncoderConfig,
 }
 
-pub(super) struct VideoEncoderStream<Encoder>
+pub(super) struct VideoEncoderStream<Encoder, Source>
 where
     Encoder: VideoEncoder,
+    Source: Iterator<Item = PipelineEvent<Frame>>,
 {
     encoder: Encoder,
-    source: crossbeam_channel::Receiver<PipelineEvent<Frame>>,
+    source: Source,
     keyframe_request_receiver: crossbeam_channel::Receiver<()>,
     eos_sent: bool,
 }
 
-impl<Encoder> VideoEncoderStream<Encoder>
+impl<Encoder, Source> VideoEncoderStream<Encoder, Source>
 where
     Encoder: VideoEncoder,
+    Source: Iterator<Item = PipelineEvent<Frame>>,
 {
     pub fn new(
         ctx: Arc<PipelineCtx>,
         options: Encoder::Options,
-        source: crossbeam_channel::Receiver<PipelineEvent<Frame>>,
+        source: Source,
     ) -> Result<(Self, VideoEncoderStreamContext), EncoderInitError> {
         let (keyframe_request_sender, keyframe_request_receiver) = crossbeam_channel::unbounded();
         let (encoder, config) = Encoder::new(&ctx, options)?;
@@ -122,24 +120,15 @@ where
     }
 }
 
-impl<Encoder> Iterator for VideoEncoderStream<Encoder>
+impl<Encoder, Source> Iterator for VideoEncoderStream<Encoder, Source>
 where
     Encoder: VideoEncoder,
+    Source: Iterator<Item = PipelineEvent<Frame>>,
 {
     type Item = Vec<PipelineEvent<EncodedOutputChunk>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let event = match self.encoder.chunk_receiver() {
-            Some(chunk_receiver) => crossbeam_channel::select_biased! {
-                recv(chunk_receiver) -> chunk => match chunk {
-                    Ok(chunk) => return Some(vec![PipelineEvent::Data(chunk)]),
-                    Err(_) => self.source.recv().ok(),
-                },
-                recv(self.source) -> event => event.ok(),
-            },
-            None => self.source.recv().ok(),
-        };
-        match event {
+        match self.source.next() {
             Some(PipelineEvent::Data(frame)) => {
                 let chunks = self.encoder.encode(frame, self.has_keyframe_request());
                 Some(chunks.into_iter().map(PipelineEvent::Data).collect())
