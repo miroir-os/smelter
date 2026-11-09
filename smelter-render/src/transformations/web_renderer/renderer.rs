@@ -88,9 +88,12 @@ impl WebRenderer {
         embedding_data: &EmbeddingData,
         target: &mut NodeTexture,
     ) -> Result<(), RenderWebsiteError> {
-        self.embedding_helper
-            .prepare_embedding(ctx, sources, embedding_data)
-            .map_err(|err| RenderWebsiteError::EmbeddingFailed(self.spec.url.clone(), err))?;
+        // A page embedding nothing asks its renderer for no frame positions.
+        if !embedding_data.children_ids.is_empty() {
+            self.embedding_helper
+                .prepare_embedding(ctx, sources, embedding_data)
+                .map_err(|err| RenderWebsiteError::EmbeddingFailed(self.spec.url.clone(), err))?;
+        }
 
         if self.painted.load(Ordering::Acquire) {
             let target = target.ensure_size(ctx.wgpu_ctx, self.spec.resolution);

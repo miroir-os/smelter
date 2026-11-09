@@ -105,8 +105,9 @@ impl libcef::RenderHandler for RenderHandler {
     }
 
     fn on_paint(&self, _browser: &libcef::Browser, buffer: &[u8], _resolution: libcef::Resolution) {
-        let mut frame_data = self.frame_data.lock().unwrap();
-        *frame_data = Some(Bytes::copy_from_slice(buffer));
+        // Copied before the lock, which the render thread takes each tick.
+        let paint = Bytes::copy_from_slice(buffer);
+        *self.frame_data.lock().unwrap() = Some(paint);
     }
 }
 
