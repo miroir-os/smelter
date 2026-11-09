@@ -1,7 +1,12 @@
 use std::io;
 use std::os::raw::c_int;
 
-use crate::{cef_ref::CefRefData, cef_string::CefString, main_args::MainArgs, *};
+use crate::{
+    cef_ref::{CefRc, CefRefCountable, CefRefData},
+    cef_string::CefString,
+    main_args::MainArgs,
+    *,
+};
 
 /// Handles CEF initialization and deinitialization.
 /// Used for interacting with CEF functions
@@ -106,13 +111,9 @@ impl Context {
         profile: Profile,
         url: &str,
     ) -> Result<Browser, ContextError> {
-        let client = CefRefData::new_ptr(ClientWrapper::new(client));
-        let window_info = window_info.into_raw();
-        let settings = settings.into_raw();
-        let url = CefString::new_raw(url);
-        // The browser takes the context's one reference.
+        // Released here unless the browser takes it, a reference of its own.
         let request_context = match profile {
-            Profile::Global => std::ptr::null_mut(),
+            Profile::Global => None,
             Profile::Ephemeral { proxy } => {
                 let settings = libcef_sys::cef_request_context_settings_t {
                     size: std::mem::size_of::<libcef_sys::cef_request_context_settings_t>(),
@@ -122,15 +123,19 @@ impl Context {
                     cookieable_schemes_list: CefString::empty_raw(),
                     cookieable_schemes_exclude_defaults: false as c_int,
                 };
-                let context = unsafe {
+                let context = CefRc::new(unsafe {
                     libcef_sys::cef_request_context_create_context(&settings, std::ptr::null_mut())
-                };
+                });
                 if let Some(server) = proxy {
-                    unsafe { set_proxy(context, &server) }?;
+                    unsafe { set_proxy(context.get_weak(), &server) }?;
                 }
-                context
+                Some(context)
             }
         };
+        let client = CefRefData::new_ptr(ClientWrapper::new(client));
+        let window_info = window_info.into_raw();
+        let settings = settings.into_raw();
+        let url = CefString::new_raw(url);
         let browser = unsafe {
             libcef_sys::cef_browser_host_create_browser_sync(
                 &window_info,
@@ -138,7 +143,9 @@ impl Context {
                 &url,
                 &settings,
                 std::ptr::null_mut(),
-                request_context,
+                request_context
+                    .as_ref()
+                    .map_or(std::ptr::null_mut(), CefRc::get),
             )
         };
         if browser.is_null() {
@@ -181,6 +188,12 @@ pub enum Profile {
     /// through `proxy`, such as `socks5://127.0.0.1:1080`, if any: loopback
     /// ones too.
     Ephemeral { proxy: Option<String> },
+}
+
+impl CefRefCountable for libcef_sys::cef_request_context_t {
+    fn base_mut(&mut self) -> *mut libcef_sys::cef_base_ref_counted_t {
+        &mut self.base.base
+    }
 }
 
 /// Sets the proxy of `context`, which must be on the UI thread: an argument's
