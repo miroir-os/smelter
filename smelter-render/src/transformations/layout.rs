@@ -255,6 +255,55 @@ impl LayoutNode {
     }
 }
 
+impl RenderLayout {
+    /// Narrows a child to what shows of it on the output, within its parents'
+    /// masks, its crop with it: scaled far past a frame of another shape, as a
+    /// fill does, the whole child would resample past what a texture holds,
+    /// and none can be larger than the output. Edges snap out to whole output
+    /// pixels, so a child drawn 1:1 keeps sampling its texture as is. Only an
+    /// unrotated child without a border or corners of its own, whose box draws
+    /// nothing outside what shows.
+    pub(super) fn clipped(mut self, output: Resolution) -> Self {
+        let RenderLayoutContent::ChildNode {
+            crop, border_width, ..
+        } = &mut self.content
+        else {
+            return self;
+        };
+        if self.rotation_degrees != 0.0
+            || *border_width != 0.0
+            || self.border_radius != BorderRadius::ZERO
+        {
+            return self;
+        }
+        let (mut left, mut top) = (0.0_f32, 0.0_f32);
+        let (mut right, mut bottom) = (output.width as f32, output.height as f32);
+        for mask in &self.masks {
+            left = left.max(mask.left);
+            top = top.max(mask.top);
+            right = right.min(mask.left + mask.width);
+            bottom = bottom.min(mask.top + mask.height);
+        }
+        let left = left.floor().max(self.left);
+        let top = top.floor().max(self.top);
+        let right = right.ceil().min(self.left + self.width);
+        let bottom = bottom.ceil().min(self.top + self.height);
+        let (width, height) = ((right - left).max(0.0), (bottom - top).max(0.0));
+        if width == self.width && height == self.height {
+            return self;
+        }
+        let (scale_x, scale_y) = (crop.width / self.width, crop.height / self.height);
+        *crop = Crop {
+            left: crop.left + (left - self.left) * scale_x,
+            top: crop.top + (top - self.top) * scale_y,
+            width: width * scale_x,
+            height: height * scale_y,
+        };
+        (self.left, self.top, self.width, self.height) = (left, top, width, height);
+        self
+    }
+}
+
 impl NestedLayout {
     /// NestedLayout that won't ever be rendered. It's intended to be optimized out
     /// in the flattening process. Its only purpose is to keep track of child nodes that are not

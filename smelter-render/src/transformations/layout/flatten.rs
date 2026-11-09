@@ -16,6 +16,7 @@ impl NestedLayout {
         shadow
             .into_iter()
             .chain(layouts)
+            .map(|layout| layout.clipped(resolution))
             .filter(|layout| Self::should_render(layout, input_resolutions, resolution))
             .map(NestedLayout::fix_final_render_layout)
             .collect()
