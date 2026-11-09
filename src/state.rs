@@ -43,6 +43,7 @@ impl ApiState {
             true => Some(ChromiumContext::new(
                 config.output_framerate,
                 config.web_renderer_gpu_enable,
+                Vec::new(),
             )?),
             false => None,
         };

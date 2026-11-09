@@ -14,9 +14,11 @@ pub struct ChromiumContext {
 }
 
 impl ChromiumContext {
+    /// `switches` go on Chromium's command line after the context's own, as name and value.
     pub fn new(
         framerate: Framerate,
         enable_gpu: bool,
+        switches: Vec<(String, String)>,
     ) -> Result<Arc<Self>, ChromiumContextInitError> {
         let instance_id = generate_random_id(30);
 
@@ -24,6 +26,7 @@ impl ChromiumContext {
         let app = ChromiumApp {
             show_fps: false,
             enable_gpu,
+            switches,
         };
         let settings = libcef::Settings {
             root_cache_path: utils::get_smelter_instance_tmp_path(&instance_id).join("cef_cache"),
@@ -49,6 +52,7 @@ impl ChromiumContext {
         let window_info = libcef::WindowInfo {
             windowless_rendering_enabled: true,
             external_begin_frame_enabled: false,
+            shared_texture_enabled: false,
         };
         let settings = libcef::BrowserSettings {
             windowless_frame_rate: (self.framerate.num as i32) / (self.framerate.den as i32),
@@ -119,6 +123,7 @@ pub enum ChromiumEventLoopError {
 struct ChromiumApp {
     show_fps: bool,
     enable_gpu: bool,
+    switches: Vec<(String, String)>,
 }
 
 impl libcef::App for ChromiumApp {
@@ -159,6 +164,9 @@ impl libcef::App for ChromiumApp {
         command_line.append_switch("ignore-certificate-errors");
         command_line.append_switch("disable-gpu-shader-disk-cache");
         command_line.append_switch_with_value("autoplay-policy", "no-user-gesture-required");
+        for (name, value) in &self.switches {
+            command_line.append_switch_with_value(name, value);
+        }
     }
 }
 
