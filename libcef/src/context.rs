@@ -136,9 +136,13 @@ impl Context {
                     cookieable_schemes_list: CefString::empty_raw(),
                     cookieable_schemes_exclude_defaults: false as c_int,
                 };
-                let context = CefRc::new(unsafe {
+                let context = unsafe {
                     libcef_sys::cef_request_context_create_context(&settings, std::ptr::null_mut())
-                });
+                };
+                if context.is_null() {
+                    return Err(ContextError::StartBrowserFailed);
+                }
+                let context = CefRc::new(context);
                 if let Some(server) = proxy {
                     unsafe { set_proxy(context.get_weak(), &server) }?;
                 }
