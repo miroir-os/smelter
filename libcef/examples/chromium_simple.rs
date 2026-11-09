@@ -113,6 +113,7 @@ fn main() {
         client,
         window_info,
         browser_settings,
+        libcef::Profile::Global,
         "https://membrane.stream",
     );
 

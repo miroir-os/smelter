@@ -1,4 +1,5 @@
 use std::io;
+use std::os::raw::c_int;
 
 use crate::{cef_ref::CefRefData, cef_string::CefString, main_args::MainArgs, *};
 
@@ -102,12 +103,34 @@ impl Context {
         client: C,
         window_info: WindowInfo,
         settings: BrowserSettings,
+        profile: Profile,
         url: &str,
     ) -> Result<Browser, ContextError> {
         let client = CefRefData::new_ptr(ClientWrapper::new(client));
         let window_info = window_info.into_raw();
         let settings = settings.into_raw();
         let url = CefString::new_raw(url);
+        // The browser takes the context's one reference.
+        let request_context = match profile {
+            Profile::Global => std::ptr::null_mut(),
+            Profile::Ephemeral { proxy } => {
+                let settings = libcef_sys::cef_request_context_settings_t {
+                    size: std::mem::size_of::<libcef_sys::cef_request_context_settings_t>(),
+                    cache_path: CefString::empty_raw(),
+                    persist_session_cookies: false as c_int,
+                    accept_language_list: CefString::empty_raw(),
+                    cookieable_schemes_list: CefString::empty_raw(),
+                    cookieable_schemes_exclude_defaults: false as c_int,
+                };
+                let context = unsafe {
+                    libcef_sys::cef_request_context_create_context(&settings, std::ptr::null_mut())
+                };
+                if let Some(server) = proxy {
+                    unsafe { set_proxy(context, &server) }?;
+                }
+                context
+            }
+        };
         let browser = unsafe {
             libcef_sys::cef_browser_host_create_browser_sync(
                 &window_info,
@@ -115,7 +138,7 @@ impl Context {
                 &url,
                 &settings,
                 std::ptr::null_mut(),
-                std::ptr::null_mut(),
+                request_context,
             )
         };
         if browser.is_null() {
@@ -149,6 +172,53 @@ impl Context {
     }
 }
 
+/// What a browser shares with the other browsers: cookies, storage, caches,
+/// service workers and permissions.
+pub enum Profile {
+    /// The context's own, in memory.
+    Global,
+    /// One of its own in memory, gone with the browser. Its connections go
+    /// through `proxy`, such as `socks5://127.0.0.1:1080`, if any: loopback
+    /// ones too.
+    Ephemeral { proxy: Option<String> },
+}
+
+/// Sets the proxy of `context`, which must be on the UI thread: an argument's
+/// reference passes to the callee, so nothing here releases one.
+unsafe fn set_proxy(
+    context: *mut libcef_sys::cef_request_context_t,
+    server: &str,
+) -> Result<(), ContextError> {
+    unsafe {
+        let dictionary = libcef_sys::cef_dictionary_value_create();
+        let set_string = (*dictionary).set_string.unwrap();
+        for (key, value) in [
+            ("mode", "fixed_servers"),
+            ("server", server),
+            // Chromium connects to loopback directly unless told otherwise.
+            ("bypass_list", "<-loopback>"),
+        ] {
+            set_string(
+                dictionary,
+                CefString::new(key).raw(),
+                CefString::new(value).raw(),
+            );
+        }
+        let value = libcef_sys::cef_value_create();
+        ((*value).set_dictionary.unwrap())(value, dictionary);
+        let manager = context.cast::<libcef_sys::cef_preference_manager_t>();
+        let mut error = CefString::empty_raw();
+        let name = CefString::new("proxy");
+        let set = ((*manager).set_preference.unwrap())(manager, name.raw(), value, &mut error);
+        let outcome = match set {
+            1 => Ok(()),
+            _ => Err(ContextError::ProxyRefused(CefString::from_raw(&error))),
+        };
+        libcef_sys::cef_string_utf16_clear(&mut error);
+        outcome
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ContextError {
     #[error("IO operation failed")]
@@ -162,4 +232,7 @@ pub enum ContextError {
 
     #[error("Failed to start browser session")]
     StartBrowserFailed,
+
+    #[error("Chromium refused the proxy: {0}")]
+    ProxyRefused(String),
 }
