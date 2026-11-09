@@ -104,6 +104,7 @@ fn main() {
     let window_info = libcef::WindowInfo {
         windowless_rendering_enabled: true,
         external_begin_frame_enabled: false,
+        shared_texture_enabled: false,
     };
     let browser_settings = libcef::BrowserSettings {
         windowless_frame_rate: 60,
