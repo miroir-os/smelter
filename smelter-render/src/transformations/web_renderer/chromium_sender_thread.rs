@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, JoinHandle},
 };
 
@@ -17,41 +20,22 @@ use crate::transformations::web_renderer::shared_memory::{SharedMemory, SharedMe
 use crate::wgpu::texture::utils::pad_to_256;
 use crate::{Framerate, RendererId, Resolution};
 
-use super::{EMBED_SOURCE_FRAMES_MESSAGE, GET_FRAME_POSITIONS_MESSAGE, WebRendererSpec, utils};
+use super::{EMBED_SOURCE_FRAMES_MESSAGE, GET_FRAME_POSITIONS_MESSAGE, utils};
 use super::{browser_client::BrowserClient, chromium_context::ChromiumContext};
 
 pub(super) struct ChromiumSenderThread {
-    chromium_context: Arc<ChromiumContext>,
-    url: Arc<str>,
-    web_renderer_id: RendererId,
-    browser_client: BrowserClient,
-    framerate: Framerate,
+    pub chromium_context: Arc<ChromiumContext>,
+    pub url: Arc<str>,
+    pub web_renderer_id: RendererId,
+    pub browser_client: BrowserClient,
+    pub framerate: Framerate,
+    pub paint_asked: Arc<AtomicBool>,
 
-    message_receiver: Receiver<ChromiumSenderMessage>,
-    unmap_signal_sender: Sender<()>,
+    pub message_receiver: Receiver<ChromiumSenderMessage>,
+    pub unmap_signal_sender: Sender<()>,
 }
 
 impl ChromiumSenderThread {
-    pub fn new(
-        chromium_context: Arc<ChromiumContext>,
-        instance_id: &RendererId,
-        spec: &WebRendererSpec,
-        browser_client: BrowserClient,
-        framerate: Framerate,
-        message_receiver: Receiver<ChromiumSenderMessage>,
-        unmap_signal_sender: Sender<()>,
-    ) -> Self {
-        Self {
-            chromium_context,
-            url: spec.url.clone(),
-            web_renderer_id: instance_id.clone(),
-            browser_client,
-            framerate,
-            message_receiver,
-            unmap_signal_sender,
-        }
-    }
-
     pub fn spawn(mut self) -> JoinHandle<()> {
         thread::spawn(move || self.run())
     }
@@ -76,10 +60,13 @@ impl ChromiumSenderThread {
                 return;
             };
             let result = match message {
-                ChromiumSenderMessage::Paint => state
-                    .browser
-                    .send_external_begin_frame()
-                    .map_err(Into::into),
+                ChromiumSenderMessage::Paint => {
+                    self.paint_asked.store(false, Ordering::Release);
+                    state
+                        .browser
+                        .send_external_begin_frame()
+                        .map_err(Into::into)
+                }
                 ChromiumSenderMessage::EmbedSources {
                     resolutions,
                     children_ids,

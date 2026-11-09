@@ -105,6 +105,7 @@ mod client;
 mod command_line;
 mod context;
 mod frame;
+mod life_span_handler;
 mod main_args;
 mod process_message;
 mod render_handler;

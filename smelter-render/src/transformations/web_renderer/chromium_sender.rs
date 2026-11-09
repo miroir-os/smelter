@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::{
     Framerate, RendererId, Resolution, scene::ComponentId, state::node_texture::NodeTexture,
@@ -16,6 +19,8 @@ pub(super) struct ChromiumSender {
     message_sender: Sender<ChromiumSenderMessage>,
     /// Used for synchronizing buffer map and unmap operations
     unmap_signal_receiver: Receiver<()>,
+    /// Whether a paint is asked for that the browser has yet to take.
+    paint_asked: Arc<AtomicBool>,
 }
 
 impl Drop for ChromiumSender {
@@ -36,21 +41,24 @@ impl ChromiumSender {
     ) -> Self {
         let (message_sender, message_receiver) = crossbeam_channel::unbounded();
         let (unmap_signal_sender, unmap_signal_receiver) = crossbeam_channel::bounded(0);
+        let paint_asked = Arc::new(AtomicBool::new(false));
 
-        ChromiumSenderThread::new(
+        ChromiumSenderThread {
             chromium_context,
-            instance_id,
-            spec,
+            url: spec.url.clone(),
+            web_renderer_id: instance_id.clone(),
             browser_client,
             framerate,
+            paint_asked: paint_asked.clone(),
             message_receiver,
             unmap_signal_sender,
-        )
+        }
         .spawn();
 
         Self {
             message_sender,
             unmap_signal_receiver,
+            paint_asked,
         }
     }
 
@@ -100,8 +108,12 @@ impl ChromiumSender {
             .map_err(|_| ChromiumSenderError::MessageChannelDisconnected)
     }
 
-    /// Asks the page for its next paint.
+    /// Asks the page for its next paint, unless it has yet to take the last
+    /// ask: a browser starting, or gone, never piles them up.
     pub fn request_paint(&self) -> Result<(), ChromiumSenderError> {
+        if self.paint_asked.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
         self.message_sender
             .send(ChromiumSenderMessage::Paint)
             .map_err(|_| ChromiumSenderError::MessageChannelDisconnected)

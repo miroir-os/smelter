@@ -4,11 +4,12 @@ use crate::{
     Frame, ProcessId, ProcessMessage,
     browser::Browser,
     cef_ref::{CefRc, CefRefData, CefStruct},
+    life_span_handler::NoPopups,
     render_handler::{RenderHandler, RenderHandlerWrapper},
 };
 
 /// [`Client`] is used for setting browser-specific handlers.
-/// It should be defined for each browser session.
+/// It should be defined for each browser session. Its browser opens no popup.
 pub trait Client {
     type RenderHandlerType: RenderHandler;
 
@@ -34,6 +35,7 @@ pub trait Client {
 pub(crate) struct ClientWrapper<C: Client> {
     client: C,
     render_handler: Option<CefRc<libcef_sys::cef_render_handler_t>>,
+    life_span_handler: CefRc<libcef_sys::cef_life_span_handler_t>,
 }
 
 impl<C: Client> CefStruct for ClientWrapper<C> {
@@ -55,7 +57,7 @@ impl<C: Client> CefStruct for ClientWrapper<C> {
             get_permission_handler: None,
             get_jsdialog_handler: None,
             get_keyboard_handler: None,
-            get_life_span_handler: None,
+            get_life_span_handler: Some(Self::life_span_handler),
             get_load_handler: None,
             get_print_handler: None,
             get_render_handler: Some(Self::render_handler),
@@ -79,7 +81,14 @@ impl<C: Client> ClientWrapper<C> {
         Self {
             client,
             render_handler,
+            life_span_handler: CefRc::new(CefRefData::new_ptr(NoPopups)),
         }
+    }
+
+    extern "C" fn life_span_handler(
+        self_: *mut libcef_sys::cef_client_t,
+    ) -> *mut libcef_sys::cef_life_span_handler_t {
+        unsafe { CefRefData::<Self>::from_cef(self_).life_span_handler.get() }
     }
 
     extern "C" fn render_handler(

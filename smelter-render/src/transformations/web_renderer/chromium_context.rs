@@ -194,6 +194,9 @@ impl libcef::App for ChromiumApp {
         }
         command_line.append_switch("disable-gpu-shader-disk-cache");
         command_line.append_switch_with_value("autoplay-policy", "no-user-gesture-required");
+        // Past a few GPU process crashes, which a page can cause, Chromium ends
+        // its embedder's process.
+        command_line.append_switch("disable-gpu-process-crash-limit");
         // No page is heard: its sound would play on the machine's own output.
         command_line.append_switch("mute-audio");
         // WebRTC's UDP goes around the network service, whose checks keep pages

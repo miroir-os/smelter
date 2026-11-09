@@ -1,6 +1,8 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
-use bytes::Bytes;
 use tracing::{error, info};
 
 use crate::{
@@ -26,10 +28,9 @@ use super::{
 #[derive(Debug)]
 pub struct WebRenderer {
     spec: WebRendererSpec,
-    /// The page's latest paint.
     frame_data: FrameData,
-    /// The paint this tick shows, wherever the page is placed.
-    shown: Mutex<Bytes>,
+    /// Whether the texture holds a paint yet.
+    painted: AtomicBool,
     source_transforms: SourceTransforms,
     embedding_helper: EmbeddingHelper,
 
@@ -55,7 +56,7 @@ impl WebRenderer {
 
         info!("Starting web renderer for {}", &spec.url);
 
-        let frame_data = Arc::new(Mutex::new(Bytes::new()));
+        let frame_data = Arc::new(Mutex::new(None));
         let source_transforms = Arc::new(Mutex::new(Vec::new()));
 
         let client = BrowserClient::new(
@@ -72,7 +73,7 @@ impl WebRenderer {
         Ok(Self {
             spec,
             frame_data,
-            shown: Mutex::new(Bytes::new()),
+            painted: AtomicBool::new(false),
             source_transforms,
             embedding_helper,
             website_texture,
@@ -91,9 +92,8 @@ impl WebRenderer {
             .prepare_embedding(ctx, sources, embedding_data)
             .map_err(|err| RenderWebsiteError::EmbeddingFailed(self.spec.url.clone(), err))?;
 
-        if let Some(frame) = self.shown_frame() {
+        if self.painted.load(Ordering::Acquire) {
             let target = target.ensure_size(ctx.wgpu_ctx, self.spec.resolution);
-            self.website_texture.upload(ctx.wgpu_ctx, &frame);
             let render_textures = self.prepare_textures(sources);
 
             self.render_website_shader.render(
@@ -108,10 +108,13 @@ impl WebRenderer {
     }
 
     /// Once a tick of the pipeline, before any output renders, on air or not:
-    /// takes the page's latest paint for every placement of this tick, and asks
-    /// for the next tick's.
-    pub fn tick(&self) {
-        *self.shown.lock().unwrap() = self.frame_data.lock().unwrap().clone();
+    /// uploads the page's new paint, if any, for every placement of this tick,
+    /// and asks for the next tick's.
+    pub fn tick(&self, wgpu_ctx: &WgpuCtx) {
+        if let Some(paint) = self.frame_data.lock().unwrap().take() {
+            self.website_texture.upload(wgpu_ctx, &paint);
+            self.painted.store(true, Ordering::Release);
+        }
         if let Err(err) = self.embedding_helper.chromium_sender().request_paint() {
             error!(
                 "Failed to ask the website \"{}\" for a paint: {err}",
@@ -153,14 +156,6 @@ impl WebRenderer {
         };
 
         result
-    }
-
-    fn shown_frame(&self) -> Option<Bytes> {
-        let shown = self.shown.lock().unwrap();
-        if shown.is_empty() {
-            return None;
-        }
-        Some(shown.clone())
     }
 
     pub fn resolution(&self) -> Resolution {

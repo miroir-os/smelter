@@ -44,7 +44,7 @@ impl WebRenderer {
         self.spec.resolution
     }
 
-    pub fn tick(&self) {
+    pub fn tick(&self, _wgpu_ctx: &crate::wgpu::WgpuCtx) {
         unreachable!()
     }
 }

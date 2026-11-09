@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use crate::Resolution;
 use bytes::Bytes;
 use tracing::error;
@@ -108,12 +106,12 @@ impl libcef::RenderHandler for RenderHandler {
 
     fn on_paint(&self, _browser: &libcef::Browser, buffer: &[u8], _resolution: libcef::Resolution) {
         let mut frame_data = self.frame_data.lock().unwrap();
-        *frame_data = Bytes::copy_from_slice(buffer);
+        *frame_data = Some(Bytes::copy_from_slice(buffer));
     }
 }
 
 impl RenderHandler {
-    pub fn new(frame_data: Arc<Mutex<Bytes>>, resolution: Resolution) -> Self {
+    pub fn new(frame_data: FrameData, resolution: Resolution) -> Self {
         Self {
             frame_data,
             resolution,

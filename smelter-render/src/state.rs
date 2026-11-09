@@ -261,7 +261,7 @@ impl InnerRenderer {
 
         let pts = inputs.pts;
         for page in self.renderers.web_renderers.values() {
-            page.tick();
+            page.tick(&self.wgpu_ctx);
         }
         trace!("Upload input textures");
         populate_inputs(ctx, &mut self.render_graph, inputs);
