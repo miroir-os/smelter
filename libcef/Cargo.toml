@@ -14,5 +14,8 @@ widestring = "1.0.2"
 anyhow = { workspace = true }
 tracing = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.151"
+
 [lints]
 workspace = true

@@ -28,10 +28,7 @@ impl Settings {
 
         libcef_sys::cef_settings_t {
             size: std::mem::size_of::<libcef_sys::cef_settings_t>(),
-            // Linux sandboxes every subprocess in namespaces of its own and seccomp,
-            // which needs nothing of the embedder; macOS needs `cef_sandbox`
-            // linked into each helper.
-            no_sandbox: cfg!(not(target_os = "linux")) as c_int,
+            no_sandbox: false as c_int,
             browser_subprocess_path: helper_path,
             framework_dir_path: CefString::empty_raw(),
             main_bundle_path: main_path,

@@ -4043,6 +4043,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fs_extra",
+ "libc",
  "libcef-sys",
  "thiserror 1.0.69",
  "tracing",

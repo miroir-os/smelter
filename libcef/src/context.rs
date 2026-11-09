@@ -14,6 +14,9 @@ pub struct Context {
     // We allow creating context only with `Context::new` and `Context::new_helper`.
     // This dissallows creating `Context` manually
     _priv: (),
+    /// A macOS helper's seatbelt, held until the helper exits.
+    #[cfg(target_os = "macos")]
+    _sandbox: Option<Sandbox>,
 }
 
 impl Drop for Context {
@@ -57,27 +60,37 @@ impl Context {
             return Err(ContextError::FrameworkInitFailed);
         }
 
-        Ok(Context { _priv: () })
+        Ok(Context {
+            _priv: (),
+            #[cfg(target_os = "macos")]
+            _sandbox: None,
+        })
     }
 
     /// Creates new context for a subprocess
     pub fn new_helper() -> Result<Self, ContextError> {
         #[cfg(target_os = "macos")]
-        {
-            let framework_path = std::env::current_exe()?
+        let sandbox = {
+            let framework = std::env::current_exe()?
                 .parent()
                 .unwrap()
                 .join("..")
                 .join("..")
                 .join("..")
-                .join("Chromium Embedded Framework.framework")
-                .join("Chromium Embedded Framework");
-
-            Self::load_framework(framework_path)?;
-        }
+                .join("Chromium Embedded Framework.framework");
+            // Before the framework loads, as CEF's macOS sandbox requires.
+            let sandbox =
+                Sandbox::enter(&framework.join("Libraries").join("libcef_sandbox.dylib"))?;
+            Self::load_framework(framework.join("Chromium Embedded Framework"))?;
+            sandbox
+        };
         Self::configure_api_version();
 
-        Ok(Context { _priv: () })
+        Ok(Context {
+            _priv: (),
+            #[cfg(target_os = "macos")]
+            _sandbox: Some(sandbox),
+        })
     }
 
     fn configure_api_version() {
@@ -248,4 +261,71 @@ pub enum ContextError {
 
     #[error("Chromium refused the proxy: {0}")]
     ProxyRefused(String),
+
+    #[error("The macOS sandbox did not start: {0}")]
+    SandboxNotEntered(String),
+}
+
+/// The seatbelt `libcef_sandbox` puts a macOS helper in, on the policy its browser process passes it.
+#[cfg(target_os = "macos")]
+struct Sandbox {
+    handle: *mut std::ffi::c_void,
+    destroy: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+#[cfg(target_os = "macos")]
+impl Sandbox {
+    fn enter(library: &std::path::Path) -> Result<Self, ContextError> {
+        use std::ffi::{CStr, CString, c_char, c_int, c_void};
+        type Initialize = unsafe extern "C" fn(c_int, *mut *mut c_char) -> *mut c_void;
+        type Destroy = unsafe extern "C" fn(*mut c_void);
+        let failure = || {
+            let error = unsafe { libc::dlerror() };
+            let reason = match error.is_null() {
+                true => "no reason given".to_owned(),
+                false => unsafe { CStr::from_ptr(error) }
+                    .to_string_lossy()
+                    .into_owned(),
+            };
+            ContextError::SandboxNotEntered(reason)
+        };
+        let path = CString::new(library.display().to_string()).unwrap();
+        let library = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
+        if library.is_null() {
+            return Err(failure());
+        }
+        let symbol = |name: &CStr| {
+            let symbol = unsafe { libc::dlsym(library, name.as_ptr()) };
+            if symbol.is_null() {
+                Err(failure())
+            } else {
+                Ok(symbol)
+            }
+        };
+        let initialize: Initialize =
+            unsafe { std::mem::transmute(symbol(c"cef_sandbox_initialize")?) };
+        let destroy: Destroy = unsafe { std::mem::transmute(symbol(c"cef_sandbox_destroy")?) };
+        let mut main_args = MainArgs::from_program_args();
+        let args = main_args.raw_mut();
+        let handle = unsafe { initialize(args.argc, args.argv.cast()) };
+        if handle.is_null() {
+            return Err(ContextError::SandboxNotEntered(
+                "cef_sandbox_initialize refused".to_owned(),
+            ));
+        }
+        Ok(Sandbox { handle, destroy })
+    }
+}
+
+// The handle is an opaque token, only ever handed back to `cef_sandbox_destroy`.
+#[cfg(target_os = "macos")]
+unsafe impl Send for Sandbox {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for Sandbox {}
+
+#[cfg(target_os = "macos")]
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        unsafe { (self.destroy)(self.handle) };
+    }
 }
