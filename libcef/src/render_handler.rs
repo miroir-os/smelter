@@ -15,7 +15,8 @@ pub trait RenderHandler {
     /// Specifies the render resolution
     fn resolution(&self, browser: &Browser) -> Resolution;
 
-    /// Called every time new frame is rendered
+    /// Called with every paint of the whole view, at the size [`Self::resolution`]
+    /// gives: a popup widget's paints, such as a `<select>`'s list, are not drawn.
     fn on_paint(&self, browser: &Browser, buffer: &[u8], resolution: Resolution);
 }
 
@@ -77,7 +78,7 @@ impl<R: RenderHandler> RenderHandlerWrapper<R> {
     extern "C" fn on_paint(
         self_: *mut libcef_sys::cef_render_handler_t,
         browser: *mut libcef_sys::cef_browser_t,
-        _type: libcef_sys::cef_paint_element_type_t,
+        type_: libcef_sys::cef_paint_element_type_t,
         _dirty_rects_count: usize,
         _dirt_rects: *const libcef_sys::cef_rect_t,
         buffer: *const c_void,
@@ -87,6 +88,13 @@ impl<R: RenderHandler> RenderHandlerWrapper<R> {
         unsafe {
             let self_ref = CefRefData::<Self>::from_cef(self_);
             let browser = Browser::new(browser);
+            let view = self_ref.0.resolution(&browser);
+            let whole_view = type_ == libcef_sys::cef_paint_element_type_t_PET_VIEW
+                && width as usize == view.width
+                && height as usize == view.height;
+            if !whole_view {
+                return;
+            }
             let buffer =
                 std::slice::from_raw_parts(buffer as *const u8, (4 * width * height) as usize);
             self_ref.0.on_paint(
