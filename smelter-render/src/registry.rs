@@ -54,6 +54,10 @@ impl<T: Clone> RendererRegistry<T> {
         self.registry.get(key).cloned()
     }
 
+    pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
+        self.registry.values()
+    }
+
     pub(crate) fn register(&mut self, id: RendererId, renderer: T) -> Result<(), RegisterError> {
         if self.registry.contains_key(&id) {
             return Err(RegisterError::KeyTaken {

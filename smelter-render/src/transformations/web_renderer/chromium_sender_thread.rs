@@ -15,7 +15,7 @@ use crate::transformations::web_renderer::chromium_sender::{
 };
 use crate::transformations::web_renderer::shared_memory::{SharedMemory, SharedMemoryError};
 use crate::wgpu::texture::utils::pad_to_256;
-use crate::{RendererId, Resolution};
+use crate::{Framerate, RendererId, Resolution};
 
 use super::{EMBED_SOURCE_FRAMES_MESSAGE, GET_FRAME_POSITIONS_MESSAGE, WebRendererSpec, utils};
 use super::{browser_client::BrowserClient, chromium_context::ChromiumContext};
@@ -25,6 +25,7 @@ pub(super) struct ChromiumSenderThread {
     url: Arc<str>,
     web_renderer_id: RendererId,
     browser_client: BrowserClient,
+    framerate: Framerate,
 
     message_receiver: Receiver<ChromiumSenderMessage>,
     unmap_signal_sender: Sender<()>,
@@ -36,6 +37,7 @@ impl ChromiumSenderThread {
         instance_id: &RendererId,
         spec: &WebRendererSpec,
         browser_client: BrowserClient,
+        framerate: Framerate,
         message_receiver: Receiver<ChromiumSenderMessage>,
         unmap_signal_sender: Sender<()>,
     ) -> Self {
@@ -44,6 +46,7 @@ impl ChromiumSenderThread {
             url: spec.url.clone(),
             web_renderer_id: instance_id.clone(),
             browser_client,
+            framerate,
             message_receiver,
             unmap_signal_sender,
         }
@@ -54,10 +57,11 @@ impl ChromiumSenderThread {
     }
 
     fn run(&mut self) {
-        let Ok(browser) = self
-            .chromium_context
-            .start_browser(&self.url, self.browser_client.clone())
-        else {
+        let Ok(browser) = self.chromium_context.start_browser(
+            &self.url,
+            self.browser_client.clone(),
+            self.framerate,
+        ) else {
             error!("Couldn't start browser for {}", self.url);
             return;
         };
@@ -68,7 +72,14 @@ impl ChromiumSenderThread {
             &self.web_renderer_id,
         );
         loop {
-            let result = match self.message_receiver.recv().unwrap() {
+            let Ok(message) = self.message_receiver.recv() else {
+                return;
+            };
+            let result = match message {
+                ChromiumSenderMessage::Paint => state
+                    .browser
+                    .send_external_begin_frame()
+                    .map_err(Into::into),
                 ChromiumSenderMessage::EmbedSources {
                     resolutions,
                     children_ids,

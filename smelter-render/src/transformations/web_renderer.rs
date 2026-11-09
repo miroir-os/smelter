@@ -30,7 +30,7 @@ pub(super) type SourceTransforms = Arc<Mutex<Vec<Mat4>>>;
 
 pub(crate) use node::WebRendererNode;
 
-pub use chromium_context::{ChromiumContext, ChromiumContextInitError};
+pub use chromium_context::{ChromiumContext, ChromiumContextInitError, ChromiumOptions};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WebRendererSpec {

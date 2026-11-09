@@ -7,7 +7,7 @@ use smelter_core::{
 };
 use smelter_render::{
     error::ErrorStack,
-    web_renderer::{ChromiumContext, ChromiumContextInitError},
+    web_renderer::{ChromiumContext, ChromiumContextInitError, ChromiumOptions},
 };
 
 use reqwest::StatusCode;
@@ -40,10 +40,10 @@ pub struct ApiState {
 impl ApiState {
     pub fn new(config: Config) -> Result<Arc<ApiState>, ApiStateInitError> {
         let chromium_context = match config.web_renderer_enable && cfg!(feature = "web-renderer") {
-            true => Some(ChromiumContext::new(
-                config.output_framerate,
-                config.web_renderer_gpu_enable,
-            )?),
+            true => Some(ChromiumContext::new(ChromiumOptions {
+                enable_gpu: config.web_renderer_gpu_enable,
+                ..Default::default()
+            })?),
             false => None,
         };
         let options = pipeline_options_from_config(&config, &chromium_context);

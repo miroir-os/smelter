@@ -9,21 +9,31 @@ use crossbeam_channel::RecvError;
 
 pub struct ChromiumContext {
     instance_id: String,
-    framerate: Framerate,
     context: libcef::Context,
+    page_proxy: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct ChromiumOptions {
+    pub enable_gpu: bool,
+    /// The base64 SHA-256 hashes of the public keys pages are served locally
+    /// with: trusted self-signed, while every other certificate is verified.
+    pub trusted_certificate_keys: Vec<String>,
+    /// The proxy every page of a pipeline connects through, such as
+    /// `socks5://127.0.0.1:1080`, loopback connections too: one refusing local
+    /// addresses keeps pages off them. Standalone browsers connect directly.
+    pub page_proxy: Option<String>,
 }
 
 impl ChromiumContext {
-    pub fn new(
-        framerate: Framerate,
-        enable_gpu: bool,
-    ) -> Result<Arc<Self>, ChromiumContextInitError> {
+    pub fn new(options: ChromiumOptions) -> Result<Arc<Self>, ChromiumContextInitError> {
         let instance_id = generate_random_id(30);
 
         info!("Init chromium context");
         let app = ChromiumApp {
             show_fps: false,
-            enable_gpu,
+            enable_gpu: options.enable_gpu,
+            trusted_certificate_keys: options.trusted_certificate_keys.join(","),
         };
         let settings = libcef::Settings {
             root_cache_path: utils::get_smelter_instance_tmp_path(&instance_id).join("cef_cache"),
@@ -36,29 +46,36 @@ impl ChromiumContext {
             .map_err(ChromiumContextInitError::ContextFailure)?;
         Ok(Arc::new(Self {
             instance_id,
-            framerate,
             context,
+            page_proxy: options.page_proxy,
         }))
     }
 
+    /// A page of a pipeline paints when asked, as its outputs render at
+    /// `framerate`, in a profile of its own, through the page proxy: nothing
+    /// it keeps reaches another page, nor outlives it.
     pub(super) fn start_browser(
         &self,
         url: &str,
         state: super::browser_client::BrowserClient,
+        framerate: Framerate,
     ) -> Result<libcef::Browser, ChromiumContextInitError> {
         let window_info = libcef::WindowInfo {
             windowless_rendering_enabled: true,
-            external_begin_frame_enabled: false,
+            external_begin_frame_enabled: true,
         };
         let settings = libcef::BrowserSettings {
-            windowless_frame_rate: (self.framerate.num as i32) / (self.framerate.den as i32),
+            windowless_frame_rate: framerate.num.div_ceil(framerate.den) as i32,
             background_color: 0,
         };
-        self.start_standalone_browser(url, state, window_info, settings)
+        let profile = libcef::Profile::Ephemeral {
+            proxy: self.page_proxy.clone(),
+        };
+        self.open_browser(url, state, window_info, settings, profile)
     }
 
-    /// Opens a browser on this context outside any pipeline: `client`'s render handler
-    /// receives its paints.
+    /// Opens a browser on this context outside any pipeline, in the context's
+    /// own profile: `client`'s render handler receives its paints.
     pub fn start_standalone_browser<C: libcef::Client + Send>(
         &self,
         url: &str,
@@ -66,11 +83,22 @@ impl ChromiumContext {
         window_info: libcef::WindowInfo,
         settings: libcef::BrowserSettings,
     ) -> Result<libcef::Browser, ChromiumContextInitError> {
+        self.open_browser(url, client, window_info, settings, libcef::Profile::Global)
+    }
+
+    fn open_browser<C: libcef::Client + Send>(
+        &self,
+        url: &str,
+        client: C,
+        window_info: libcef::WindowInfo,
+        settings: libcef::BrowserSettings,
+        profile: libcef::Profile,
+    ) -> Result<libcef::Browser, ChromiumContextInitError> {
         let (tx, rx) = crossbeam_channel::bounded(1);
         let task = libcef::Task::new(move || {
             let result = self
                 .context
-                .start_browser(client, window_info, settings, url);
+                .start_browser(client, window_info, settings, profile, url);
             tx.send(result).unwrap();
         });
 
@@ -119,6 +147,8 @@ pub enum ChromiumEventLoopError {
 struct ChromiumApp {
     show_fps: bool,
     enable_gpu: bool,
+    /// Comma-separated.
+    trusted_certificate_keys: String,
 }
 
 impl libcef::App for ChromiumApp {
@@ -155,10 +185,21 @@ impl libcef::App for ChromiumApp {
         }
 
         command_line.append_switch("disable-dev-shm-usage");
-        // Rendered pages are served locally over self-signed TLS, for HTTP/2.
-        command_line.append_switch("ignore-certificate-errors");
+        // Local pages are served over self-signed TLS, for HTTP/2.
+        if !self.trusted_certificate_keys.is_empty() {
+            command_line.append_switch_with_value(
+                "ignore-certificate-errors-spki-list",
+                &self.trusted_certificate_keys,
+            );
+        }
         command_line.append_switch("disable-gpu-shader-disk-cache");
         command_line.append_switch_with_value("autoplay-policy", "no-user-gesture-required");
+        // No page is heard: its sound would play on the machine's own output.
+        command_line.append_switch("mute-audio");
+        // WebRTC's UDP goes around the network service, whose checks keep pages
+        // off local addresses: with no proxy, it opens none.
+        command_line
+            .append_switch_with_value("force-webrtc-ip-handling-policy", "disable_non_proxied_udp");
     }
 }
 
@@ -166,7 +207,7 @@ impl fmt::Debug for ChromiumContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChromiumContext")
             .field("instance_id", &self.instance_id)
-            .field("framerate", &self.framerate)
+            .field("page_proxy", &self.page_proxy)
             .finish()
     }
 }

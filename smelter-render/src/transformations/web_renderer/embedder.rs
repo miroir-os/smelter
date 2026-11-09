@@ -34,6 +34,10 @@ impl EmbeddingHelper {
         }
     }
 
+    pub fn chromium_sender(&self) -> &ChromiumSender {
+        &self.chromium_sender
+    }
+
     pub fn prepare_embedding(
         &self,
         ctx: &mut RenderCtx,

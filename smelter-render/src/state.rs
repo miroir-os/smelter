@@ -59,6 +59,7 @@ struct InnerRenderer {
     text_renderer_ctx: Arc<TextRendererCtx>,
 
     chromium_context: Option<Arc<ChromiumContext>>,
+    framerate: Framerate,
 
     render_graph: RenderGraph,
     scene: SceneState,
@@ -94,6 +95,9 @@ pub(crate) struct RegisterCtx {
     pub(crate) wgpu_ctx: Arc<WgpuCtx>,
     #[allow(dead_code)]
     pub(crate) chromium_context: Option<Arc<ChromiumContext>>,
+    /// The rate outputs render at.
+    #[allow(dead_code)]
+    pub(crate) framerate: Framerate,
 }
 
 /// RendererSpec provides configuration necessary to construct Renderer. Renderers
@@ -221,6 +225,7 @@ impl InnerRenderer {
             renderers: Renderers::new(wgpu_ctx, opts.max_layouts_count)?,
             scene: SceneState::new(),
             chromium_context: opts.chromium_context,
+            framerate: opts.framerate,
         })
     }
 
@@ -228,6 +233,7 @@ impl InnerRenderer {
         RegisterCtx {
             wgpu_ctx: self.wgpu_ctx.clone(),
             chromium_context: self.chromium_context.clone(),
+            framerate: self.framerate,
         }
     }
 
@@ -254,6 +260,9 @@ impl InnerRenderer {
             .register_render_event(inputs.pts, input_resolutions);
 
         let pts = inputs.pts;
+        for page in self.renderers.web_renderers.values() {
+            page.tick();
+        }
         trace!("Upload input textures");
         populate_inputs(ctx, &mut self.render_graph, inputs);
         trace!("Run render graph");

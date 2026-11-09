@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    RendererId, Resolution, scene::ComponentId, state::node_texture::NodeTexture,
+    Framerate, RendererId, Resolution, scene::ComponentId, state::node_texture::NodeTexture,
     transformations::web_renderer::chromium_context::ChromiumContext,
 };
 use crossbeam_channel::{Receiver, Sender};
@@ -32,6 +32,7 @@ impl ChromiumSender {
         instance_id: &RendererId,
         spec: &WebRendererSpec,
         browser_client: BrowserClient,
+        framerate: Framerate,
     ) -> Self {
         let (message_sender, message_receiver) = crossbeam_channel::unbounded();
         let (unmap_signal_sender, unmap_signal_receiver) = crossbeam_channel::bounded(0);
@@ -41,6 +42,7 @@ impl ChromiumSender {
             instance_id,
             spec,
             browser_client,
+            framerate,
             message_receiver,
             unmap_signal_sender,
         )
@@ -98,6 +100,13 @@ impl ChromiumSender {
             .map_err(|_| ChromiumSenderError::MessageChannelDisconnected)
     }
 
+    /// Asks the page for its next paint.
+    pub fn request_paint(&self) -> Result<(), ChromiumSenderError> {
+        self.message_sender
+            .send(ChromiumSenderMessage::Paint)
+            .map_err(|_| ChromiumSenderError::MessageChannelDisconnected)
+    }
+
     pub fn request_frame_positions(
         &self,
         children_ids: Vec<ComponentId>,
@@ -120,6 +129,7 @@ pub(super) enum ChromiumSenderMessage {
     GetFramePositions {
         children_ids: Vec<ComponentId>,
     },
+    Paint,
     Quit,
 }
 

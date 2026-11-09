@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    Framerate, RendererId, Resolution,
+    RendererId, Resolution,
     scene::ComponentId,
     state::{RegisterCtx, RenderCtx, node_texture::NodeTexture},
 };
@@ -43,6 +43,10 @@ impl WebRenderer {
     pub fn resolution(&self) -> Resolution {
         self.spec.resolution
     }
+
+    pub fn tick(&self) {
+        unreachable!()
+    }
 }
 
 pub struct WebRendererNode {
@@ -80,11 +84,15 @@ pub struct ChromiumContext {
 #[error("Web rendering feature is not available")]
 pub struct ChromiumContextInitError;
 
+#[derive(Debug, Default)]
+pub struct ChromiumOptions {
+    pub enable_gpu: bool,
+    pub trusted_certificate_keys: Vec<String>,
+    pub page_proxy: Option<String>,
+}
+
 impl ChromiumContext {
-    pub fn new(
-        _framerate: Framerate,
-        _enable_gpu: bool,
-    ) -> Result<Arc<Self>, ChromiumContextInitError> {
+    pub fn new(_options: ChromiumOptions) -> Result<Arc<Self>, ChromiumContextInitError> {
         Err(ChromiumContextInitError)
     }
 
