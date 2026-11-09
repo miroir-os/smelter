@@ -221,7 +221,7 @@ pub enum SceneError {
     WebRendererNotFound(RendererId),
 
     #[error(
-        "Instance of web renderer \"{0}\" was used more than once. Only one component can use specific web renderer at the time."
+        "Instance of web renderer \"{0}\" embeds children, yet was used more than once. Only one component can use a web renderer embedding children at the time."
     )]
     WebRendererUsageNotExclusive(RendererId),
 

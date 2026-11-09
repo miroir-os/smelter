@@ -71,30 +71,34 @@ fn validate_component_ids_uniqueness(outputs: &[&OutputScene]) -> Result<(), Sce
     })
 }
 
+/// A web view embedding children lays them out in its page for that one
+/// placement, so its renderer shows nowhere else: one without shows the same
+/// page wherever it is placed.
 fn validate_web_renderer_ids_uniqueness(outputs: &[&OutputScene]) -> Result<(), SceneError> {
-    let mut web_renderer_ids: HashSet<&RendererId> = HashSet::new();
-
-    fn visit<'a>(
-        component: &'a Component,
-        ids: &mut HashSet<&'a RendererId>,
-    ) -> Result<(), SceneError> {
+    /// How many web views use each renderer, and whether one embeds children.
+    fn visit<'a>(component: &'a Component, uses: &mut HashMap<&'a RendererId, (usize, bool)>) {
         if let Component::WebView(web_view) = component {
-            let instance_id = &web_view.instance_id;
-            if ids.contains(instance_id) {
-                return Err(SceneError::WebRendererUsageNotExclusive(
-                    instance_id.clone(),
-                ));
-            }
-            ids.insert(instance_id);
+            let (count, embeds) = uses.entry(&web_view.instance_id).or_default();
+            *count += 1;
+            *embeds |= !web_view.children.is_empty();
         }
-
         component
             .children()
             .into_iter()
-            .try_for_each(|c| visit(c, ids))
+            .for_each(|child| visit(child, uses));
     }
 
-    outputs
-        .iter()
-        .try_for_each(|output| visit(&output.scene_root, &mut web_renderer_ids))
+    let mut uses = HashMap::new();
+    for output in outputs {
+        visit(&output.scene_root, &mut uses);
+    }
+    match uses
+        .into_iter()
+        .find(|(_, (count, embeds))| *count > 1 && *embeds)
+    {
+        Some((instance_id, _)) => Err(SceneError::WebRendererUsageNotExclusive(
+            instance_id.clone(),
+        )),
+        None => Ok(()),
+    }
 }
