@@ -36,16 +36,24 @@ impl Browser {
     }
 
     pub fn close(&mut self) -> Result<(), BrowserError> {
+        let host = self.host()?;
         unsafe {
-            let browser = self.inner.get_weak_with_validation()?;
-            let get_host = (*browser).get_host.unwrap();
-            let host = get_host(browser);
+            let host = host.get_weak();
             let close_browser = (*host).close_browser.unwrap();
             // `true` means that the close request won't be cancelable
             close_browser(host, true as c_int);
         }
 
         Ok(())
+    }
+
+    /// `get_host` hands over a reference of its own, released on drop.
+    fn host(&self) -> Result<CefRc<libcef_sys::cef_browser_host_t>, BrowserError> {
+        unsafe {
+            let browser = self.inner.get_weak_with_validation()?;
+            let get_host = (*browser).get_host.unwrap();
+            Ok(CefRc::new(get_host(browser)))
+        }
     }
 }
 
@@ -65,6 +73,12 @@ impl Validatable for libcef_sys::cef_browser_t {
 }
 
 impl CefRefCountable for libcef_sys::cef_browser_t {
+    fn base_mut(&mut self) -> *mut libcef_sys::cef_base_ref_counted_t {
+        &mut self.base
+    }
+}
+
+impl CefRefCountable for libcef_sys::cef_browser_host_t {
     fn base_mut(&mut self) -> *mut libcef_sys::cef_base_ref_counted_t {
         &mut self.base
     }
