@@ -54,7 +54,10 @@ impl TryFrom<WebRendererSpec> for smelter_render::RendererSpec {
 
         let spec = web_renderer::WebRendererSpec {
             url: spec.url,
-            resolution: spec.resolution.into(),
+            view: web_renderer::PageView {
+                layout: spec.resolution.into(),
+                scale_factor: 1.0,
+            },
             embedding_method,
         };
         Ok(Self::WebRenderer(spec))

@@ -9,7 +9,7 @@ use crate::{
     Resolution,
     error::{
         InitRendererEngineError, RegisterFontError, RegisterRendererError, RenderSceneError,
-        UnregisterRendererError, UpdateSceneError,
+        UnregisterRendererError, UpdateSceneError, WebRendererNotFound,
     },
     image,
     scene::{OutputScene, Scene, SceneState},
@@ -180,6 +180,18 @@ impl Renderer {
             RegistryType::WebRenderer => guard.renderers.web_renderers.unregister(renderer_id)?,
             RegistryType::Image => guard.renderers.images.unregister(renderer_id)?,
         }
+        Ok(())
+    }
+
+    /// Lays the page of the web renderer `id` out in `view`, as it is: nothing reloads.
+    pub fn resize_web_renderer(
+        &self,
+        id: &RendererId,
+        view: web_renderer::PageView,
+    ) -> Result<(), WebRendererNotFound> {
+        let web = self.0.lock().unwrap().renderers.web_renderers.get(id);
+        web.ok_or_else(|| WebRendererNotFound(id.clone()))?
+            .resize(view);
         Ok(())
     }
 

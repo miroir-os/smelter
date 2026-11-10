@@ -6,7 +6,9 @@ use smelter_api::*;
 use smelter_render::Resolution;
 use smelter_render::image::{ImageSource, ImageType};
 use smelter_render::shader;
-use smelter_render::web_renderer::{WebEmbeddingMethod, WebRendererSpec as RenderWebRendererSpec};
+use smelter_render::web_renderer::{
+    PageView, WebEmbeddingMethod, WebRendererSpec as RenderWebRendererSpec,
+};
 
 type RendererSpec = smelter_render::RendererSpec;
 
@@ -377,9 +379,12 @@ fn web_renderer_minimal() {
         }),
         RendererSpec::WebRenderer(RenderWebRendererSpec {
             url: Arc::from("https://example.com"),
-            resolution: Resolution {
-                width: 1920,
-                height: 1080,
+            view: PageView {
+                layout: Resolution {
+                    width: 1920,
+                    height: 1080,
+                },
+                scale_factor: 1.0,
             },
             embedding_method: WebEmbeddingMethod::NativeEmbeddingOverContent,
         }),
@@ -398,9 +403,12 @@ fn web_renderer_chromium_embedding() {
         }),
         RendererSpec::WebRenderer(RenderWebRendererSpec {
             url: Arc::from("https://example.com"),
-            resolution: Resolution {
-                width: 1920,
-                height: 1080,
+            view: PageView {
+                layout: Resolution {
+                    width: 1920,
+                    height: 1080,
+                },
+                scale_factor: 1.0,
             },
             embedding_method: WebEmbeddingMethod::ChromiumEmbedding,
         }),
@@ -419,9 +427,12 @@ fn web_renderer_native_over_content() {
         }),
         RendererSpec::WebRenderer(RenderWebRendererSpec {
             url: Arc::from("https://example.com"),
-            resolution: Resolution {
-                width: 1280,
-                height: 720,
+            view: PageView {
+                layout: Resolution {
+                    width: 1280,
+                    height: 720,
+                },
+                scale_factor: 1.0,
             },
             embedding_method: WebEmbeddingMethod::NativeEmbeddingOverContent,
         }),
@@ -440,9 +451,12 @@ fn web_renderer_native_under_content() {
         }),
         RendererSpec::WebRenderer(RenderWebRendererSpec {
             url: Arc::from("https://example.com"),
-            resolution: Resolution {
-                width: 1280,
-                height: 720,
+            view: PageView {
+                layout: Resolution {
+                    width: 1280,
+                    height: 720,
+                },
+                scale_factor: 1.0,
             },
             embedding_method: WebEmbeddingMethod::NativeEmbeddingUnderContent,
         }),

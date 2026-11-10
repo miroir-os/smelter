@@ -17,9 +17,10 @@ use smelter_render::{
     FrameSet, InputId, OutputId, RegistryType, Renderer, RendererId, RendererOptions, RendererSpec,
     error::{
         ErrorStack, RegisterFontError, RegisterRendererError, RequestKeyframeError,
-        UnregisterRendererError, UpdateSceneError,
+        UnregisterRendererError, UpdateSceneError, WebRendererNotFound,
     },
     scene::Scene,
+    web_renderer::PageView,
 };
 
 use crate::{
@@ -256,6 +257,14 @@ impl Pipeline {
     ) -> Result<(), UnregisterRendererError> {
         self.renderer
             .unregister_renderer(renderer_id, registry_type)
+    }
+
+    pub fn resize_web_renderer(
+        &self,
+        renderer_id: &RendererId,
+        view: PageView,
+    ) -> Result<(), WebRendererNotFound> {
+        self.renderer.resize_web_renderer(renderer_id, view)
     }
 
     pub fn update_output(

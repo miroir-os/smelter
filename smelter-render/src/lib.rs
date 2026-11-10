@@ -30,7 +30,7 @@ pub mod shader {
 
 pub mod web_renderer {
     pub use crate::transformations::web_renderer::{
-        ChromiumContext, ChromiumContextInitError, ChromiumOptions, WebEmbeddingMethod,
+        ChromiumContext, ChromiumContextInitError, ChromiumOptions, PageView, WebEmbeddingMethod,
         WebRendererSpec,
     };
 

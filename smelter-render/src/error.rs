@@ -38,6 +38,10 @@ pub enum UnregisterRendererError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[error("The \"{0}\" web renderer instance does not exist.")]
+pub struct WebRendererNotFound(pub RendererId);
+
+#[derive(Debug, thiserror::Error)]
 pub enum RegisterFontError {
     #[error("Failed to load font. Provided file is not a valid font.")]
     InvalidFont,

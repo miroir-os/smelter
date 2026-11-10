@@ -21,13 +21,14 @@ use crate::wgpu::texture::utils::pad_to_256;
 use crate::{Framerate, RendererId, Resolution};
 
 use super::{EMBED_SOURCE_FRAMES_MESSAGE, GET_FRAME_POSITIONS_MESSAGE, utils};
-use super::{browser_client::BrowserClient, chromium_context::ChromiumContext};
+use super::{SharedView, browser_client::BrowserClient, chromium_context::ChromiumContext};
 
 pub(super) struct ChromiumSenderThread {
     pub chromium_context: Arc<ChromiumContext>,
     pub url: Arc<str>,
     pub web_renderer_id: RendererId,
     pub browser_client: BrowserClient,
+    pub view: SharedView,
     pub framerate: Framerate,
     pub paint_asked: Arc<AtomicBool>,
 
@@ -62,10 +63,7 @@ impl ChromiumSenderThread {
             let result = match message {
                 ChromiumSenderMessage::Paint => {
                     self.paint_asked.store(false, Ordering::Release);
-                    state
-                        .browser
-                        .send_external_begin_frame()
-                        .map_err(Into::into)
+                    self.paint(&state.browser).map_err(Into::into)
                 }
                 ChromiumSenderMessage::EmbedSources {
                     resolutions,
@@ -90,6 +88,23 @@ impl ChromiumSenderThread {
                 );
             }
         }
+    }
+
+    /// Hands CEF the wanted view, if it painted the last, then asks for a paint:
+    /// on CEF's UI thread, where it paints, so no paint passes between the two.
+    fn paint(&self, browser: &libcef::Browser) -> Result<(), libcef::BrowserError> {
+        let (done, result) = crossbeam_channel::bounded(1);
+        let task = libcef::Task::new(|| {
+            let handed_over = self.view.lock().unwrap().hand_over(&self.url);
+            let painted = match handed_over {
+                true => browser.notify_screen_info_changed(),
+                false => Ok(()),
+            }
+            .and_then(|()| browser.send_external_begin_frame());
+            done.send(painted).unwrap();
+        });
+        task.run(libcef::ThreadId::UI);
+        result.recv().expect("CEF runs every task it is given")
     }
 
     fn embed_frames(

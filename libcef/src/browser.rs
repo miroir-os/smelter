@@ -47,6 +47,17 @@ impl Browser {
         Ok(())
     }
 
+    /// Has CEF read its render handler's resolution and scale factor anew and lay
+    /// the page out again in them, as it is.
+    pub fn notify_screen_info_changed(&self) -> Result<(), BrowserError> {
+        let host = self.host()?;
+        unsafe {
+            let host = host.get_weak();
+            (*host).notify_screen_info_changed.unwrap()(host);
+        }
+        Ok(())
+    }
+
     pub fn close(&mut self) -> Result<(), BrowserError> {
         let host = self.host()?;
         unsafe {

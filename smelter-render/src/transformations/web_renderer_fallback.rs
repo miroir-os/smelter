@@ -9,8 +9,14 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct WebRendererSpec {
     pub url: Arc<str>,
-    pub resolution: Resolution,
+    pub view: PageView,
     pub embedding_method: WebEmbeddingMethod,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageView {
+    pub layout: Resolution,
+    pub scale_factor: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,7 +47,11 @@ impl WebRenderer {
     }
 
     pub fn resolution(&self) -> Resolution {
-        self.spec.resolution
+        self.spec.view.layout
+    }
+
+    pub fn resize(&self, _view: PageView) {
+        unreachable!()
     }
 
     pub fn tick(&self, _wgpu_ctx: &crate::wgpu::WgpuCtx) {

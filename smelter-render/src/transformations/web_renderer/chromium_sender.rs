@@ -11,7 +11,8 @@ use crossbeam_channel::{Receiver, Sender};
 use tracing::error;
 
 use super::{
-    WebRendererSpec, browser_client::BrowserClient, chromium_sender_thread::ChromiumSenderThread,
+    SharedView, WebRendererSpec, browser_client::BrowserClient,
+    chromium_sender_thread::ChromiumSenderThread,
 };
 
 #[derive(Debug)]
@@ -37,6 +38,7 @@ impl ChromiumSender {
         instance_id: &RendererId,
         spec: &WebRendererSpec,
         browser_client: BrowserClient,
+        view: SharedView,
         framerate: Framerate,
     ) -> Self {
         let (message_sender, message_receiver) = crossbeam_channel::unbounded();
@@ -48,6 +50,7 @@ impl ChromiumSender {
             url: spec.url.clone(),
             web_renderer_id: instance_id.clone(),
             browser_client,
+            view,
             framerate,
             paint_asked: paint_asked.clone(),
             message_receiver,

@@ -12,11 +12,18 @@ pub struct Resolution {
 
 /// Handles browser render callbacks
 pub trait RenderHandler {
-    /// Specifies the render resolution
+    /// The size the page lays out at, in CSS pixels.
     fn resolution(&self, browser: &Browser) -> Resolution;
 
-    /// Called with every paint of the whole view, at the size [`Self::resolution`]
-    /// gives: a popup widget's paints, such as a `<select>`'s list, are not drawn.
+    /// The device pixels a CSS pixel paints to.
+    fn scale_factor(&self, _browser: &Browser) -> f32 {
+        1.0
+    }
+
+    /// Called with every paint of the whole view, about [`Self::resolution`]
+    /// times [`Self::scale_factor`] in size, a paint right after a resize maybe
+    /// still at the last: a popup widget's paints, such as a `<select>`'s list,
+    /// are not drawn.
     fn on_paint(&self, browser: &Browser, buffer: &[u8], resolution: Resolution);
 }
 
@@ -32,7 +39,7 @@ impl<R: RenderHandler> CefStruct for RenderHandlerWrapper<R> {
             get_root_screen_rect: None,
             get_view_rect: Some(Self::view_rect),
             get_screen_point: None,
-            get_screen_info: None,
+            get_screen_info: Some(Self::screen_info),
             on_popup_show: None,
             on_popup_size: None,
             on_paint: Some(Self::on_paint),
@@ -75,6 +82,19 @@ impl<R: RenderHandler> RenderHandlerWrapper<R> {
         }
     }
 
+    extern "C" fn screen_info(
+        self_: *mut libcef_sys::cef_render_handler_t,
+        browser: *mut libcef_sys::cef_browser_t,
+        screen_info: *mut libcef_sys::cef_screen_info_t,
+    ) -> c_int {
+        unsafe {
+            let self_ref = CefRefData::<Self>::from_cef(self_);
+            let browser = Browser::new(browser);
+            (*screen_info).device_scale_factor = self_ref.0.scale_factor(&browser);
+        }
+        true as c_int
+    }
+
     extern "C" fn on_paint(
         self_: *mut libcef_sys::cef_render_handler_t,
         browser: *mut libcef_sys::cef_browser_t,
@@ -88,11 +108,7 @@ impl<R: RenderHandler> RenderHandlerWrapper<R> {
         unsafe {
             let self_ref = CefRefData::<Self>::from_cef(self_);
             let browser = Browser::new(browser);
-            let view = self_ref.0.resolution(&browser);
-            let whole_view = type_ == libcef_sys::cef_paint_element_type_t_PET_VIEW
-                && width as usize == view.width
-                && height as usize == view.height;
-            if !whole_view {
+            if type_ != libcef_sys::cef_paint_element_type_t_PET_VIEW {
                 return;
             }
             let buffer =

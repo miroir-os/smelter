@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
 
 use tracing::{error, info};
 
@@ -19,7 +16,7 @@ use crate::{
 };
 
 use super::{
-    FrameData, SourceTransforms, WebEmbeddingMethod, WebRendererSpec,
+    FrameData, PageView, SharedView, SourceTransforms, Views, WebEmbeddingMethod, WebRendererSpec,
     embedder::{EmbedError, EmbeddingHelper, RenderInfo},
     node::EmbeddingData,
     shader::WebRendererShader,
@@ -27,15 +24,22 @@ use super::{
 
 #[derive(Debug)]
 pub struct WebRenderer {
-    spec: WebRendererSpec,
+    url: Arc<str>,
+    embedding_method: WebEmbeddingMethod,
+    view: SharedView,
     frame_data: FrameData,
-    /// Whether the texture holds a paint yet.
-    painted: AtomicBool,
     source_transforms: SourceTransforms,
     embedding_helper: EmbeddingHelper,
 
-    website_texture: WebsiteTexture,
+    /// Its latest paint, at its own size, which a resize reaches a paint or so late.
+    website: Mutex<Option<Website>>,
     render_website_shader: WebRendererShader,
+}
+
+#[derive(Debug)]
+struct Website {
+    resolution: Resolution,
+    texture: WebsiteTexture,
 }
 
 #[derive(Debug)]
@@ -58,25 +62,28 @@ impl WebRenderer {
 
         let frame_data = Arc::new(Mutex::new(None));
         let source_transforms = Arc::new(Mutex::new(Vec::new()));
+        let view = Arc::new(Mutex::new(Views::new(spec.view)));
 
-        let client = BrowserClient::new(
-            frame_data.clone(),
-            source_transforms.clone(),
-            spec.resolution,
+        let client =
+            BrowserClient::new(frame_data.clone(), source_transforms.clone(), view.clone());
+        let chromium_sender = ChromiumSender::new(
+            chromium_context,
+            instance_id,
+            &spec,
+            client,
+            view.clone(),
+            ctx.framerate,
         );
-        let chromium_sender =
-            ChromiumSender::new(chromium_context, instance_id, &spec, client, ctx.framerate);
         let embedding_helper = EmbeddingHelper::new(ctx, chromium_sender, spec.embedding_method);
         let render_website_shader = WebRendererShader::new(&ctx.wgpu_ctx)?;
-        let website_texture = WebsiteTexture::new(&ctx.wgpu_ctx, spec.resolution);
-
         Ok(Self {
-            spec,
+            url: spec.url,
+            embedding_method: spec.embedding_method,
+            view,
             frame_data,
-            painted: AtomicBool::new(false),
             source_transforms,
             embedding_helper,
-            website_texture,
+            website: Mutex::new(None),
             render_website_shader,
         })
     }
@@ -92,12 +99,12 @@ impl WebRenderer {
         if !embedding_data.children_ids.is_empty() {
             self.embedding_helper
                 .prepare_embedding(ctx, sources, embedding_data)
-                .map_err(|err| RenderWebsiteError::EmbeddingFailed(self.spec.url.clone(), err))?;
+                .map_err(|err| RenderWebsiteError::EmbeddingFailed(self.url.clone(), err))?;
         }
 
-        if self.painted.load(Ordering::Acquire) {
-            let target = target.ensure_size(ctx.wgpu_ctx, self.spec.resolution);
-            let render_textures = self.prepare_textures(sources);
+        if let Some(website) = &*self.website.lock().unwrap() {
+            let target = target.ensure_size(ctx.wgpu_ctx, website.resolution);
+            let render_textures = self.prepare_textures(sources, website.texture.view());
 
             self.render_website_shader.render(
                 ctx.wgpu_ctx,
@@ -114,21 +121,35 @@ impl WebRenderer {
     /// uploads the page's new paint, if any, for every placement of this tick,
     /// and asks for the next tick's.
     pub fn tick(&self, wgpu_ctx: &WgpuCtx) {
-        if let Some(paint) = self.frame_data.lock().unwrap().take() {
-            self.website_texture.upload(wgpu_ctx, &paint);
-            self.painted.store(true, Ordering::Release);
+        if let Some((paint, resolution)) = self.frame_data.lock().unwrap().take() {
+            let mut website = self.website.lock().unwrap();
+            if website
+                .as_ref()
+                .is_none_or(|website| website.resolution != resolution)
+            {
+                *website = Some(Website::new(wgpu_ctx, resolution));
+            }
+            if let Some(website) = &*website {
+                website.texture.upload(wgpu_ctx, &paint);
+            }
         }
         if let Err(err) = self.embedding_helper.chromium_sender().request_paint() {
             error!(
                 "Failed to ask the website \"{}\" for a paint: {err}",
-                self.spec.url
+                self.url
             );
         }
+    }
+
+    /// Lays the page out in `view` from a paint or so on, as it is: nothing reloads.
+    pub fn resize(&self, view: PageView) {
+        self.view.lock().unwrap().wanted = view;
     }
 
     fn prepare_textures<'a>(
         &'a self,
         sources: &'a [&NodeTexture],
+        website: &'a wgpu::TextureView,
     ) -> Vec<(Option<&'a wgpu::TextureView>, RenderInfo)> {
         let mut source_info = sources
             .iter()
@@ -141,10 +162,10 @@ impl WebRenderer {
             })
             .collect();
 
-        let website_info = (Some(self.website_texture.view()), RenderInfo::website());
+        let website_info = (Some(website), RenderInfo::website());
 
         let mut result = Vec::new();
-        match self.spec.embedding_method {
+        match self.embedding_method {
             WebEmbeddingMethod::NativeEmbeddingOverContent => {
                 result.push(website_info);
                 result.append(&mut source_info);
@@ -161,20 +182,33 @@ impl WebRenderer {
         result
     }
 
+    /// Its latest paint's size, or the view's before its first.
     pub fn resolution(&self) -> Resolution {
-        self.spec.resolution
+        match &*self.website.lock().unwrap() {
+            Some(website) => website.resolution,
+            None => self.view.lock().unwrap().shown.paint_size(),
+        }
+    }
+}
+
+impl Website {
+    fn new(ctx: &WgpuCtx, resolution: Resolution) -> Self {
+        let texture = match ctx.mode {
+            RenderingMode::GpuOptimized | RenderingMode::WebGl => {
+                WebsiteTexture::Srgb(BgraSrgbTexture::new(ctx, resolution))
+            }
+            RenderingMode::CpuOptimized => {
+                WebsiteTexture::Linear(BgraLinearTexture::new(ctx, resolution))
+            }
+        };
+        Self {
+            resolution,
+            texture,
+        }
     }
 }
 
 impl WebsiteTexture {
-    fn new(ctx: &WgpuCtx, resolution: Resolution) -> Self {
-        match ctx.mode {
-            RenderingMode::GpuOptimized | RenderingMode::WebGl => {
-                Self::Srgb(BgraSrgbTexture::new(ctx, resolution))
-            }
-            RenderingMode::CpuOptimized => Self::Linear(BgraLinearTexture::new(ctx, resolution)),
-        }
-    }
     fn view(&self) -> &wgpu::TextureView {
         match &self {
             WebsiteTexture::Srgb(texture) => texture.view(),
