@@ -1,7 +1,7 @@
 use interleaved_uyvy422::InterleavedUyvy422Input;
 use nv12_texture::NV12Input;
 use planar_yuv::PlanarYuvInput;
-use rgba_texture::RgbaTextureInput;
+use rgba_texture::{Alpha, RgbaTextureInput};
 
 use crate::{
     BufferFormat, Frame, FrameData, Resolution, YuvPlanes,
@@ -37,10 +37,12 @@ enum InputTextureState {
     Nv12(NV12Input),
     Bgra(BgraInput),
     Argb(ArgbInput),
-    /// Depending on rendering mode
+    /// Straight alpha depending on rendering mode
     /// - GPU - Rgba8UnormSrgb
     /// - CPU optimized - Rgba8Unorm (but data is in sRGB color space)
     /// - WebGl - Rgba8UnormSrgb
+    ///
+    /// Premultiplied alpha in Rgba8Unorm in every mode.
     Rgba8Unorm(RgbaTextureInput),
 }
 
@@ -89,14 +91,10 @@ impl InputTexture {
             FrameData::InterleavedYuyv422(data) => self.yuyv(ctx).upload(ctx, &data, resolution),
             FrameData::Bgra(data) => self.bgra(ctx).upload(ctx, &data, resolution),
             FrameData::Argb(data) => self.argb(ctx).upload(ctx, &data, resolution),
-            FrameData::Rgba8UnormWgpuTexture(texture) => match &mut self.0 {
-                Some(InputTextureState::Rgba8Unorm(input)) => input.update(texture),
-                state => {
-                    *state = Some(InputTextureState::Rgba8Unorm(RgbaTextureInput::new(
-                        texture,
-                    )))
-                }
-            },
+            FrameData::Rgba8UnormWgpuTexture(texture) => self.rgba(texture, Alpha::Straight),
+            FrameData::PremultipliedRgba8UnormWgpuTexture(texture) => {
+                self.rgba(texture, Alpha::PremultipliedSrgb)
+            }
             FrameData::Nv12WgpuTexture(texture) => {
                 self.nv12_texture(ctx, NV12Texture::from_wgpu_texture(texture).unwrap())
             }
@@ -119,6 +117,12 @@ impl InputTexture {
             BufferFormat::Nv12 => self.nv12(ctx, resolution).upload_textures(ctx, resolution),
             BufferFormat::Bgra => self.bgra(ctx).upload_textures(ctx, resolution),
         }
+    }
+
+    fn rgba(&mut self, texture: wgpu::Texture, alpha: Alpha) {
+        self.0 = Some(InputTextureState::Rgba8Unorm(RgbaTextureInput::new(
+            texture, alpha,
+        )));
     }
 
     /// The current state, replaced by `create` unless it `is` the wanted one.

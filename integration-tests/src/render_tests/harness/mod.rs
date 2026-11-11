@@ -7,6 +7,8 @@ pub(crate) mod snapshot;
 pub(crate) mod test_case;
 mod utils;
 
+pub(crate) use utils::get_graphics_ctx;
+
 pub(crate) const OUTPUT_ID: &str = "output_1";
 
 #[allow(dead_code)]

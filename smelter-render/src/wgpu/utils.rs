@@ -1,16 +1,16 @@
 use crate::{RenderingMode, scene::RGBAColor};
 
 use add_premultiplied_alpha::PremultiplyAlphaPipeline;
+use linearize_premultiplied_alpha::LinearizePremultipliedAlphaPipeline;
 use r8_fill_with_color::R8FillWithValue;
-use remove_premultiplied_alpha::RemovePremultipliedAlphaPipeline;
 use rg8_fill_with_color::Rg8FillWithValue;
 
 use super::{WgpuCtx, format::TextureFormat};
 
 mod add_premultiplied_alpha;
+mod linearize_premultiplied_alpha;
 mod r8_fill_with_color;
 mod reinterpret_input_to_srgb;
-mod remove_premultiplied_alpha;
 mod rg8_fill_with_color;
 
 pub use reinterpret_input_to_srgb::ReinterpretToSrgb;
@@ -19,7 +19,7 @@ pub use reinterpret_input_to_srgb::ReinterpretToSrgb;
 pub struct TextureUtils {
     pub r8_fill_with_value: R8FillWithValue,
     pub rg8_fill_with_value: Rg8FillWithValue,
-    pub linear_rgba_remove_premult_alpha: RemovePremultipliedAlphaPipeline,
+    pub srgb_rgba_linearize_premult_alpha: LinearizePremultipliedAlphaPipeline,
     pub srgb_rgba_add_premult_alpha: PremultiplyAlphaPipeline,
     pub linear_rgba_add_premult_alpha: PremultiplyAlphaPipeline,
 }
@@ -29,10 +29,10 @@ impl TextureUtils {
         Self {
             r8_fill_with_value: R8FillWithValue::new(device),
             rg8_fill_with_value: Rg8FillWithValue::new(device),
-            linear_rgba_remove_premult_alpha: RemovePremultipliedAlphaPipeline::new(
+            srgb_rgba_linearize_premult_alpha: LinearizePremultipliedAlphaPipeline::new(
                 device,
                 &format.single_texture_layout,
-                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
             ),
             srgb_rgba_add_premult_alpha: PremultiplyAlphaPipeline::new(
                 device,

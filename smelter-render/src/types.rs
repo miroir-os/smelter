@@ -33,6 +33,9 @@ pub enum FrameData {
     InterleavedUyvy422(bytes::Bytes),
     InterleavedYuyv422(bytes::Bytes),
     Rgba8UnormWgpuTexture(wgpu::Texture),
+    /// RGBA in an `Rgba8Unorm` texture, sRGB values with alpha premultiplied into
+    /// them, as browsers render.
+    PremultipliedRgba8UnormWgpuTexture(wgpu::Texture),
     Nv12WgpuTexture(wgpu::Texture),
     /// NV12 as a texture per plane, R8 for Y and RG8 for UV, where NV12 textures are unsupported.
     Nv12WgpuPlanes {

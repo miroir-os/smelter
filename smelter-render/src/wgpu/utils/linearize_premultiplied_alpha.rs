@@ -3,23 +3,23 @@ use crate::wgpu::common_pipeline::{PRIMITIVE_STATE, Sampler, Vertex};
 use super::WgpuCtx;
 
 #[derive(Debug)]
-pub struct RemovePremultipliedAlphaPipeline {
+pub struct LinearizePremultipliedAlphaPipeline {
     pipeline: wgpu::RenderPipeline,
     sampler: Sampler,
 }
 
-impl RemovePremultipliedAlphaPipeline {
+impl LinearizePremultipliedAlphaPipeline {
     pub fn new(
         device: &wgpu::Device,
         rgba_textures_bind_group_layout: &wgpu::BindGroupLayout,
         dst_view_format: wgpu::TextureFormat,
     ) -> Self {
         let shader_module =
-            device.create_shader_module(wgpu::include_wgsl!("remove_premultiplied_alpha.wgsl"));
+            device.create_shader_module(wgpu::include_wgsl!("linearize_premultiplied_alpha.wgsl"));
         let sampler = Sampler::new(device);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Remove pre-multiplied alpha pipeline layout"),
+            label: Some("Linearize pre-multiplied alpha pipeline layout"),
             bind_group_layouts: &[
                 Some(rgba_textures_bind_group_layout),
                 Some(&sampler.bind_group_layout),
@@ -28,7 +28,7 @@ impl RemovePremultipliedAlphaPipeline {
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Remove pre-multiplied alpha render pipeline"),
+            label: Some("Linearize pre-multiplied alpha render pipeline"),
             layout: Some(&pipeline_layout),
             primitive: PRIMITIVE_STATE,
 
@@ -67,12 +67,12 @@ impl RemovePremultipliedAlphaPipeline {
         let mut encoder = ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Remove pre-multiplied alpha encoder"),
+                label: Some("Linearize pre-multiplied alpha encoder"),
             });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Remove pre-multiplied alpha render pass"),
+                label: Some("Linearize pre-multiplied alpha render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),

@@ -53,17 +53,6 @@ impl RgbaMultiViewTexture {
         }
     }
 
-    pub fn new_srgb_bind_group(&self, ctx: &WgpuCtx) -> wgpu::BindGroup {
-        ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("texture bind group"),
-            layout: &ctx.format.single_texture_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&self.srgb_view),
-            }],
-        })
-    }
-
     pub fn new_linear_bind_group(&self, ctx: &WgpuCtx) -> wgpu::BindGroup {
         ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("texture bind group"),
@@ -77,10 +66,6 @@ impl RgbaMultiViewTexture {
 
     pub fn upload(&self, ctx: &WgpuCtx, data: &[u8]) {
         self.texture.upload_data(&ctx.queue, data, 4);
-    }
-
-    pub fn size(&self) -> wgpu::Extent3d {
-        self.texture.size()
     }
 
     pub fn texture(&self) -> &wgpu::Texture {

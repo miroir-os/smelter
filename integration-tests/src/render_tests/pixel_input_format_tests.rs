@@ -4,10 +4,11 @@ use std::{sync::Arc, time::Duration};
 use bytes::Bytes;
 use smelter_render::{
     FrameData, InputId, OutputFrameFormat, Resolution,
-    scene::{Component, InputStreamComponent, ViewComponent},
+    scene::{Component, InputStreamComponent, RGBAColor, ViewComponent},
 };
 
 use super::harness::{
+    get_graphics_ctx,
     input::TestInput,
     test_case::{Step, TestCase},
 };
@@ -149,4 +150,79 @@ fn test_argb_pixel_format_input() {
             64, 61, 62, 63
         ],
     );
+}
+
+#[test]
+fn test_premultiplied_rgba_texture_input() {
+    let resolution = Resolution {
+        width: 3,
+        height: 1,
+    };
+    let input_id = "input";
+
+    // Opaque red, orange at half opacity, transparent: as a browser renders
+    // them, premultiplied in sRGB.
+    #[rustfmt::skip]
+    let input_data = [
+        255, 0, 0, 255,
+        128, 64, 0, 128,
+        0, 0, 0, 0,
+    ];
+    let ctx = get_graphics_ctx();
+    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: resolution.width as u32,
+            height: resolution.height as u32,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    ctx.queue.write_texture(
+        texture.as_image_copy(),
+        &input_data,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * resolution.width as u32),
+            rows_per_image: None,
+        },
+        texture.size(),
+    );
+
+    let input_component = Component::InputStream(InputStreamComponent {
+        id: None,
+        input_id: InputId::from(Arc::from(input_id)),
+    });
+    let view_component = Component::View(ViewComponent {
+        children: vec![input_component],
+        background_color: RGBAColor(255, 255, 255, 255),
+        ..Default::default()
+    });
+    let case = TestCase {
+        output_format: OutputFrameFormat::RgbaWgpuTexture,
+        resolution,
+        steps: vec![
+            Step::UpdateScene(view_component),
+            Step::RenderWithSnapshot(Duration::ZERO),
+        ],
+        inputs: vec![TestInput {
+            name: input_id.to_string(),
+            resolution,
+            data: FrameData::PremultipliedRgba8UnormWgpuTexture(texture),
+        }],
+        ..Default::default()
+    };
+
+    // Blended over white in linear light.
+    #[rustfmt::skip]
+    run_case(case, &[
+        255, 0, 0, 255,
+        255, 204, 187, 255,
+        255, 255, 255, 255,
+    ]);
 }

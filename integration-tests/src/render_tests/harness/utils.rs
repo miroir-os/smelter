@@ -21,7 +21,9 @@ pub(super) fn frame_to_rgba(frame: &Frame) -> Vec<u8> {
         FrameData::InterleavedUyvy422(_) => panic!("unsupported"),
         FrameData::InterleavedYuyv422(_) => panic!("unsupported"),
         FrameData::Rgba8UnormWgpuTexture(texture) => read_rgba_texture(texture).to_vec(),
+        FrameData::PremultipliedRgba8UnormWgpuTexture(_) => panic!("unsupported"),
         FrameData::Nv12WgpuTexture(_) => panic!("unsupported"),
+        FrameData::Nv12WgpuPlanes { .. } => panic!("unsupported"),
         FrameData::Nv12(_) => panic!("unsupported"),
         FrameData::Bgra(_) => panic!("unsupported"),
         FrameData::Argb(_) => panic!("unsupported"),
@@ -64,7 +66,7 @@ pub(super) fn yuv_frame_to_rgba(frame: &Frame, planes: &YuvPlanes) -> Vec<u8> {
     rgba_data
 }
 
-fn get_graphics_ctx() -> GraphicsContext {
+pub(crate) fn get_graphics_ctx() -> GraphicsContext {
     static CTX: OnceLock<GraphicsContext> = OnceLock::new();
     CTX.get_or_init(|| {
         create_wgpu_graphics_ctx(GraphicsContextOptions {
