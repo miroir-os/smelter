@@ -34,11 +34,8 @@ impl PlanarYuvInput {
         self.upload_textures.resolution
     }
 
-    pub fn views(&self) -> (&wgpu::TextureView, &wgpu::TextureView) {
-        (
-            self.upload_textures.plane_view(0),
-            self.upload_textures.plane_view(1),
-        )
+    pub fn views(&self) -> [&wgpu::TextureView; 3] {
+        [0, 1, 2].map(|plane| self.upload_textures.plane_view(plane))
     }
 
     pub fn upload(

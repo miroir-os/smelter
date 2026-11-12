@@ -32,6 +32,9 @@ impl Mp4FileReader<File> {
     }
 }
 
+/// The handler name of a guided matte's alpha track, and the version of its format.
+const GUIDED_MATTE: &str = "Guided matte 1";
+
 impl<Reader: Read + Seek + Send + 'static> Mp4FileReader<Reader> {
     fn new(reader: Reader, size: u64) -> Result<Self, Mp4InputError> {
         let reader = mp4::Mp4Reader::read_header(reader, size)?;
@@ -216,11 +219,13 @@ impl<Reader: Read + Seek + Send + 'static> Track<Reader> {
         }
     }
 
-    /// Whether `alpha` is half this track's picture size, and presents its samples at this
-    /// track's sample times.
+    /// Whether `alpha` is a guided matte's, its handler named and versioned so, half this
+    /// track's picture size, presenting its samples at this track's sample times.
     pub(super) fn pairs_with(&self, alpha: &Self) -> bool {
         let ((width, height), timescale, stts, ctts, elst) = alpha.picture_and_timing();
-        self.picture_and_timing() == ((width * 2, height * 2), timescale, stts, ctts, elst)
+        let handler = &alpha.reader.tracks()[&alpha.track_id].trak.mdia.hdlr.name;
+        handler == GUIDED_MATTE
+            && self.picture_and_timing() == ((width * 2, height * 2), timescale, stts, ctts, elst)
     }
 
     #[allow(clippy::type_complexity)]

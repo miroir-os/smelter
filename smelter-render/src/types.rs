@@ -42,9 +42,8 @@ pub enum FrameData {
     Nv12(NvPlanes),
     Bgra(bytes::Bytes),
     Argb(bytes::Bytes),
-    /// A picture made transparent by `alpha`, a limited-range picture of half its size: its luma
-    /// the mean alpha of 2×2 of the picture's pixels, 16 transparent and 235 opaque, its chroma
-    /// the black (under ½) or white each 4×4 block of the picture is composited over.
+    /// A guided matte: a picture made transparent by `alpha`, its matte at half its size, as
+    /// `rebuild_alpha.wgsl` reads them.
     WithAlpha {
         color: Box<FrameData>,
         alpha: Box<Frame>,

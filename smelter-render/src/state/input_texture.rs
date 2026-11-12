@@ -11,6 +11,7 @@ use crate::{
     },
     wgpu::{
         WgpuCtx,
+        format::rebuild_alpha::YuvViews,
         texture::{NV12Texture, PlanarYuvVariant},
     },
 };
@@ -125,11 +126,27 @@ impl InputTexture {
         }
     }
 
-    /// The luma and the chroma of a YUV picture, its first chroma channel in red.
-    fn yuv_views(&self) -> Option<(&wgpu::TextureView, &wgpu::TextureView)> {
+    /// A YUV picture's planes.
+    fn yuv_views(&self) -> Option<YuvViews<'_>> {
         match &self.0 {
-            Some(InputTextureState::Nv12(input)) => Some(input.views()),
-            Some(InputTextureState::PlanarYuv(input)) => Some(input.views()),
+            Some(InputTextureState::Nv12(input)) => {
+                let (luma, chroma) = input.views();
+                Some(YuvViews {
+                    luma,
+                    u: chroma,
+                    v: chroma,
+                    interleaved: true,
+                })
+            }
+            Some(InputTextureState::PlanarYuv(input)) => {
+                let [luma, u, v] = input.views();
+                Some(YuvViews {
+                    luma,
+                    u,
+                    v,
+                    interleaved: false,
+                })
+            }
             _ => None,
         }
     }

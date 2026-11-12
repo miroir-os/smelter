@@ -35,8 +35,7 @@ pub struct TextureFormat {
 
     pub rgba_to_yuv: RgbaToYuvConverter,
     pub rgba_to_nv12: RgbaToNv12Converter,
-    pub rebuild_alpha_linear: AlphaRebuilder,
-    pub rebuild_alpha_srgb: AlphaRebuilder,
+    pub rebuild_alpha: AlphaRebuilder,
 
     pub single_texture_layout: wgpu::BindGroupLayout,
     pub planar_yuv_layout: wgpu::BindGroupLayout,
@@ -82,13 +81,7 @@ impl TextureFormat {
         let rgba_to_yuv = RgbaToYuvConverter::new(device, &single_texture_layout);
         let rgba_to_nv12 = RgbaToNv12Converter::new(device, &single_texture_layout);
 
-        let rebuild_alpha_linear =
-            AlphaRebuilder::new(device, &planar_yuv_layout, wgpu::TextureFormat::Rgba8Unorm);
-        let rebuild_alpha_srgb = AlphaRebuilder::new(
-            device,
-            &planar_yuv_layout,
-            wgpu::TextureFormat::Rgba8UnormSrgb,
-        );
+        let rebuild_alpha = AlphaRebuilder::new(device);
 
         Self {
             planar_yuv_to_rgba_linear,
@@ -100,8 +93,7 @@ impl TextureFormat {
 
             rgba_to_yuv,
             rgba_to_nv12,
-            rebuild_alpha_linear,
-            rebuild_alpha_srgb,
+            rebuild_alpha,
 
             single_texture_layout,
             planar_yuv_layout,

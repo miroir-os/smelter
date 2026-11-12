@@ -12,6 +12,8 @@ mod transition;
 mod view;
 
 #[cfg(test)]
+mod guided_matte_tests;
+#[cfg(test)]
 mod pixel_input_format_tests;
 #[cfg(test)]
 mod yuv_tests;
