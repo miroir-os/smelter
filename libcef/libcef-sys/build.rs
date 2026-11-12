@@ -9,7 +9,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-const CEF_VERSION: &str = "156.0.26+g8ea0c73+chromium-156.0.8078.88";
+const CEF_VERSION: &str = "156.0.28+g57389f0+chromium-156.0.8078.88";
 
 fn main() -> Result<()> {
     let started = SystemTime::now();
