@@ -146,6 +146,13 @@ impl libcef::App for ChromiumApp {
             // TODO: This is probably only needed in docker container
             command_line.append_switch("disable-software-rasterizer");
         }
+        // With the GPU on, a GPU process that cannot start ends the browser
+        // ("GPU process isn't usable. Goodbye.") instead of painting pages in
+        // software: neither SwiftShader nor software compositing is a fallback.
+        if self.enable_gpu {
+            command_line.append_switch("disable-software-rasterizer");
+            command_line.append_switch("disable-software-compositing-fallback");
+        }
         // Headless Chromium on Linux finds no GL display of its own and silently
         // composites in software: ANGLE over the driver's EGL reaches the GPU.
         #[cfg(target_os = "linux")]
